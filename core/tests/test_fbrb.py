@@ -111,10 +111,10 @@ def main(argv):
         if '--game' in argv:
             sys.path.insert(0, os.path.join(SUITE, 'moh-auto-navkit'))
             import navkit
-            game = os.path.join(navkit.find_opfor(None), 'game')
+            game = navkit.Project().game
             k = argv.index('--game')
             n = int(argv[k + 1]) if k + 1 < len(argv) and argv[k + 1].isdigit() else 12
-            bundles = sorted(os.path.join(dp, f) for top in ('Dist', 'Package') for dp, _, fs in os.walk(os.path.join(game, top))
+            bundles = sorted(os.path.join(dp, f) for top in ('dist',) for dp, _, fs in os.walk(os.path.join(game, top))
                              for f in fs if f.lower().endswith('.fbrb'))
             pick = bundles if n == 0 or n >= len(bundles) else [bundles[i * len(bundles) // n] for i in range(n)]
             total_markers = 0

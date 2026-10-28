@@ -25,8 +25,8 @@ SHADERS_DIFFER = {'sp_04'}           # its VisualWater has 4,818 vertices for th
 
 
 def main(argv):
-    game = os.path.join(navkit.find_opfor(None), 'game')
-    base = os.path.join(game, 'Dist', 'win32', 'levels')
+    game = navkit.Project().game
+    base = os.path.join(game, 'dist', 'win32', 'levels')
     work = tempfile.mkdtemp(prefix='water_test_')
     failed = checked = 0
     try:

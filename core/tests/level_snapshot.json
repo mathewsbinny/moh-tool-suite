@@ -1,93 +1,42 @@
 {
- "mp_005": {
-  "blueprints without collision": 13,
+ "mp_01": {
+  "blueprints without collision": 77,
   "categories": {
-   "area point": 239,
-   "capture point": 5,
-   "combat area": 15,
-   "destructible": 1071,
-   "dynamic object": 466,
-   "effect": 18,
-   "group member": 2296,
-   "ladder": 36,
-   "other": 1794,
-   "placed object": 949,
-   "soldier spawn": 49,
-   "vehicle spawn": 41
+   "area point": 356,
+   "capture point": 11,
+   "combat area": 10,
+   "destructible": 87,
+   "group member": 1269,
+   "objective": 4,
+   "other": 1645,
+   "placed object": 1667,
+   "round flow": 5,
+   "soldier spawn": 126,
+   "squad": 9,
+   "team": 14,
+   "vehicle spawn": 17
   },
-  "collision triangles": 1804365,
-  "destructible": 1071,
-  "entities": 6979,
-  "meshes": 4349,
+  "collision triangles": 314935,
+  "destructible": 87,
+  "entities": 5220,
+  "meshes": 474,
   "notes": 0,
   "shapes": {
-   "CapturePointEntityData area closed": 1,
-   "CombatAreaTriggerEntityData area closed": 1,
-   "CombatAreaTriggerEntityData outer area closed": 1,
-   "SoundAreaEntityData area closed": 6
-  },
-  "teams": {
-   "capture point / team 0 / ai None": 3,
-   "capture point / team 1 / ai None": 1,
-   "capture point / team 2 / ai None": 1,
-   "soldier spawn / team 1 / ai True": 24,
-   "soldier spawn / team 2 / ai False": 7,
-   "soldier spawn / team 2 / ai True": 18,
-   "vehicle spawn / team 0 / ai None": 3,
-   "vehicle spawn / team 1 / ai None": 12,
-   "vehicle spawn / team 2 / ai None": 26
-  },
-  "terrain": {
-   "max": [
-    1024.0,
-    500.0,
-    1024.0
-   ],
-   "min": [
-    -1024.0,
-    0.0,
-    -1024.0
-   ],
-   "size": 2048
-  },
-  "water triangles": 3197
- },
- "mp_009gr": {
-  "blueprints without collision": 30,
-  "categories": {
-   "area point": 812,
-   "capture point": 10,
-   "combat area": 12,
-   "destructible": 766,
-   "dynamic object": 249,
-   "effect": 21,
-   "group member": 5455,
-   "ladder": 2,
-   "objective": 25,
-   "other": 1505,
-   "placed object": 941,
-   "soldier spawn": 150,
-   "vehicle spawn": 57
-  },
-  "collision triangles": 4194787,
-  "destructible": 776,
-  "entities": 10005,
-  "meshes": 6980,
-  "notes": 0,
-  "shapes": {
+   "AreaTriggerEntityData area closed": 3,
    "CombatAreaTriggerEntityData area closed": 10,
    "CombatAreaTriggerEntityData outer area closed": 10,
-   "SoundAreaEntityData area closed": 16
+   "SoundAreaEntityData area closed": 13
   },
   "teams": {
    "capture point / team 1 / ai None": 5,
-   "capture point / team 2 / ai None": 5,
-   "soldier spawn / team 1 / ai False": 19,
-   "soldier spawn / team 1 / ai True": 54,
-   "soldier spawn / team 2 / ai False": 77,
-   "vehicle spawn / team 0 / ai None": 6,
-   "vehicle spawn / team 1 / ai None": 27,
-   "vehicle spawn / team 2 / ai None": 24
+   "capture point / team 2 / ai None": 6,
+   "soldier spawn / team 1 / ai False": 50,
+   "soldier spawn / team 1 / ai None": 12,
+   "soldier spawn / team 2 / ai False": 52,
+   "soldier spawn / team 2 / ai None": 12,
+   "vehicle spawn / team 1 / ai None": 2,
+   "vehicle spawn / team 2 / ai None": 10,
+   "vehicle spawn / team None / ai None": 5
   },
   "terrain": {
    "max": [
@@ -102,112 +51,6 @@
    ],
    "size": 1024
   },
-  "water triangles": 1075
- },
- "ons_mp_004": {
-  "blueprints without collision": 18,
-  "categories": {
-   "ai order": 11,
-   "area point": 484,
-   "capture point": 5,
-   "combat area": 25,
-   "destructible": 749,
-   "dynamic object": 301,
-   "effect": 3,
-   "group member": 2127,
-   "ladder": 16,
-   "objective": 12,
-   "other": 2616,
-   "placed object": 557,
-   "soldier spawn": 136,
-   "vehicle spawn": 58
-  },
-  "collision triangles": 1467718,
-  "destructible": 755,
-  "entities": 7100,
-  "meshes": 3661,
-  "notes": 0,
-  "shapes": {
-   "AreaTriggerEntityData area closed": 1,
-   "CombatAreaTriggerEntityData area closed": 6,
-   "CombatAreaTriggerEntityData outer area closed": 6,
-   "PatrolOrderEntityData route open": 3,
-   "SoundAreaEntityData area closed": 9
-  },
-  "teams": {
-   "capture point / team 1 / ai None": 2,
-   "capture point / team 2 / ai None": 3,
-   "soldier spawn / team 1 / ai False": 29,
-   "soldier spawn / team 2 / ai False": 13,
-   "soldier spawn / team 2 / ai True": 94,
-   "vehicle spawn / team 0 / ai None": 4,
-   "vehicle spawn / team 1 / ai None": 19,
-   "vehicle spawn / team 2 / ai None": 35
-  },
-  "terrain": {
-   "max": [
-    1024.0,
-    500.0,
-    1024.0
-   ],
-   "min": [
-    -1024.0,
-    0.0,
-    -1024.0
-   ],
-   "size": 2048
-  },
-  "water triangles": 4007
- },
- "sp_01": {
-  "blueprints without collision": 43,
-  "categories": {
-   "ai order": 441,
-   "area point": 1896,
-   "combat area": 6,
-   "destructible": 976,
-   "dynamic object": 278,
-   "effect": 13,
-   "group member": 3635,
-   "ladder": 3,
-   "objective": 13,
-   "other": 4097,
-   "placed object": 1621,
-   "soldier spawn": 219,
-   "vehicle spawn": 53
-  },
-  "collision triangles": 3056933,
-  "destructible": 976,
-  "entities": 13251,
-  "meshes": 5924,
-  "notes": 0,
-  "shapes": {
-   "AreaTriggerEntityData area closed": 6,
-   "CombatAreaTriggerEntityData area closed": 16,
-   "PatrolOrderEntityData route open": 126,
-   "SoundAreaEntityData area closed": 15
-  },
-  "teams": {
-   "soldier spawn / team 1 / ai False": 1,
-   "soldier spawn / team 1 / ai True": 21,
-   "soldier spawn / team 2 / ai True": 168,
-   "soldier spawn / team None / ai None": 29,
-   "vehicle spawn / team 1 / ai None": 4,
-   "vehicle spawn / team 2 / ai None": 49
-  },
-  "terrain": {
-   "max": [
-    1024.0,
-    1000.0,
-    1024.0
-   ],
-   "min": [
-    -1024.0,
-    0.0,
-    -1024.0
-   ],
-   "size": 2048
-  },
-  "water triangles": 20305
+  "water triangles": 92
  }
 }

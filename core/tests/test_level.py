@@ -2,7 +2,7 @@ r"""level.load against a saved snapshot: per level, the entity counts by categor
 terrain and water. Any change shows as a difference, so a loader change that moves or loses objects is
 seen at once. After an intended change, review the differences and save a new snapshot with --update.
 
-  python test_level.py [level ...] [--update]     default levels: sp_01 mp_005 mp_009gr ons_mp_004
+  python test_level.py [level ...] [--update]     default levels: mp_01
 """
 import collections
 import json
@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(HERE, '..'))
 from mohcore import level as levelmod  # noqa: E402
 
 SNAPSHOT = os.path.join(HERE, 'level_snapshot.json')
-DEFAULT = ['sp_01', 'mp_005', 'mp_009gr', 'ons_mp_004']
+DEFAULT = ['mp_01']
 
 
 def summary(lvl):

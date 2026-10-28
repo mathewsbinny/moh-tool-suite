@@ -93,7 +93,7 @@ def tests():
         ('exe string / address references (exeref), built exe', 'quick', [PY, os.path.join(SUITE, 'moh-automated-map-and-bot-test-harness', 'crash-reader', 'tests', 'test_exeref.py')]),
         ('test harness, built data', 'quick', [PY, os.path.join(SUITE, 'moh-automated-map-and-bot-test-harness', 'tests', 'test_harness.py')]),
         ('stock-MP AI layer, synthetic levels', 'quick', [PY, os.path.join(SUITE, 'moh-stockmp-ai', 'tests', 'test_stockmp.py')]),
-        ('LevelDiff on MP_005', 'game', [PY, os.path.join(SUITE, 'moh-diff-workbench', 'level-diff', 'tests', 'test_leveldiff.py'), '--game']),
+        ('LevelDiff on mp_01', 'game', [PY, os.path.join(SUITE, 'moh-diff-workbench', 'level-diff', 'tests', 'test_leveldiff.py'), '--game']),
         ('crash reader code view (mohmpgame.exe)', 'game', [PY, os.path.join(SUITE, 'moh-automated-map-and-bot-test-harness', 'crash-reader', 'tests', 'test_crashreader.py'), '--game']),
         ('console readers on your Xbox files', 'game', [PY, os.path.join(SUITE, 'moh-console-readers', 'tests', 'test_console_readers.py'), '--game']),
         ('menu tools on the game copy and OPFOR\'s patches', 'game', [PY, os.path.join(SUITE, 'moh-menu-tools', 'tests', 'test_menu_tools.py'), '--game']),
