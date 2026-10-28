@@ -151,8 +151,7 @@ generator. Every library is under a permissive licence (MIT, zlib, BSD).
   - add or remove seeds, to keep or drop an island;
   - link two areas, add or remove route edges;
   - annotate traversal links (ladders, jumps, vaults, drops);
-  - mark regions as AI-only or vehicle-only (vehicle-only needs vehicle path data: NavKit builds it since
-    2026-10-26 with `tools\navvehicle.py`, not yet part of `navkit.py`; region marking not built).
+  - mark regions as AI-only.
 - **Inspect:** disconnected regions (islands sorted by size, with the nearest connection to the main
   network), unreachable spawns and objectives.
 - **Path test:** pick two points and see the route over the route graph and areas, its cost, or why
@@ -451,9 +450,6 @@ on the same points compare pair by pair. A newer version is refused by older rea
    - **Out of bounds:** `DamageAreaTriggerEntityData`.
    - **Still to identify:** destructibles (the `PredestructionEntityData` sets and destructible object
      types).
-7. **Vehicle navigation data:** NavKit made infantry data only until 2026-10-26. Vehicle data (pitch 1 m, larger
-   radius) is needed for vehicle-only regions and for the bots' vehicle use (Goal 4). **Since 2026-10-26:**
-   `moh-auto-navkit/tools/navvehicle.py` builds land-vehicle files offline (77 % of DICE's vehicle ground on 14
-   levels; NavKit README "Vehicle path data", spec §2.2); boat meshes (`navwater_mesh.py`) and a cross-domain route
-   planner (`navdomains.py`, `research/CROSS_DOMAIN_ROUTES.md`) are prototypes for OPFOR's bot layer. Not yet in
-   `navkit.py`, the studio or a play test.
+7. **Vehicle navigation data (descoped for MOH):** not needed — MOH MP has no drivable
+   vehicles (Milestone 1), so the land-vehicle / boat / cross-domain navigation tools are
+   removed. NavKit produces infantry-only data for MOH.

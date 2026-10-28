@@ -31,11 +31,14 @@ sys.path.insert(0, os.path.join(NAVKIT, 'tools'))
 
 # entity categories by type (DESIGN.md open question 6)
 CATEGORIES = [
-    ('soldier spawn', r'\.(SoldierSpawnEntityData|AlternateSpawnEntityData)$'),
-    ('vehicle spawn', r'\.VehicleSpawnEntityData$'),
+    ('soldier spawn', r'\.(SoldierSpawnEntityData|AlternateSpawnEntityData|EndOfRoundSoldierSpawnEntityData)$'),
+    ('vehicle spawn', r'\.(VehicleSpawnEntityData|VehicleProjectileSpawnEntityData)$'),
     ('objective', r'\.(MissionObjectiveEntityData|ArmDisarmAwardEntityData)$'),
     ('capture point', r'\.CapturePointEntityData$'),
     ('combat area', r'\.(CombatAreaTriggerEntityData|DamageAreaTriggerEntityData)$'),
+    ('team', r'\.(TeamEntityData|AutoTeamEntityData|TeamFilterEntityData)$'),
+    ('squad', r'\.SquadData$'),
+    ('round flow', r'\.(RoundStartTimerEntityData|PreRoundEntityData|InningEntityData|LifeCounterEntityData)$'),
     ('ai order', r'\.(AreaOrderEntityData|PatrolOrderEntityData|InterludeOrderEntityData|FireAtAreaOrderEntityData)$'),
     ('area point', r'\.AreaGeometryEntityData$'),
     ('placed object', r'\.ReferenceObjectData$'),

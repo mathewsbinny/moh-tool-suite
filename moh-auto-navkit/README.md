@@ -71,10 +71,6 @@ tools\               NavKit tools (Python 3.13 + numpy / matplotlib)
   navedits.py        the walkability edits of a navigation side file as generator inputs (navkit.py apply)
   navlinks.py        a side file's links and route edges written into a path-data file's route graph
   navtraversal.py    a side file's traversal annotations (ladders, jumps ...) as <level>.traversal.json
-  navvehicle.py      land-vehicle path data (vehicle\pathdata.hpd): build / compare / parity / info (see "Vehicle path data")
-  navwater_mesh.py   boat navigation mesh on a level's water, a side file for OPFOR's bot layer (prototype)
-  navdomains.py      domain graphs and a route planner across foot / land vehicle / boat / aircraft (prototype;
-                     research\CROSS_DOMAIN_ROUTES.md)
   navsample_offline.py  the in-game sampler's output computed from the level's Havok collision and height field, no
                      game launch; the stock MP batch (see "Standalone sampling")
 tests\               NavKit's tests (run by the suite's run_tests.py; the suite README lists them)
@@ -183,83 +179,6 @@ the AI layer (`moh-stockmp-ai`: HasAI, AI templates, orders).
 `work\navsample_offline\` when asked; `prepare` reading Package over Dist (`package_overlay`) and taking the combat
 box for levels without path data; the window's "Sample" step with an offline choice.
 
-## Vehicle path data (2026-10-26)
-
-MOH's land vehicles use their own file, `ai\levels\<level>\vehicle\pathdata.hpd` - the infantry file's format with
-DICE's `AI/Pathfinding/Vehicles` settings (pitch 1 m, radius 2.5 m, height 4 m, DistEdgeMax 50). What DICE's 16 vehicle
-files show and the rules found: spec section 2.2. `tools\navvehicle.py` builds one from the same inputs as the
-infantry build (in-game samples, level objects, water, level XML), offline, into `work\navvehicle\<level>\`:
-
-```
-python tools\navvehicle.py build sp_04                  vehicle file of a level (sectors: DICE's when it has a file)
-python tools\navvehicle.py compare <dice.hpd> <ours.hpd> ground, extra ground, areas, graph, connectivity
-python tools\navvehicle.py parity --save <run>          build + compare on every level with DICE vehicle data
-python tools\navvehicle.py info <pathdata.hpd>          sectors, offsets, pitch / radius, areas, D / F, nodes
-```
-
-- **Walkability (1 m grid, resampled from the 0.8 m samples along each surface's ground plane):** slope by the normal
-  <= 26 deg (`SLOPE_MAX`); no obstacle within 2.5 m (`CLEARANCE`): objects rising more than 0.4 m (StepMax) and at most
-  4 m above the local ground plane, soldier-capsule-blocked samples (thin walls), terrain only from a 0.8 m rise
-  (`TERRAIN_RISE`); ExcludeFromPathfinding objects crushed (`USE_EXCLUSIONS`), dynamic props and soldiers absent,
-  ForbidPathfinding surfaces not ground, ground over 1.6 m under water out.
-- **Seeds:** land-vehicle spawns (VehicleSpawnEntityData; aircraft, boats and fixed weapons by blueprint name are
-  left out) and points every 2 m along the level's terrain splines (`SEED_ROADS`, DICE's BuildRoads). **Flood per
-  sector** (`FLOOD = 'sector'`): a sector gets ground only from seeds in its own window, as DICE's files show.
-- **Mesh and graph:** navbuild's pipeline (`navbuild.stage`) at pitch 1, 50-sample tiles, nodes 2 m over the ground,
-  area range ground .. +3.2 m, route edges to 50 m, D / F as navbuild builds them.
-- **Validation:** `hpdcheck` passes and `hpdtool roundtrip` / `meshtrip` are byte-exact on all 14 builds;
-  `tests\test_vehicle.py` (quick), `tests\test_vehicle_level.py` (game: ONS_MP_002 with parity floors).
-
-**Parity against DICE's vehicle files** (run `tonight_v1`, 2026-10-26, `work\navvehicle\parity\`; DICE's sector set,
-PC samples; ONS_MP_002 / 004 compare PC geometry with DICE's console data):
-
-| Level | Ground % | Extra % | Connectivity | Islands (25+ nodes) ours / DICE |
-|---|---|---|---|---|
-| ons_mp_002 | 87.3 | 49.0 | 58.7 | 2 / 1 |
-| ons_mp_004 | 85.8 | 105.0 | 43.4 | 5 / 1 |
-| sp_003_b | 81.4 | 36.5 | 91.5 | 3 / 4 |
-| sp_004_b | 30.2 | 48.8 | 38.7 | 1 / 1 |
-| sp_005 | 90.7 | 37.8 | 95.9 | 2 / 2 |
-| sp_005_b | 86.9 | 168.8 | 38.7 | 9 / 3 |
-| sp_006 | 94.5 | 9.4 | 32.0 | 8 / 2 |
-| sp_007 | 73.2 | 41.7 | 41.2 | 12 / 9 |
-| sp_008 | 90.2 | 39.2 | 100.0 | 1 / 1 |
-| sp_008_b | 92.5 | 638.1 | 0.0 | 1 / 1 |
-| sp_01 | 93.5 | 28.5 | 21.7 | 8 / 2 |
-| sp_02 | 65.2 | 25.1 | 100.0 | 4 / 1 |
-| sp_03 | 19.0 | 61.6 | 57.9 | 2 / 4 |
-| sp_04 | 90.7 | 39.7 | 93.3 | 5 / 3 |
-| **mean** | **77.2** | **95.0** | **58.1** | |
-
-Areas: almost none identical (DICE splits vehicle ground into many small areas by a rule not found yet); route nodes
-within 2 m of DICE's 16 %. sp_008_b's "extra" is relative to DICE's tiny file (2,428 cells). Starting point for
-comparison: spawn seeds only and one level-wide flood gave sp_01 66 / 7 and sp_04 83 / 59 (ground / extra).
-
-**Open:** the route graph splits where DICE's is one network (sp_006: 22 islands, DICE 7; ground 94.5 % - the splits
-are at narrow crossings of sector seams, in navbuild's graph joining, not missing ground); which splines are roads;
-sp_004_b / sp_03 (ground DICE seeds from something other than spawns and splines); DICE's area division; the sector
-set of a new map (every seeded sector).
-
-**Integration plan (not done - navbuild / navkit.py were being changed by another worker):**
-1. `navbuild.stage`: accept a ready grid - `stage(..., grid=(samples, keep, gx, gz))` skipping `navsample.load` and
-   `navwalk.walkable` - and a `profile` dict for the settings `navvehicle.vehicle_settings` now swaps in (PITCH,
-   TILE 50, RESOLUTION, RADIUS, DIST_EDGE_MAX, Y_OFFSET, AREA_Y_MIN / MAX, NODE_COVER, ORDER_NODES off, DETAIL_STEP);
-   `set_pitch(1.0)` must give TILE 50 (today `round(40 / p)` = 40). Then `navvehicle.stage_on_grid` calls it directly
-   instead of substituting the two module references.
-2. `navbuild.write_file(graphs, out, log, t0, dist_edge_max=...)` (it reads the global today).
-3. `navkit.py build <level> --vehicle` (and `all`): after the infantry build, `navvehicle.build_level(root, lv,
-   <work>\navkit\<lv>\vehicle\pathdata.hpd, sectors='all' or 'reference')`; `install` / `restore` to copy it to
-   `ai\levels\<lv>\vehicle\pathdata.hpd` keeping DICE's original as `pathdata.hpd.opfor-orig` (as infantry), and the
-   level's `Precomputed/Vehicle/SectorOffsets` written with the build's offsets (OPFOR's apply_sector_offsets.py).
-4. `navregress.py`: a vehicle column set from `navvehicle.compare` (saved run `tonight_v1` as the first reference).
-5. The window: a "Vehicle data" checkbox on the build step.
-
-**Play test (ON HOLD, needs a launch):** install a NavKit vehicle file on a level with AI drivers (sp_005's tanks and
-Humvees, sp_04's trucks / Vodniks, or ONS_MP_002 / 004's T-90s) beside DICE's infantry file, with
-`Precomputed/Vehicle/SectorOffsets` matching; check the file loads, AI vehicles get routes and follow them (probe the
-vehicle pathfinder's go-to results as for infantry), no crash at level exit; then DICE's vehicle file in the same
-launch for comparison.
-
 ## Route islands (2026-10-26)
 
 ONS_MP_004's route graph had 109 islands against DICE's 42, and the test harness's spawn -> target battery routed
@@ -280,8 +199,7 @@ and nodes. Its areas stay - the ground measures do not move. ONS_MP_004: 109 -> 
 67 -> 100 % of DICE's pairs, connectivity 97.37 -> 97.90, AI pairwise 40 -> 100 %.
 
 Not fixed here: the steep cut (`STEEP_TERRAIN`, off - spec §3), the 4 group-joining misses (the joining walks one
-neighbour surface per column), and the vehicle graph's seam splits (`navvehicle.FLOOD` floods each sector's window
-on its own - a vehicle rule, not navbuild's graph joining).
+neighbour surface per column).
 
 Regression, the same build with the rule off -> on (2026-10-26; battery = harness spawn -> target pairs routed, of
 DICE's): ground, extra ground and AI coverage unchanged on every level, connectivity the same or higher on every
@@ -375,7 +293,6 @@ rebuilt with it off gives the reference's 29.16 / 92.68 exactly). The blocking w
 
 - **Infantry only:** DICE's vehicle files do not follow this rule (D lines mostly single, a quarter of their segments
   diagonal, F records in eight directions without twins) and their route edges cross D lines on 0.58 % of edges
-  (infantry 0.004 %). Vehicle builds (`navvehicle.py`) write no D / F and do not block edges (`navvehicle.DETAIL` off,
   `DETAIL_BLOCKS_EDGES` off in `vehicle_settings`); spec §4.5.
 
 ## Detailed zones, ladders and walkability rules (2026-10-21 / 22)
@@ -559,7 +476,6 @@ and F cells. None of it is play-tested yet. The steps below keep their history.
      out), sp_009 (plane aisles narrower than the capsule; DICE connects them), sp_03 / sp_008 (DICE network gaps).
    - Not generated yet: diagonal border portals, the 20 m midline cuts. Done since: detailed zones (pitch 0.2,
      2026-10-21), ladder links (2026-10-22), D lines and F cells (2026-10-26), vehicle data (2026-10-26,
-     `navvehicle.py`, offline - not yet in `navkit.py`); the "up" border portals
      are a quirk of DICE's data, not generated on purpose.
    - Then: MP maps (self-check, no DICE data); later a standalone mode that reads Havok collision
      directly instead of sampling in game - done 2026-10-26 (`navsample_offline.py`, "Standalone sampling"), with
@@ -693,7 +609,6 @@ and F cells. None of it is play-tested yet. The steps below keep their history.
      nearest the target with enough hits, so a slab over the terrain and stray hits on the object's sides do not
      mislead it), and what D and F are for at run time (spec §4.5). 2026-10-26: D lines and F cells generated
      (`regression_df_v1`, the new reference), route-island pruning (`SHADOW_ISLANDS`: ONS_MP_004 109 -> 41 islands,
-     spawn -> target routes 67 -> 100 % of DICE's), vehicle path data (`navvehicle.py`), boat meshes and routes across
      domains (prototypes), the offline sampler; the suite's test harness measures path-data files against DICE's.
    - **Next:** a play test on ONS_MP_002 (Valparaiso) with the current build (bots reaching and arming M-COMs; a
      destroyed house's floors; ladders; corner cutting and steps, where D / F now show; route islands), then the open
