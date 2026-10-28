@@ -1,4 +1,4 @@
-"""BC2 water: Terrains/<Terrain>/<Terrain>.Water.Mesh.res (type WaterMesh) and .Water.res (type VisualWater), in each
+"""MOH water: Terrains/<Terrain>/<Terrain>.Water.Mesh.res (type WaterMesh) and .Water.res (type VisualWater), in each
 level's terrain-00.fbrb.
 
     w = read(folder_or_mesh_path, name)    # Water: vertices, triangles, per-triangle shader (or None)

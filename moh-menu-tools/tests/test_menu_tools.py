@@ -8,7 +8,7 @@ r"""The menu tools on data built here (quick), and with --game on Project OPFOR'
   @labels), expected bytes checked, overlapping lines, size changes, lines without a comment; the command line;
 - aptrefs.py: extern reads (plain and name$param), FSCommands (strings and fscommandProxy calls), catchEvent and
   gameEventListener handlers with their parameter counts; the exe's name / id table found in a built exe;
-- bc2loc.py: a language file and histogram built here - keys, WIN32_ PC texts, hashes, single- and two-byte
+- mohloc.py: a language file and histogram built here - keys, WIN32_ PC texts, hashes, single- and two-byte
   characters; the command line.
 With --game: every OPFOR menu patch file lints with no error; every movie of the game copy's movie sets passes the
 rules by itself; the exe's table (574 names at 0x0143C898, known getter cases); known events with their parameter
@@ -29,7 +29,7 @@ sys.path.insert(0, ROOT)
 import menucommon as mc  # noqa: E402
 import aptcheck  # noqa: E402
 import aptrefs  # noqa: E402
-import bc2loc  # noqa: E402
+import mohloc  # noqa: E402
 import apt  # noqa: E402  (menucommon put the reader on the path)
 
 
@@ -314,24 +314,24 @@ def quick(c, work):
     code_, out = run('aptrefs.py', 'movie', res)
     c.check(code_ == 0 and 'presenceRequestOnline' in out and 'onThing' in out, 'aptrefs movie command', out[-300:])
 
-    # bc2loc
+    # mohloc
     normal, hist = build_loc()
     lp = os.path.join(work, 'language_test_normal.bin')
     open(lp, 'wb').write(normal)
     open(os.path.join(work, 'language_test_histogram.bin'), 'wb').write(hist)
-    loc = bc2loc.load('test', path=lp)
+    loc = mohloc.load('test', path=lp)
     c.check(loc.lookup('MENU_PLAY_NOW')[2] == 'PLAY NOW' and loc.lookup('PC_SERVER_BROWSER')[1] == 'WIN32_PC_SERVER_BROWSER',
-            'bc2loc: keys, the PC text under WIN32_<key> first')
-    c.check(loc.lookup('RU')[2] == 'ок' and loc.lookup('JP')[2] == '殺す', 'bc2loc: single-byte and two-byte characters',
+            'mohloc: keys, the PC text under WIN32_<key> first')
+    c.check(loc.lookup('RU')[2] == 'ок' and loc.lookup('JP')[2] == '殺す', 'mohloc: single-byte and two-byte characters',
             repr(loc.lookup('RU')) + repr(loc.lookup('JP')))
-    c.check(loc.lookup(f'{bc2loc.khash("MENU_PLAY_NOW"):#x}')[2] == 'PLAY NOW' and loc.lookup('NOPE') is None,
-            'bc2loc: lookup by hash; a missing key')
-    code_, out = run('bc2loc.py', 'get', 'MENU_PLAY_NOW', 'PC_SERVER_BROWSER', '--file', lp)
-    c.check(code_ == 0 and "'PLAY NOW'" in out and "'SERVER BROWSER'" in out, 'bc2loc get command', out)
-    code_, out = run('bc2loc.py', 'get', 'NOPE', '--file', lp)
-    c.check(code_ == 1 and 'no text' in out, 'bc2loc get: an unknown key exits 1', out)
-    code_, out = run('bc2loc.py', 'search', 'browser', '--file', lp, '--no-keys')
-    c.check(code_ == 0 and '1 text(s)' in out, 'bc2loc search command', out)
+    c.check(loc.lookup(f'{mohloc.khash("MENU_PLAY_NOW"):#x}')[2] == 'PLAY NOW' and loc.lookup('NOPE') is None,
+            'mohloc: lookup by hash; a missing key')
+    code_, out = run('mohloc.py', 'get', 'MENU_PLAY_NOW', 'PC_SERVER_BROWSER', '--file', lp)
+    c.check(code_ == 0 and "'PLAY NOW'" in out and "'SERVER BROWSER'" in out, 'mohloc get command', out)
+    code_, out = run('mohloc.py', 'get', 'NOPE', '--file', lp)
+    c.check(code_ == 1 and 'no text' in out, 'mohloc get: an unknown key exits 1', out)
+    code_, out = run('mohloc.py', 'search', 'browser', '--file', lp, '--no-keys')
+    c.check(code_ == 0 and '1 text(s)' in out, 'mohloc search command', out)
 
 
 def build_exe():
@@ -395,7 +395,7 @@ def build_loc():
     hist = struct.pack('<III', 0x39001, 12 + 2 * 3072 - 8, 3072) + struct.pack('<3072H', *table)
     texts = {'MENU_PLAY_NOW': b'PLAY NOW', 'WIN32_PC_SERVER_BROWSER': b'SERVER BROWSER', 'RU': b'\x81\x82',
              'JP': b'\x80\x85\x83'}
-    items = sorted((bc2loc.khash(k), v) for k, v in texts.items())
+    items = sorted((mohloc.khash(k), v) for k, v in texts.items())
     strings, offs = bytearray(), []
     for h, v in items:
         offs.append(len(strings))
@@ -460,13 +460,13 @@ def game(c):
     c.check(ev.get('presenceLoginAccount') == {2} and ev.get('serverSystemMessage') == {3} and ev.get('uInt') == {1},
             'aptrefs: presenceLoginAccount (2), serverSystemMessage (3), uInt (1) handlers', str({k: ev.get(k) for k in
                                                                                                 ('presenceLoginAccount', 'serverSystemMessage', 'uInt')}))
-    loc = bc2loc.load('english', root)
+    loc = mohloc.load('english', root)
     c.check(loc.lookup('MENU_PLAY_NOW')[2] == 'PLAY NOW' and loc.lookup('PC_SERVER_BROWSER')[2] == 'SERVER BROWSER'
-            and loc.lookup('IDK_A')[2] == 'A' and len(loc.raw) > 7000, 'bc2loc: English keys, PC texts, the pad key names')
-    ru, jp = bc2loc.load('russian', root), bc2loc.load('japanese', root)
+            and loc.lookup('IDK_A')[2] == 'A' and len(loc.raw) > 7000, 'mohloc: English keys, PC texts, the pad key names')
+    ru, jp = mohloc.load('russian', root), mohloc.load('japanese', root)
     cyr = sum(any('Ѐ' <= ch <= 'ӿ' for ch in ru.text(h)) for h in ru.order)
     bad_jp = sum('?' in jp.text(h) or '\\x' in jp.text(h) for h in jp.order)
-    c.check(cyr > 5000 and bad_jp < 20, f'bc2loc: Russian ({cyr} Cyrillic texts) and Japanese ({bad_jp} with an undecoded byte)')
+    c.check(cyr > 5000 and bad_jp < 20, f'mohloc: Russian ({cyr} Cyrillic texts) and Japanese ({bad_jp} with an undecoded byte)')
 
 
 def main(argv):

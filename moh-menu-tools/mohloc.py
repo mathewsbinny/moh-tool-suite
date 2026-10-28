@@ -1,12 +1,12 @@
-r"""bc2loc.py - the game's localized texts (Localization/bin/language_<lang>_normal.bin): look up a key, search the
+r"""mohloc.py - the game's localized texts (Localization/bin/language_<lang>_normal.bin): look up a key, search the
 texts, list the keys a menu movie uses.
 
-  python bc2loc.py get <key | 0xHASH>... [--lang english]   the text of a key (its PC text "WIN32_<key>" first)
-  python bc2loc.py search <text> [--lang english]           every text containing <text> (any case), with its key
-  python bc2loc.py movie <movie>... [--lang english]        the movie's string constants that are localization keys
-  python bc2loc.py dump [--lang english] [--out <file>]     every entry: hash, key (where found), text; default
+  python mohloc.py get <key | 0xHASH>... [--lang english]   the text of a key (its PC text "WIN32_<key>" first)
+  python mohloc.py search <text> [--lang english]           every text containing <text> (any case), with its key
+  python mohloc.py movie <movie>... [--lang english]        the movie's string constants that are localization keys
+  python mohloc.py dump [--lang english] [--out <file>]     every entry: hash, key (where found), text; default
                                                             <OPFOR>\work\tools_out\loc_<lang>.txt
-  python bc2loc.py langs                                    the languages of the game copy
+  python mohloc.py langs                                    the languages of the game copy
 Options: --file <language_x_normal.bin> reads that file (its _histogram.bin beside it) instead of the game copy's
 Dist\win32\overlay-00.fbrb; --no-keys skips naming keys (search / dump); --opfor <folder>.
 
@@ -249,6 +249,6 @@ def main(argv):
 if __name__ == '__main__':
     sys.path.insert(0, os.path.join(mc.SUITE, 'core'))
     from mohcore import errors
-    errors.setup('bc2loc', gui=False)          # a log; an unexpected error explained in words (exit code 1)
+    errors.setup('mohloc', gui=False)          # a log; an unexpected error explained in words (exit code 1)
     with errors.guard():
         sys.exit(main(sys.argv))

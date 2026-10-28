@@ -1,4 +1,4 @@
-// LevelDiff - compares two Battlefield: Bad Company 2 binary .dbx files (levels, or any partition) instance by
+// LevelDiff - compares two Medal of Honor (2010) binary .dbx files (levels, or any partition) instance by
 // instance: what was added, removed or changed, field by field. Reads files with the toolkit's DbxEdit code
 // (..\..\moh-dbx-tools\DbxEdit.cs in the suite, compiled in by build.bat).
 //

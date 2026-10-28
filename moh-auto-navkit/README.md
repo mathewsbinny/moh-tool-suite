@@ -1,6 +1,6 @@
-# BC2 NavKit
+# MOH NavKit
 
-Standalone tooling to create AI navigation data (`pathdata.hpd`) for Battlefield: Bad Company 2
+Standalone tooling to create AI navigation data (`pathdata.hpd`) for Medal of Honor (2010)
 levels – including multiplayer maps that never shipped with any – so the game's own AI can move on
 them. Developed for Project OPFOR and published for other modders as `moh-auto-navkit`, the automated
 navigation-data generator of the MOH suite. It measures levels through Project OPFOR's in-game sampler,
@@ -13,7 +13,7 @@ run `python navkit.py` from a command prompt.
 
 ## Why
 
-BC2's AI uses Autodesk Kynapse. The game ships the Kynapse *runtime* (which loads `pathdata.hpd`)
+MOH's AI uses Autodesk Kynapse. The game ships the Kynapse *runtime* (which loads `pathdata.hpd`)
 under DICE's runtime licence, but the *generator* that DICE used to create that data is a separately
 licensed developer tool: the copy that is still inside the game executable stops with a FLEXnet
 licence error. NavKit replaces it with independent code.
@@ -185,7 +185,7 @@ box for levels without path data; the window's "Sample" step with an offline cho
 
 ## Vehicle path data (2026-10-26)
 
-BC2's land vehicles use their own file, `ai\levels\<level>\vehicle\pathdata.hpd` - the infantry file's format with
+MOH's land vehicles use their own file, `ai\levels\<level>\vehicle\pathdata.hpd` - the infantry file's format with
 DICE's `AI/Pathfinding/Vehicles` settings (pitch 1 m, radius 2.5 m, height 4 m, DistEdgeMax 50). What DICE's 16 vehicle
 files show and the rules found: spec section 2.2. `tools\navvehicle.py` builds one from the same inputs as the
 infantry build (in-game samples, level objects, water, level XML), offline, into `work\navvehicle\<level>\`:
@@ -705,5 +705,5 @@ and F cells. None of it is play-tested yet. The steps below keep their history.
 
 Credits: level data is read with the suite's FbrbTool and DbxEdit, based on **Frankelstner**'s format
 documentation and **Heico**'s MOH Toolkit. **Napisal**'s path data for multiplayer maps (BBC2 ModPack)
-showed that BC2's AI can run on them. Kynapse is a trademark of Autodesk; Battlefield: Bad Company 2 is
+showed that MOH's AI can run on them. Kynapse is a trademark of Autodesk; Medal of Honor (2010) is
 © Electronic Arts / DICE.

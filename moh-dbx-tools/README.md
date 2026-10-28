@@ -1,6 +1,6 @@
 # DBX tools
 
-**DbxEdit** reads, converts, checks and edits Battlefield: Bad Company 2's binary `.dbx` files (Frostbite 1
+**DbxEdit** reads, converts, checks and edits Medal of Honor (2010)'s binary `.dbx` files (Frostbite 1
 data as a tokenised XML tree), from the command line or in a window (**DbxEditGUI**). The format is the
 same on PC and Xbox 360.
 
@@ -182,7 +182,7 @@ On 43,290 unique `.dbx` files (PC, Xbox 360 and Linux server data, plus edited l
 
 ## Credits
 
-The binary DBX format was worked out by the BC2 modding community, above all by **Frankelstner** (his
+The binary DBX format was worked out by the MOH modding community, above all by **Frankelstner** (his
 `dbx.py` scripts); **Heico**'s MOH Toolkit was a format reference. DbxEdit's code is this project's
-own, written from [FORMAT.md](FORMAT.md). Developed for Project OPFOR. Battlefield: Bad Company 2 is
+own, written from [FORMAT.md](FORMAT.md). Developed for Project OPFOR. Medal of Honor (2010) is
 © Electronic Arts / DICE.

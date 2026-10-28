@@ -1,6 +1,6 @@
 # LevelDiff
 
-Compares two Battlefield: Bad Company 2 binary `.dbx` files instance by instance: what was added, what was
+Compares two Medal of Honor (2010) binary `.dbx` files instance by instance: what was added, what was
 removed, and which fields changed. It works on levels and on any other partition. Typical uses:
 
 - the same map in two builds (PC, Xbox 360, Linux server);
@@ -53,5 +53,5 @@ code 1. Tests: `tests\test_leveldiff.py` (quick and game tiers of the suite's `r
 
 ## Credits
 
-Developed for Project OPFOR. The DBX format knowledge comes from the BC2 modding community, above all
-Frankelstner. Battlefield: Bad Company 2 is © Electronic Arts / DICE.
+Developed for Project OPFOR. The DBX format knowledge comes from the MOH modding community, above all
+Frankelstner. Medal of Honor (2010) is © Electronic Arts / DICE.

@@ -1,4 +1,4 @@
-"""NavKit: reader for Havok binary packfiles (32-bit, little-endian, as embedded in BC2 *_HavokAsset.res).
+"""NavKit: reader for Havok binary packfiles (32-bit, little-endian, as embedded in MOH *_HavokAsset.res).
 
 Generic: objects are found through the packfile's virtual fixups, and their fields are decoded with the
 hkClass reflection data stored in the file's __types__ section, so no class layouts are hard-coded.

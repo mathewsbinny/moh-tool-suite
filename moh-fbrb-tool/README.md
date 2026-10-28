@@ -1,6 +1,6 @@
 # FbrbTool
 
-A command-line tool to unpack and repack Battlefield: Bad Company 2's `.fbrb` bundles (Frostbite 1
+A command-line tool to unpack and repack Medal of Honor (2010)'s `.fbrb` bundles (Frostbite 1
 archives: the game's levels, menus and shared data).
 
 ## Build
@@ -35,4 +35,4 @@ a read-only folder - what to do, and where the details are; exit code 1.
 ## Credits
 
 The format follows **Frankelstner**'s fbrb script and **Heico**'s MOH Toolkit. Developed for
-Project OPFOR. Battlefield: Bad Company 2 is © Electronic Arts / DICE.
+Project OPFOR. Medal of Honor (2010) is © Electronic Arts / DICE.

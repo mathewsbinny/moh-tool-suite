@@ -1,6 +1,6 @@
 """kymesh.py - structured model of the "KynogonRuntimeMesh" record inside pathdata.hpd sector blocks.
 
-Part of BC2 NavKit; layout as documented in ..\\research\\KYNAPSE_SPEC.md section 4.4/4.5.
+Part of MOH NavKit; layout as documented in ..\\research\\KYNAPSE_SPEC.md section 4.4/4.5.
 parse_mesh(bytes) -> Mesh, write_mesh(Mesh) -> bytes. All offsets in the record are relative to its
 start; parse_mesh replaces them with references (object indices etc.) and write_mesh lays the record
 out again and recomputes every offset.

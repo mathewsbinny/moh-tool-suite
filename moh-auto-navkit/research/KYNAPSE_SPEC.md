@@ -1,4 +1,4 @@
-# Kynapse navigation data in Battlefield: Bad Company 2 – specification (work in progress)
+# Kynapse navigation data in Medal of Honor (2010) – specification (work in progress)
 
 Interoperability specification written from reverse engineering (see `..\README.md` for the
 clean-room rules). Sources: the user's own game files (`Output\win32\ai\levels\<level>\{infantry,
@@ -36,7 +36,7 @@ cylinder collision.
 - **Two pathfinding types only.** `AI/Pathfinding/{Infantry, Vehicles}` (`PathfindingSettings`) with
   `{InfantryData, VehicleData}` (`PathfindingType`: `OutputName` Infantry / Vehicle). The engine knows two
   generators, `PgFrostbiteMapBuilder` (infantry) and `PgVehicleMapBuilder` (vehicles), and three collision models
-  (`PCMSweptSphere` infantry, `PCMCylinder` vehicles, `PCMSphere` unused). **There is no air or water type:** BC2's
+  (`PCMSweptSphere` infantry, `PCMCylinder` vehicles, `PCMSphere` unused). **There is no air or water type:** MOH's
   navigation data is ground only. Water is excluded (`ForbidWater` true; `WaterLevelAdjustment` -1.6 for vehicles,
   -3.5 infantry). AI aircraft and boats have no navigation data: in the campaign they are player-driven or scripted
   set pieces; the levels' waypoint paths (`AnimatedWaypointData` / `WaypointData`, 10-37 per campaign level, none on

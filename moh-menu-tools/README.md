@@ -1,6 +1,6 @@
 # Menu tools
 
-Command-line tools for Battlefield: Bad Company 2's menus and HUD (EA APT movies), built on the suite's APT reader
+Command-line tools for Medal of Honor (2010)'s menus and HUD (EA APT movies), built on the suite's APT reader
 (`moh-console-readers\apt\apt.py`). They read your own game copy - straight from its bundles, nothing unpacked - and
 never write into it. There is no menu viewer here.
 
@@ -8,7 +8,7 @@ never write into it. There is no menu viewer here.
 |---|---|
 | `aptcheck.py` | checking menu patches before a build reaches the game: the rules whose breaking crashes the menu loader |
 | `aptrefs.py` | what the movies ask of the engine (`extern.<name>`), send it (FSCommands) and handle (engine events), with the exe's name / id table |
-| `bc2loc.py` | the game's localized texts: look up a key, search the texts, the keys a movie uses |
+| `mohloc.py` | the game's localized texts: look up a key, search the texts, the keys a movie uses |
 
 Python 3.10 or newer (numpy is not needed). Movies are named the same way in all three:
 
@@ -79,14 +79,14 @@ python aptrefs.py table                      the exe's name -> id table
 - **"NOT in the exe"** marks a name the exe has no string for: an event the engine probably never sends by that name
   (some are built at run time, so it is a hint).
 
-## bc2loc.py - localized texts
+## mohloc.py - localized texts
 
 ```
-python bc2loc.py get MENU_PLAY_NOW PC_SERVER_BROWSER IDK_A
-python bc2loc.py search "server browser" --lang english
-python bc2loc.py movie main_nav
-python bc2loc.py dump --lang russian        -> work\tools_out\loc_russian.txt
-python bc2loc.py langs
+python mohloc.py get MENU_PLAY_NOW PC_SERVER_BROWSER IDK_A
+python mohloc.py search "server browser" --lang english
+python mohloc.py movie main_nav
+python mohloc.py dump --lang russian        -> work\tools_out\loc_russian.txt
+python mohloc.py langs
 ```
 
 The texts are `Localization/bin/language_<lang>_normal.bin` in `Dist\win32\overlay-00.fbrb`: a table of key hashes
@@ -101,4 +101,4 @@ exe's strings and the movies' constants (about 840 of the 7,077 English entries)
 `--game`, OPFOR's patch files, every movie of the game copy, the exe's table and getter cases, known events, and the
 English, Russian and Japanese texts (game tier).
 
-Developed for Project OPFOR. Battlefield: Bad Company 2 is © Electronic Arts / DICE.
+Developed for Project OPFOR. Medal of Honor (2010) is © Electronic Arts / DICE.

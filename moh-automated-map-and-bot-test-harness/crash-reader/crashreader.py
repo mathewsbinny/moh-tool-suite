@@ -1,4 +1,4 @@
-"""Battlefield: Bad Company 2 crash-report reader: turns crashreport.xml into something you can act on.
+"""Medal of Honor (2010) crash-report reader: turns crashreport.xml into something you can act on.
 
   python crashreader.py [crashreport.xml] [--exe mohmpgame.exe] [--symbols file]... [--log opfor.log] [--no-code]
 

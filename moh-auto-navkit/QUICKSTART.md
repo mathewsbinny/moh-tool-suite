@@ -1,6 +1,6 @@
 # NavKit Quickstart
 
-NavKit makes the navigation data (`pathdata.hpd`) that Bad Company 2's AI soldiers need to find their
+NavKit makes the navigation data (`pathdata.hpd`) that Medal of Honor (2010)'s AI soldiers need to find their
 way around a level. You choose a level, NavKit measures the level in the running game, and it builds the
 file. This page shows how to do that from start to finish.
 
@@ -169,7 +169,7 @@ All of these are inside the Project OPFOR folder:
 | `work\levels\<level>\` | the unpacked level and the objects NavKit read from it |
 | `game\Output\win32\ai\levels\<level>\infantry\pathdata.hpd` | the file the game uses; Install puts NavKit's here and keeps the original as `pathdata.hpd.opfor-orig` |
 
-NavKit never changes your original Bad Company 2 install. It works only on OPFOR's copy in `game\`.
+NavKit never changes your original Medal of Honor (2010) install. It works only on OPFOR's copy in `game\`.
 
 ## Changing the sampling area
 
@@ -194,7 +194,7 @@ bottom and top height. Make the top higher than the tallest roof. A larger area 
 
 | Problem | What to do |
 |---|---|
-| "the game is running - close it first" | Quit Bad Company 2 (OPFOR) and try again. |
+| "the game is running - close it first" | Quit Medal of Honor (2010) (OPFOR) and try again. |
 | "sampling did not finish: the game exited" | The level crashed or was closed during sampling. Look at the end of `game\logs\opfor.log`, then try again. |
 | "sampling did not finish: timed out" | The run took over an hour. Use a smaller area or check that the level loads at all. |
 | "...has no AI path data, so its AI (and the sampler) may not start" | The level is a stock multiplayer map, which the window and `navkit.py` do not support yet. See [What works today](#what-works-today). |

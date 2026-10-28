@@ -1,6 +1,6 @@
-# BC2 crash reader
+# MOH crash reader
 
-When Battlefield: Bad Company 2 crashes, it writes `crashreport.xml`: a crash address, a list of raw
+When Medal of Honor (2010) crashes, it writes `crashreport.xml`: a crash address, a list of raw
 addresses and the CPU registers. This tool turns that into something you can act on:
 
 - **which function crashed**, by name where it is known;
@@ -24,7 +24,7 @@ the names, the stack and the hints.
 ```
 python crashreader.py                         the newest crashreport.xml in Documents (OPFOR's or the game's)
 python crashreader.py path\to\crashreport.xml
-python crashreader.py --exe "C:\Games\Battlefield Bad Company 2\mohmpgame.exe"
+python crashreader.py --exe "C:\Games\Medal of Honor Medal of Honor (2010)\mohmpgame.exe"
 python crashreader.py --symbols my_names.txt  add your own function names and hints
 python crashreader.py --log path\to\opfor.log
 ```
@@ -81,4 +81,4 @@ with `--symbols`. Contributions to the bundled list are welcome.
 ## Credits
 
 Developed for Project OPFOR. Disassembly by [Capstone](https://www.capstone-engine.org/); exe reading by
-[pefile](https://github.com/erocarrera/pefile). Battlefield: Bad Company 2 is © Electronic Arts / DICE.
+[pefile](https://github.com/erocarrera/pefile). Medal of Honor (2010) is © Electronic Arts / DICE.

@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.join(ROOT, 'xiso'))
 import stfs  # noqa: E402
 import xiso  # noqa: E402
 
-XBOX_DEFAULT = r'C:\Games\Battlefield Bad Company 2 Limited Edition (XBOX 360)'
+XBOX_DEFAULT = r'C:\Games\Medal of Honor Medal of Honor (2010) Limited Edition (XBOX 360)'
 SECTOR = 2048
 
 
@@ -258,7 +258,7 @@ def sha(path):
 
 
 def game_checks(c, xbox):
-    iso = os.path.join(xbox, 'Battlefield Bad Company 2 Limited Edition (XBOX 360).iso')
+    iso = os.path.join(xbox, 'Medal of Honor Medal of Honor (2010) Limited Edition (XBOX 360).iso')
     if os.path.isfile(iso):
         with open(iso, 'rb') as f:
             base = xiso.find_partition(f)
@@ -271,7 +271,7 @@ def game_checks(c, xbox):
                 f'{len(files)} files')
     else:
         print(f'skip disc image (not found: {iso})')
-    folder = os.path.join(xbox, 'Battlefield Bad Company 2 (3 DLCs Pack prototype)', '454108A8', '00000002')
+    folder = os.path.join(xbox, 'Medal of Honor Medal of Honor (2010) (3 DLCs Pack prototype)', '454108A8', '00000002')
     if not os.path.isdir(folder):
         print(f'skip Update packages (not found: {folder})')
         return

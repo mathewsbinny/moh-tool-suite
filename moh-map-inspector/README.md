@@ -1,6 +1,6 @@
 # moh-map-inspector
 
-Browse a Battlefield: Bad Company 2 level in 3D and inspect every object: where it is, what it is, which
+Browse a Medal of Honor (2010) level in 3D and inspect every object: where it is, what it is, which
 file it comes from, its full property tree, and how it links to other objects.
 
 **Opening it:** in the suite window (`MOH Tool Suite.pyw`), Levels tab: choose a level, then **Open in Map

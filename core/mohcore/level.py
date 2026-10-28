@@ -1,4 +1,4 @@
-"""A BC2 level as the suite's tools see it: entities with transforms and sources, collision meshes, terrain.
+"""A MOH level as the suite's tools see it: entities with transforms and sources, collision meshes, terrain.
 
     lvl = load('sp_01')                       # by level name, from Project OPFOR's game copy
     lvl.entities                              # every instance of the level partition (Entity)

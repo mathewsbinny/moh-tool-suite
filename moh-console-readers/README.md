@@ -1,6 +1,6 @@
 # Console readers
 
-Read-only Python readers for Xbox 360 data. Use them to take Battlefield: Bad Company 2 content from your
+Read-only Python readers for Xbox 360 data. Use them to take Medal of Honor (2010) content from your
 own console discs and downloads. The disc and package readers only read standard file-system structures:
 there is no decryption, and no keys are involved. The menu reader (`apt.py`) reads PC menus too.
 
@@ -39,5 +39,5 @@ they print the cause, what to do and the log's path (exit code 1). Tests: `tests
 
 Format notes are in each script's header (STFS follows the public Free60 documentation).
 
-Developed for Project OPFOR. Xbox is a trademark of Microsoft; Battlefield: Bad Company 2 is
+Developed for Project OPFOR. Xbox is a trademark of Microsoft; Medal of Honor (2010) is
 © Electronic Arts / DICE.

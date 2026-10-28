@@ -1,6 +1,6 @@
 # moh-stockmp-ai
 
-Gives a stock Bad Company 2 multiplayer level - which ships with no AI layer - the AI spawners, AI orders and event
+Gives a stock Medal of Honor (2010) multiplayer level - which ships with no AI layer - the AI spawners, AI orders and event
 wiring bots need, as level data the game loads like its own. It is option c of Project OPFOR's
 `STOCK_MP_AI_PLAN.md`: the tool proposes the layer from the level's own objectives and spawns, a person tidies the
 per-map configuration, and the tool builds and checks it offline.

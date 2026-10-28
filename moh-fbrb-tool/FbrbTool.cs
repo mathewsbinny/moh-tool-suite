@@ -1,4 +1,4 @@
-// FbrbTool - unpack / repack Frostbite 1 ".fbrb" bundles (Battlefield: Bad Company 2).
+// FbrbTool - unpack / repack Frostbite 1 ".fbrb" bundles (Medal of Honor (2010)).
 //
 // Format (as documented by Frankelstner's fbrb script, MOH Toolkit by Heico):
 //   "FbRB" | uint32 BE len(part1) | part1 = gzip(header) | part2 = gzip(payload) or raw payload

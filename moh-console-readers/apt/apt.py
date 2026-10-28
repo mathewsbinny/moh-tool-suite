@@ -1,4 +1,4 @@
-r"""apt.py - read-only reader for EA "APT" UI movies (Battlefield: Bad Company 2 menus), PC and Xbox 360.
+r"""apt.py - read-only reader for EA "APT" UI movies (Medal of Honor (2010) menus), PC and Xbox 360.
 
 Usage: python apt.py info  <movie>                  movie size, frames, characters by type, byte order
        python apt.py chars <movie> [type]           every character (type: shape, text, font, sprite, image, movie...)
@@ -8,7 +8,7 @@ Usage: python apt.py info  <movie>                  movie size, frames, characte
 <movie> is a menu resource (a SwfMovie .res: a BIGF archive of <name>.apt, <name>.const, <name>.geo) or the
 .apt file itself with its .const next to it.
 
-Format (OpenSAGE's APT reader and inspection of BC2's files; OPFOR's AptTool documents the same layout):
+Format (OpenSAGE's APT reader and inspection of MOH's files; OPFOR's AptTool documents the same layout):
   .const : "Apt constant file\x1A\0\0" | u32 movie offset (in .apt) | u32 count | u32 entries offset
            | count x {u32 type, u32 value}: type 1 string (value = offset of a C string in .const), 4 register.
   .apt   : "Apt Data:..." then data; every pointer is a file offset into .apt. Characters start {u32 type,
@@ -34,7 +34,7 @@ Related formats (2026-10-24, same byte order rule):
   Image characters' pixels live in the menu's texture atlas (<menu>_textures_Win32 / _Xenon): atlas_meta.dbx
   (UI.UITextureAtlasInfo: TextureFile = the image character id, MinU / MaxU / MinV / MaxV) and atlas0.res (92-byte
   header with width / height at 16 / 20; PC: linear DXT5 4096 x 4096; Xbox 360: tiled, 16-bit-swapped DXT5).
-Apt converts a movie's offsets to pointers once, in place, by walking its structures when it loads it (BC2's
+Apt converts a movie's offsets to pointers once, in place, by walking its structures when it loads it (MOH's
 runtime 0x1309880 for bytecode; the character walk and its inverse at 0x1319730) - see OPFOR's DEVELOPMENT_NOTES.md
 for the rules this sets for editing movies.
 """

@@ -42,7 +42,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(SUITE, 'core'))
 
 FORMAT, VERSION = 'opfor-domains', 1
-INFANTRY_SPEED = 4.0          # m/s, a soldier running (BC2 sprint is faster; bots mostly run)
+INFANTRY_SPEED = 4.0          # m/s, a soldier running (MOH sprint is faster; bots mostly run)
 SPEED_FACTOR = 0.6            # share of the AI's MaxSpeed a vehicle averages along a route (turns, slopes)
 LAND_SPEED = 15.0             # m/s, AI MaxSpeed of the tanks / IFVs (mp_common AI/Vehicles MobilityData 15-20)
 ENTER_S, EXIT_S = 3.0, 2.0    # s, getting in / out of a vehicle

@@ -33,7 +33,7 @@ class App:
         self.proc = None
         self.saved = []
         self.lines = queue.Queue()
-        root.title('BC2 NavKit')
+        root.title('MOH NavKit')
         root.minsize(760, 520)
         try:
             ttk.Style().theme_use('vista')

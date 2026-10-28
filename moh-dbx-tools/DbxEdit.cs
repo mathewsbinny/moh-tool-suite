@@ -1,4 +1,4 @@
-// DbxEdit - reads, converts and edits Battlefield: Bad Company 2 binary .dbx files (Frostbite 1 data as a
+// DbxEdit - reads, converts and edits Medal of Honor (2010) binary .dbx files (Frostbite 1 data as a
 // tokenised XML tree). Written from FORMAT.md, which describes the format and everything this tool outputs.
 // Anything an edit does not change is written back byte for byte.
 //

@@ -5,7 +5,7 @@ offline: level and common data, DICE's path data and string tables of the execut
 Tools: `tools\navwater_mesh.py` (boat meshes), `tools\navdomains.py` (domain graph and planner). Tests:
 `tests\test_navwater_mesh.py` and `tests\test_navdomains.py`.
 
-## 1. Findings: water and boats in BC2's AI
+## 1. Findings: water and boats in MOH's AI
 
 - **The engine knows three navigation types, and none is for water.** `AIVehicleBehaviourData.Navigation` has
   exactly three values: `NTNone`, `NTGround` and `NTHelicopter`. These are the only `NT*` enum strings in

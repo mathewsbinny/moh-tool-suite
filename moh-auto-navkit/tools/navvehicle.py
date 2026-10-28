@@ -1,6 +1,6 @@
 r"""NavKit: vehicle path data - the land-vehicle `pathdata.hpd` (pathfinding type "Vehicle", spec 2.1 / 2.2).
 
-BC2 ships two Kynapse data sets per level: `ai\levels\<level>\infantry\pathdata.hpd` and `...\vehicle\pathdata.hpd`.
+MOH ships two Kynapse data sets per level: `ai\levels\<level>\infantry\pathdata.hpd` and `...\vehicle\pathdata.hpd`.
 The vehicle file has the infantry file's format exactly (header, sector table, route graph, runtime mesh - spec 4);
 only the build settings differ (DICE's `AI/Pathfinding/Vehicles`): pitch 1 m, resolution 0.02, entity radius 2.5 m,
 entity height 4 m, DistEdgeMax 50 m. This module builds it as its own file, reusing NavKit's infantry pipeline

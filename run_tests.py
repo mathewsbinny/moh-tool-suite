@@ -92,7 +92,7 @@ def tests():
         ('LevelDiff, built levels', 'quick', [PY, os.path.join(SUITE, 'moh-diff-workbench', 'level-diff', 'tests', 'test_leveldiff.py')]),
         ('crash reader, built reports', 'quick', [PY, os.path.join(SUITE, 'moh-automated-map-and-bot-test-harness', 'crash-reader', 'tests', 'test_crashreader.py')]),
         ('console readers, built images', 'quick', [PY, os.path.join(SUITE, 'moh-console-readers', 'tests', 'test_console_readers.py')]),
-        ('menu tools (aptcheck, aptrefs, bc2loc), built data', 'quick', [PY, os.path.join(SUITE, 'moh-menu-tools', 'tests', 'test_menu_tools.py')]),
+        ('menu tools (aptcheck, aptrefs, mohloc), built data', 'quick', [PY, os.path.join(SUITE, 'moh-menu-tools', 'tests', 'test_menu_tools.py')]),
         ('exe string / address references (exeref), built exe', 'quick', [PY, os.path.join(SUITE, 'moh-automated-map-and-bot-test-harness', 'crash-reader', 'tests', 'test_exeref.py')]),
         ('test harness, built data', 'quick', [PY, os.path.join(SUITE, 'moh-automated-map-and-bot-test-harness', 'tests', 'test_harness.py')]),
         ('stock-MP AI layer, synthetic levels', 'quick', [PY, os.path.join(SUITE, 'moh-stockmp-ai', 'tests', 'test_stockmp.py')]),

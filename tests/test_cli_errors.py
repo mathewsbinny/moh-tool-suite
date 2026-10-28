@@ -47,7 +47,7 @@ def main(argv):
         ('STFS reader, a missing package', [PY, os.path.join(SUITE, 'moh-console-readers', 'stfs', 'stfs.py'), 'info', missing], 'stfs', 'missing'),
         ('aptcheck, a file that is not a menu movie', [PY, os.path.join(SUITE, 'moh-menu-tools', 'aptcheck.py'), 'check', junk], 'aptcheck', 'not a menu movie'),
         ('aptrefs, an exe that is not one', [PY, os.path.join(SUITE, 'moh-menu-tools', 'aptrefs.py'), 'table', '--exe', junk], 'aptrefs', 'not a windows program'),
-        ('bc2loc, a file that is not a language file', [PY, os.path.join(SUITE, 'moh-menu-tools', 'bc2loc.py'), 'get', 'X', '--file', junk], 'bc2loc', 'not a localization'),
+        ('mohloc, a file that is not a language file', [PY, os.path.join(SUITE, 'moh-menu-tools', 'mohloc.py'), 'get', 'X', '--file', junk], 'mohloc', 'not a localization'),
         ('exeref, a missing exe', [PY, os.path.join(SUITE, 'moh-automated-map-and-bot-test-harness', 'crash-reader', 'exeref.py'), 'str', 'x', '--exe', missing], 'exeref', 'missing'),
         ('navdiff, missing files', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tools', 'navdiff.py'), missing, missing], 'navdiff', 'missing'),
         ('navboundary, a missing NavKit file', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tools', 'navboundary.py'), 'sp_004_b', missing], 'navboundary', 'what to do'),

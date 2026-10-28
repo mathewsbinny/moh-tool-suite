@@ -1,6 +1,6 @@
 # MOH Tool Suite: design
 
-Eight tools for building and debugging AI on Battlefield: Bad Company 2 maps, plus Project OPFOR's asset
+Eight tools for building and debugging AI on Medal of Honor (2010) maps, plus Project OPFOR's asset
 builder. They share one core: level loading, a 3D view, picking and the game's data formats.
 
 - **Modes of the 3D view:** the inspector, the navigation studio, the tactical authoring tool and the bot
@@ -17,13 +17,13 @@ statuses in sections 3.1, 4.2 and 7).
 
 | Tool | For | In short |
 |---|---|---|
-| **moh-map-inspector** | any BC2 modder | Browse a level in 3D: geometry, collision, spawns, objectives, destructibles, every placed entity. Click anything to see where it comes from and its properties. |
-| **moh-navigation-studio** | any BC2 modder, Project OPFOR | View and edit the AI's navigation data (Kynapse `pathdata.hpd`, made by NavKit). Force ground walkable or unwalkable, link areas and routes, inspect disconnected regions, annotate traversal links, test paths. Export a finished file or a side file. |
+| **moh-map-inspector** | any MOH modder | Browse a level in 3D: geometry, collision, spawns, objectives, destructibles, every placed entity. Click anything to see where it comes from and its properties. |
+| **moh-navigation-studio** | any MOH modder, Project OPFOR | View and edit the AI's navigation data (Kynapse `pathdata.hpd`, made by NavKit). Force ground walkable or unwalkable, link areas and routes, inspect disconnected regions, annotate traversal links, test paths. Export a finished file or a side file. |
 | **moh-tactical-map-authoring-tool** | Project OPFOR bots | A layer above the navigation data: objectives, cover candidates, firing positions, rally points, vehicle approaches, squad routes, strategic regions. Generated as candidates, corrected by hand. |
 | **moh-bot-ai-debugger** | Project OPFOR bots | Live view of the AI while the game runs: positions, orders, targets, path requests, tactical states, line of sight, threats, squads. |
 | **moh-automated-map-and-bot-test-harness** | Project OPFOR | Repeatable scenarios across maps, with results saved per build so changes can be compared: reachability, path tests, bot traversal, stuck detection, squad coordination, vehicle use. |
-| **moh-asset-pipeline** (in the core) | any BC2 modder | Batch extraction into common formats: geometry and collision to OBJ/glTF, entities and transforms, spawns and objectives to JSON, textures and materials later, dependency reports. It is the same readers the viewer uses. |
-| **moh-diff-workbench** | research | Binary and asset diffing: ImHex pattern files for BC2 formats, plus a report of which structures are understood and what changed, with reproducible extraction logs and hashes. |
+| **moh-asset-pipeline** (in the core) | any MOH modder | Batch extraction into common formats: geometry and collision to OBJ/glTF, entities and transforms, spawns and objectives to JSON, textures and materials later, dependency reports. It is the same readers the viewer uses. |
+| **moh-diff-workbench** | research | Binary and asset diffing: ImHex pattern files for MOH formats, plus a report of which structures are understood and what changed, with reproducible extraction logs and hashes. |
 | **moh-ai-behavior-simulator** | Project OPFOR bots | Runs OPFOR's bot decision code (behaviour trees or state machines, threat scoring, squad orders, objective priorities) on simplified maps, without the game. It finds logic flaws cheaply, though not problems with controls, physics or animation. |
 | **moh-asset-builder** (asset builder & validator, in the OPFOR repo) | Project OPFOR | Turns editor outputs into versioned runtime packages for the standalone client, with schema and dependency checks and a report of missing or incompatible data. |
 
@@ -31,8 +31,8 @@ Added beside these eight (2026-10-26, both built; their READMEs):
 
 | Tool | For | In short |
 |---|---|---|
-| **moh-stockmp-ai** | any BC2 modder, Project OPFOR bots | Gives a stock MP level an AI layer (AI spawners, AI orders, event wiring, HasAI, PathfindingTypes, SectorOffsets, AI template) as level data, built into its bundles and checked offline. Not the tactical authoring tool: it writes game data, not annotation side files. |
-| **moh-menu-tools** | any BC2 modder, Project OPFOR | `aptcheck` (menu patches against the rules that crash the menu loader), `aptrefs` (externs, FSCommands and engine events of every movie, with the exe's name / id table), `bc2loc` (localized texts). |
+| **moh-stockmp-ai** | any MOH modder, Project OPFOR bots | Gives a stock MP level an AI layer (AI spawners, AI orders, event wiring, HasAI, PathfindingTypes, SectorOffsets, AI template) as level data, built into its bundles and checked offline. Not the tactical authoring tool: it writes game data, not annotation side files. |
+| **moh-menu-tools** | any MOH modder, Project OPFOR | `aptcheck` (menu patches against the rules that crash the menu loader), `aptrefs` (externs, FSCommands and engine events of every movie, with the exe's name / id table), `mohloc` (localized texts). |
 
 ## 2. Rules
 
@@ -253,7 +253,7 @@ generator. Every library is under a permissive licence (MIT, zlib, BSD).
 
 ### 4.7 moh-diff-workbench (alongside research, from M2)
 
-- **ImHex pattern files** (`patterns/*.hexpat`) for BC2's formats, so a file can be viewed as structure
+- **ImHex pattern files** (`patterns/*.hexpat`) for MOH's formats, so a file can be viewed as structure
   and two files diffed by field in ImHex: `pathdata.hpd`, `.fbrb`, the binary DBX header and tree,
   terrain heightfields, Havok packfiles, then others as they are researched.
 - **`moh-coverage <file>`:** which byte ranges of a file our readers understand, and which are still

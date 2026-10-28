@@ -1,4 +1,4 @@
-"""BC2 terrain height fields: Terrains/<Level>/<Level>.Heightfield-000.res (type TerrainHeightfield, in each
+"""MOH terrain height fields: Terrains/<Level>/<Level>.Heightfield-000.res (type TerrainHeightfield, in each
 level's terrain-00.fbrb).
 
     hf = read(path)            # Heightfield: bounds, size, heights (size x size, metres)

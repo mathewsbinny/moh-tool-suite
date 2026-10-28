@@ -3,7 +3,7 @@ r"""NavKit: navigation mesh for boats on a level's water - a side file for OPFOR
   navwater_mesh.py <level> [--profile pbl|pwc] [--pitch 2] [--box minx,minz,maxx,maxz] [--infantry <pathdata.hpd>]
                    [--out <folder>] [--opfor <folder>] [--no-objects] [--no-samples]
 
-Why a side file and not Kynapse data: BC2 has no water pathfinding. The AI's vehicle profiles
+Why a side file and not Kynapse data: MOH has no water pathfinding. The AI's vehicle profiles
 (mp_common / sp_common AI/Behaviours, AIVehicleBehaviourData) carry a Navigation type of NTNone, NTGround or
 NTHelicopter - the only three the executable knows - and the patrol boat's driver profile "PBL" is NTNone with no
 PathfindingType: the game never asks Kynapse for a boat route (the jet ski's driver uses the "Car" profile, NTGround

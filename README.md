@@ -1,6 +1,6 @@
 # MOH Tool Suite
 
-Tools for building and debugging AI on Battlefield: Bad Company 2 maps, in one repository. The 3D tools
+Tools for building and debugging AI on Medal of Honor (2010) maps, in one repository. The 3D tools
 share one core: level loading, a 3D view, picking and the game's data formats.
 
 ## Getting started
@@ -43,14 +43,14 @@ log file.
 
 | Folder | Tool |
 |---|---|
-| `moh-auto-navkit/` | **BC2 NavKit**: generates AI navigation data (`pathdata.hpd`) for levels. Start with `QUICKSTART.md`, or `navkitGUI.pyw`. |
+| `moh-auto-navkit/` | **MOH NavKit**: generates AI navigation data (`pathdata.hpd`) for levels. Start with `QUICKSTART.md`, or `navkitGUI.pyw`. |
 | `moh-dbx-tools/` | **DbxEdit** and **DbxEditGUI**: view, edit, check and repair binary `.dbx` files; XML export and import |
 | `moh-fbrb-tool/` | **FbrbTool**: unpack and repack `.fbrb` bundles |
 | `moh-console-readers/` | read-only readers for Xbox 360 disc images and content packages |
 | `moh-diff-workbench/level-diff/` | **LevelDiff**: what differs between two `.dbx` files, instance by instance |
 | `moh-automated-map-and-bot-test-harness/` | **test harness** (offline, M5): per level and path-data file (DICE's, NavKit's) structure, spawn-to-objective reachability, path-test batteries, orders near the route network, sector offsets, NavKit's DICE parity, and AI readiness from the game copy's bundles; saved runs compared between builds (`harness.py`); in-game tests on hold |
 | `moh-automated-map-and-bot-test-harness/crash-reader/` | **crash reader**: the game's `crashreport.xml` turned into names, code, null pointers and hints; `exeref.py`: where `mohmpgame.exe` uses a string or an address, with a short code window |
-| `moh-menu-tools/` | **menu tools**: `aptcheck.py` checks menu patches against the rules that crash the menu loader (OPFOR's `src\menus\*.patch` too); `aptrefs.py` cross-references the externs, FSCommands and engine events of every menu and HUD movie with the exe's name / id table; `bc2loc.py` looks up and searches the localized texts |
+| `moh-menu-tools/` | **menu tools**: `aptcheck.py` checks menu patches against the rules that crash the menu loader (OPFOR's `src\menus\*.patch` too); `aptrefs.py` cross-references the externs, FSCommands and engine events of every menu and HUD movie with the exe's name / id table; `mohloc.py` looks up and searches the localized texts |
 | `core/` | the shared core: Python readers for `.dbx`, `.fbrb` bundles (read only), terrain height fields and water; the level loader (entities, teams, collision, areas and routes); the 3D view with picking |
 | `moh-map-inspector/` | **Map Inspector**: browse a level in 3D and inspect every object's source, properties and links; measure |
 | `moh-navigation-studio/` | **Navigation Studio**: NavKit's and DICE's navigation data in 3D, by island, sector, pitch or difference; islands and spawns off the main network; the path test; edit mode (walkable / unwalkable regions, seeds, links, route edges, traversals) into a side file, built with `navkit apply` and installed; a reference level's AI layer drawn on another level (`--compare`) and an anomaly overlay of NavKit builds, both with JSON export (`overlay.py`) |
@@ -64,7 +64,7 @@ log file.
 | `moh-automated-map-and-bot-test-harness/` | in-game tests: `testrun.bat` per level (on hold - needs playtest), bot traversal, stuck detection, squads and vehicles from OPFOR's telemetry | M6, then growing |
 | `moh-bot-ai-debugger/` | live view of the AI while the game runs (through Project OPFOR) | M6 |
 | `moh-tactical-map-authoring-tool/` | tactical annotations above the navigation data for bots | M7 |
-| `moh-diff-workbench/` | ImHex patterns for BC2 formats, format coverage and structure-aware diffs (LevelDiff, in `level-diff/`, is ready) | alongside |
+| `moh-diff-workbench/` | ImHex patterns for MOH formats, format coverage and structure-aware diffs (LevelDiff, in `level-diff/`, is ready) | alongside |
 | `moh-ai-behavior-simulator/` | runs OPFOR's bot decision code on simplified maps, without the game | with Goal 3 |
 
 The asset builder & validator, `moh-asset-builder`, is part of the Project OPFOR repository (DESIGN.md
@@ -148,8 +148,8 @@ full history (2026-10-16), so `git log -- <folder>/<file>` shows each file's his
 MIT (see `LICENSE`) for all code and documentation in this repository. The licence covers only this
 repository's own work: no Electronic Arts / DICE game data, code or other content is included, and the
 tools need your own copy of the game. Third-party libraries keep their own licences (moderngl, imgui-bundle:
-MIT; glfw: zlib; numpy: BSD). Not affiliated with or endorsed by Electronic Arts or DICE; Battlefield and
-Battlefield: Bad Company are trademarks of Electronic Arts Inc.
+MIT; glfw: zlib; numpy: BSD). Not affiliated with or endorsed by Electronic Arts or DICE; Medal of Honor is a
+trademark of Electronic Arts Inc.
 
 Developed for Project OPFOR. Game data is read from your own installation and never distributed.
-Battlefield: Bad Company 2 is © Electronic Arts / DICE.
+Medal of Honor (2010) is © Electronic Arts / DICE.

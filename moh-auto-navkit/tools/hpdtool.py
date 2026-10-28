@@ -1,6 +1,6 @@
 """hpdtool.py - reader/writer for MOH Kynapse navigation data (pathdata.hpd).
 
-Part of BC2 NavKit (see ..\\README.md; written from ..\\research\\KYNAPSE_SPEC.md).
+Part of MOH NavKit (see ..\\README.md; written from ..\\research\\KYNAPSE_SPEC.md).
 
 Usage:
     python hpdtool.py info <pathdata.hpd>                 file summary
