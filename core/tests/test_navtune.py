@@ -13,7 +13,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..'))
-from bfbc2core import navtune as nt  # noqa: E402
+from mohcore import navtune as nt  # noqa: E402
 
 
 def main(argv):

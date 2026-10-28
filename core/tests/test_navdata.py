@@ -14,8 +14,8 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..'))
-sys.path.insert(0, os.path.join(HERE, '..', '..', 'bfbc2-auto-navkit'))
-from bfbc2core import navdata, navpath  # noqa: E402
+sys.path.insert(0, os.path.join(HERE, '..', '..', 'moh-auto-navkit'))
+from mohcore import navdata, navpath  # noqa: E402
 import navkit  # noqa: E402
 
 ISLANDS = {'sp_004_b': 69, 'sp_01': 506, 'sp_009': 3}      # DICE's files, as baseline A counted them

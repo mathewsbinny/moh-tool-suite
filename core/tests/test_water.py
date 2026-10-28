@@ -15,11 +15,11 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 SUITE = os.path.abspath(os.path.join(HERE, '..', '..'))
 sys.path.insert(0, os.path.join(SUITE, 'core'))
-sys.path.insert(0, os.path.join(SUITE, 'bfbc2-auto-navkit'))
-from bfbc2core import water  # noqa: E402
+sys.path.insert(0, os.path.join(SUITE, 'moh-auto-navkit'))
+from mohcore import water  # noqa: E402
 import navkit  # noqa: E402
 
-TOOL = os.path.join(SUITE, 'bfbc2-fbrb-tool', 'FbrbTool.exe')
+TOOL = os.path.join(SUITE, 'moh-fbrb-tool', 'FbrbTool.exe')
 NO_WATER = {'sp_006', 'sp_009'}
 SHADERS_DIFFER = {'sp_04'}           # its VisualWater has 4,818 vertices for the mesh's 18
 

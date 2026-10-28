@@ -1,4 +1,4 @@
-r"""The suite's window (BFBC2 Tool Suite.pyw) driven as clicks would drive it: it opens with its 7 tabs and the
+r"""The suite's window (MOH Tool Suite.pyw) driven as clicks would drive it: it opens with its 7 tabs and the
 game copy's levels; FbrbTool lists a bundle, LevelDiff compares a level with itself, the crash reader reads a
 report built here, the test runner lists a tier - each through its tab's button, its output in the pane; and
 the 3D tools' level picker lists the levels. Needs a display and Project OPFOR's game copy.
@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(SUITE, 'core'))
 
 
 def load_hub():
-    spec = importlib.util.spec_from_file_location('suite_hub', os.path.join(SUITE, 'BFBC2 Tool Suite.pyw'))
+    spec = importlib.util.spec_from_file_location('suite_hub', os.path.join(SUITE, 'MOH Tool Suite.pyw'))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -128,7 +128,7 @@ def main(argv):
     check(r.returncode == 1 and 'error:' in r.stderr and 'what to do' in r.stderr and 'details:' in r.stderr,
           'a 3D tool that cannot open a level exits cleanly, saying why and where the log is')
 
-    from bfbc2core import pick
+    from mohcore import pick
     items = pick.levels()
     check(len(items) == len(levels) and any(lv == 'sp_01' and 'prepared' in s for lv, s in items),
           'the 3D tools\' level picker lists the same levels')

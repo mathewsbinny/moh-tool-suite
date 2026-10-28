@@ -1,4 +1,4 @@
-# BFBC2 Tool Suite: design
+# MOH Tool Suite: design
 
 Eight tools for building and debugging AI on Battlefield: Bad Company 2 maps, plus Project OPFOR's asset
 builder. They share one core: level loading, a 3D view, picking and the game's data formats.
@@ -17,22 +17,22 @@ statuses in sections 3.1, 4.2 and 7).
 
 | Tool | For | In short |
 |---|---|---|
-| **bfbc2-map-inspector** | any BC2 modder | Browse a level in 3D: geometry, collision, spawns, objectives, destructibles, every placed entity. Click anything to see where it comes from and its properties. |
-| **bfbc2-navigation-studio** | any BC2 modder, Project OPFOR | View and edit the AI's navigation data (Kynapse `pathdata.hpd`, made by NavKit). Force ground walkable or unwalkable, link areas and routes, inspect disconnected regions, annotate traversal links, test paths. Export a finished file or a side file. |
-| **bfbc2-tactical-map-authoring-tool** | Project OPFOR bots | A layer above the navigation data: objectives, cover candidates, firing positions, rally points, vehicle approaches, squad routes, strategic regions. Generated as candidates, corrected by hand. |
-| **bfbc2-bot-ai-debugger** | Project OPFOR bots | Live view of the AI while the game runs: positions, orders, targets, path requests, tactical states, line of sight, threats, squads. |
-| **bfbc2-automated-map-and-bot-test-harness** | Project OPFOR | Repeatable scenarios across maps, with results saved per build so changes can be compared: reachability, path tests, bot traversal, stuck detection, squad coordination, vehicle use. |
-| **bfbc2-asset-pipeline** (in the core) | any BC2 modder | Batch extraction into common formats: geometry and collision to OBJ/glTF, entities and transforms, spawns and objectives to JSON, textures and materials later, dependency reports. It is the same readers the viewer uses. |
-| **bfbc2-diff-workbench** | research | Binary and asset diffing: ImHex pattern files for BC2 formats, plus a report of which structures are understood and what changed, with reproducible extraction logs and hashes. |
-| **bfbc2-ai-behavior-simulator** | Project OPFOR bots | Runs OPFOR's bot decision code (behaviour trees or state machines, threat scoring, squad orders, objective priorities) on simplified maps, without the game. It finds logic flaws cheaply, though not problems with controls, physics or animation. |
-| **bfbc2-asset-builder** (asset builder & validator, in the OPFOR repo) | Project OPFOR | Turns editor outputs into versioned runtime packages for the standalone client, with schema and dependency checks and a report of missing or incompatible data. |
+| **moh-map-inspector** | any BC2 modder | Browse a level in 3D: geometry, collision, spawns, objectives, destructibles, every placed entity. Click anything to see where it comes from and its properties. |
+| **moh-navigation-studio** | any BC2 modder, Project OPFOR | View and edit the AI's navigation data (Kynapse `pathdata.hpd`, made by NavKit). Force ground walkable or unwalkable, link areas and routes, inspect disconnected regions, annotate traversal links, test paths. Export a finished file or a side file. |
+| **moh-tactical-map-authoring-tool** | Project OPFOR bots | A layer above the navigation data: objectives, cover candidates, firing positions, rally points, vehicle approaches, squad routes, strategic regions. Generated as candidates, corrected by hand. |
+| **moh-bot-ai-debugger** | Project OPFOR bots | Live view of the AI while the game runs: positions, orders, targets, path requests, tactical states, line of sight, threats, squads. |
+| **moh-automated-map-and-bot-test-harness** | Project OPFOR | Repeatable scenarios across maps, with results saved per build so changes can be compared: reachability, path tests, bot traversal, stuck detection, squad coordination, vehicle use. |
+| **moh-asset-pipeline** (in the core) | any BC2 modder | Batch extraction into common formats: geometry and collision to OBJ/glTF, entities and transforms, spawns and objectives to JSON, textures and materials later, dependency reports. It is the same readers the viewer uses. |
+| **moh-diff-workbench** | research | Binary and asset diffing: ImHex pattern files for BC2 formats, plus a report of which structures are understood and what changed, with reproducible extraction logs and hashes. |
+| **moh-ai-behavior-simulator** | Project OPFOR bots | Runs OPFOR's bot decision code (behaviour trees or state machines, threat scoring, squad orders, objective priorities) on simplified maps, without the game. It finds logic flaws cheaply, though not problems with controls, physics or animation. |
+| **moh-asset-builder** (asset builder & validator, in the OPFOR repo) | Project OPFOR | Turns editor outputs into versioned runtime packages for the standalone client, with schema and dependency checks and a report of missing or incompatible data. |
 
 Added beside these eight (2026-10-26, both built; their READMEs):
 
 | Tool | For | In short |
 |---|---|---|
-| **bfbc2-stockmp-ai** | any BC2 modder, Project OPFOR bots | Gives a stock MP level an AI layer (AI spawners, AI orders, event wiring, HasAI, PathfindingTypes, SectorOffsets, AI template) as level data, built into its bundles and checked offline. Not the tactical authoring tool: it writes game data, not annotation side files. |
-| **bfbc2-menu-tools** | any BC2 modder, Project OPFOR | `aptcheck` (menu patches against the rules that crash the menu loader), `aptrefs` (externs, FSCommands and engine events of every movie, with the exe's name / id table), `bc2loc` (localized texts). |
+| **moh-stockmp-ai** | any BC2 modder, Project OPFOR bots | Gives a stock MP level an AI layer (AI spawners, AI orders, event wiring, HasAI, PathfindingTypes, SectorOffsets, AI template) as level data, built into its bundles and checked offline. Not the tactical authoring tool: it writes game data, not annotation side files. |
+| **moh-menu-tools** | any BC2 modder, Project OPFOR | `aptcheck` (menu patches against the rules that crash the menu loader), `aptrefs` (externs, FSCommands and engine events of every movie, with the exe's name / id table), `bc2loc` (localized texts). |
 
 ## 2. Rules
 
@@ -61,28 +61,28 @@ Added beside these eight (2026-10-26, both built; their READMEs):
 
 | Tool | Where | Used for |
 |---|---|---|
-| FbrbTool | `bfbc2-fbrb-tool` | unpacking bundles |
-| DbxEdit, DbxEditGUI, `FORMAT.md`, test suite and fingerprints | `bfbc2-dbx-tools` | DBX reading and editing, level checks, cull-slot repair; the spec the Python reader is written from |
-| LevelDiff | `bfbc2-diff-workbench/level-diff` | field-level diffs of `.dbx` files |
-| crash reader | `bfbc2-automated-map-and-bot-test-harness/crash-reader` | in-game test failures |
-| console readers | `bfbc2-console-readers` | Xbox 360 sources |
-| NavKit: `navkit.py`, `navkitGUI.pyw`, generator, `navdiff`, `navparity`, `navcompare`, `ordercheck` | `bfbc2-auto-navkit` | navigation data, and the parity numbers (baseline A) the studio's difference view shows |
+| FbrbTool | `moh-fbrb-tool` | unpacking bundles |
+| DbxEdit, DbxEditGUI, `FORMAT.md`, test suite and fingerprints | `moh-dbx-tools` | DBX reading and editing, level checks, cull-slot repair; the spec the Python reader is written from |
+| LevelDiff | `moh-diff-workbench/level-diff` | field-level diffs of `.dbx` files |
+| crash reader | `moh-automated-map-and-bot-test-harness/crash-reader` | in-game test failures |
+| console readers | `moh-console-readers` | Xbox 360 sources |
+| NavKit: `navkit.py`, `navkitGUI.pyw`, generator, `navdiff`, `navparity`, `navcompare`, `ordercheck` | `moh-auto-navkit` | navigation data, and the parity numbers (baseline A) the studio's difference view shows |
 | `testrun.bat` | Project OPFOR | starting a level in the game and reporting the outcome |
 
 ### 3.1 Data layer
 
 | Source | How it is read | Status |
 |---|---|---|
-| `.fbrb` bundles | FbrbTool unpack; read-only access without unpacking in `core/bfbc2core/fbrb.py` (2026-10-26: entry list and single entries; used by the test harness) | works; a cache per bundle date (as `testrun` keeps) to add |
-| binary `.dbx` (entities, transforms, properties) | a Python reader written from `bfbc2-dbx-tools/FORMAT.md` (no exe calls, fast), `core/bfbc2core/dbx.py` | works (2026-10-16): XML identical to DbxEdit's on all 31,404 fingerprinted files (`core/tests/test_dbx.py`, full tier) |
+| `.fbrb` bundles | FbrbTool unpack; read-only access without unpacking in `core/mohcore/fbrb.py` (2026-10-26: entry list and single entries; used by the test harness) | works; a cache per bundle date (as `testrun` keeps) to add |
+| binary `.dbx` (entities, transforms, properties) | a Python reader written from `moh-dbx-tools/FORMAT.md` (no exe calls, fast), `core/mohcore/dbx.py` | works (2026-10-16): XML identical to DbxEdit's on all 31,404 fingerprinted files (`core/tests/test_dbx.py`, full tier) |
 | object collision (`*_Havok.res`) | NavKit's `hkpack.py` | works for the shapes NavKit uses; other shape types to add |
 | static model groups (instance transforms) | `*_HavokAsset` partitions | works in NavKit |
-| terrain heights | `Terrains/<level>/<level>.Heightfield-000.res` (in `terrain-00.fbrb`) | decoded (`core/bfbc2core/terrain.py`, section 7 question 1): a 1024² or 2048² grid of 16-bit heights, matching the in-game terrain to within 4.5 cm |
-| water | `<terrain>.Water.Mesh.res` (geometry), `<terrain>.Water.res` (drawing copy), in `terrain-00.fbrb` | decoded (`core/bfbc2core/water.py`, section 7 question 2): every level's water mesh, and each triangle's shader (water, coast, wakes, river) |
+| terrain heights | `Terrains/<level>/<level>.Heightfield-000.res` (in `terrain-00.fbrb`) | decoded (`core/mohcore/terrain.py`, section 7 question 1): a 1024² or 2048² grid of 16-bit heights, matching the in-game terrain to within 4.5 cm |
+| water | `<terrain>.Water.Mesh.res` (geometry), `<terrain>.Water.res` (drawing copy), in `terrain-00.fbrb` | decoded (`core/mohcore/water.py`, section 7 question 2): every level's water mesh, and each triangle's shader (water, coast, wakes, river) |
 | surfaces measured in game | NavKit's samples (`work\navsample\*.bin`, `navsample.py`) | works; the terrain fallback when a level's heightfield cannot be read |
 | navigation data | NavKit's `hpdtool.py` and `kymesh.py` (byte-exact reader and writer) | works |
 | spawn points, AI orders and patrol routes | level partition entities (as NavKit's `levelobjects` and `ordercheck` read them) | works |
-| objectives (M-COMs, flags), destructibles, vehicles and vehicle spawns | level partition entities, and each placed object's blueprint | read (`core/bfbc2core/level.py`): M-COMs are `mpobjective` blueprints, flags `CapturePointEntityData`; a placed object's group comes from its blueprint's object type (`StaticModelEntityData` with health states or part links = destructible; `DynamicModelEntityData`, `LadderEntityData` ...); teams from `Team` / `InitialOwnerTeam` (alternate spawns: their spawner's); areas and routes are `AreaGeometryEntityData` chains |
+| objectives (M-COMs, flags), destructibles, vehicles and vehicle spawns | level partition entities, and each placed object's blueprint | read (`core/mohcore/level.py`): M-COMs are `mpobjective` blueprints, flags `CapturePointEntityData`; a placed object's group comes from its blueprint's object type (`StaticModelEntityData` with health states or part links = destructible; `DynamicModelEntityData`, `LadderEntityData` ...); teams from `Team` / `InitialOwnerTeam` (alternate spawns: their spawner's); areas and routes are `AreaGeometryEntityData` chains |
 | terrain name and placement | `TerrainEntityData` in the level partition | its `TerrainAsset` names the terrain (mode variants share their base map's: MP_009GR uses `mp_009`). Its transform is **not** applied to the heights: on 11 of 13 campaign levels it moves the terrain 1-59 m, but the stored heights unmoved match the game |
 
 ### 3.2 Scene model
@@ -123,7 +123,7 @@ generator. Every library is under a permissive licence (MIT, zlib, BSD).
 
 ## 4. Tool scopes
 
-### 4.1 bfbc2-map-inspector (first)
+### 4.1 moh-map-inspector (first)
 
 - **Load:** a level from the game copy, by name.
 - **Draw:**
@@ -136,7 +136,7 @@ generator. Every library is under a permissive licence (MIT, zlib, BSD).
   references you can follow to other entities.
 - **Search, filter by type, measure** distances and heights.
 
-### 4.2 bfbc2-navigation-studio
+### 4.2 moh-navigation-studio
 
 - **Generate:** run NavKit on a level, with its sampling settings, from the studio. Sampling starts the
   game (NavKit measures levels through OPFOR's in-game sampler), so the studio asks first. Building from
@@ -163,7 +163,7 @@ generator. Every library is under a permissive licence (MIT, zlib, BSD).
   - or a side file (§5.1), applied by `navkit apply` (§5.2) when a level is built or installed. This is
     the shareable form, and the only form for edits to DICE's files.
 
-### 4.3 bfbc2-tactical-map-authoring-tool (when OPFOR's bot layer takes shape)
+### 4.3 moh-tactical-map-authoring-tool (when OPFOR's bot layer takes shape)
 
 - **Layers:**
   - objectives and their approaches;
@@ -175,7 +175,7 @@ generator. Every library is under a permissive licence (MIT, zlib, BSD).
   walkable ground, sight lines by ray casts, approaches by path search. People correct them.
 - **Output:** a per-level annotation file (§5.3) that OPFOR's bot layer reads.
 
-### 4.4 bfbc2-bot-ai-debugger (as soon as AI runs in OPFOR; first for the game's own AI)
+### 4.4 moh-bot-ai-debugger (as soon as AI runs in OPFOR; first for the game's own AI)
 
 - **OPFOR side:** a telemetry module in OPFOR's DLL streams AI state over 127.0.0.1 (§5.4), a few times a
   second: soldier positions and orientation, team, current order and goal, target, path request and
@@ -187,7 +187,7 @@ generator. Every library is under a permissive licence (MIT, zlib, BSD).
   - a timeline to scrub back through the last minutes;
   - recording to a file for later.
 
-### 4.5 bfbc2-automated-map-and-bot-test-harness (grows from now on)
+### 4.5 moh-automated-map-and-bot-test-harness (grows from now on)
 
 - **Offline tests** (no game):
   - spawn-to-objective reachability for every team and spawn;
@@ -238,9 +238,9 @@ generator. Every library is under a permissive licence (MIT, zlib, BSD).
   level; the telemetry tests of M6 (bot traversal, stuck detection, squads, vehicles), which will read recordings
   of the stream in 5.4; and the player's judgement (bots fire, advance, defend).
 
-### 4.6 bfbc2-asset-pipeline (in the core; geometry and entities in M1)
+### 4.6 moh-asset-pipeline (in the core; geometry and entities in M1)
 
-- **Command line:** `bfbc2-extract <level> --geometry obj|gltf --entities json --deps report.json`, and
+- **Command line:** `moh-extract <level> --geometry obj|gltf --entities json --deps report.json`, and
   the same for any bundle.
 - **One code path:** it uses the core's data layer, so whatever the viewer can show, the pipeline can
   export.
@@ -251,18 +251,18 @@ generator. Every library is under a permissive licence (MIT, zlib, BSD).
   converters are called as external tools where their licence does not allow reusing their code.
 - **Every run writes a log:** inputs with SHA-1, tool versions, outputs with SHA-1.
 
-### 4.7 bfbc2-diff-workbench (alongside research, from M2)
+### 4.7 moh-diff-workbench (alongside research, from M2)
 
 - **ImHex pattern files** (`patterns/*.hexpat`) for BC2's formats, so a file can be viewed as structure
   and two files diffed by field in ImHex: `pathdata.hpd`, `.fbrb`, the binary DBX header and tree,
   terrain heightfields, Havok packfiles, then others as they are researched.
-- **`bfbc2-coverage <file>`:** which byte ranges of a file our readers understand, and which are still
+- **`moh-coverage <file>`:** which byte ranges of a file our readers understand, and which are still
   unknown. It tracks research progress per format.
-- **`bfbc2-bindiff <a> <b>`:** for known formats, changed fields by structure, using LevelDiff, `navdiff`
+- **`moh-bindiff <a> <b>`:** for known formats, changed fields by structure, using LevelDiff, `navdiff`
   and DbxEdit's parser; for unknown ones, changed byte ranges with their offsets.
 - **Extraction logs and hashes**, so any finding can be reproduced from the same inputs.
 
-### 4.8 bfbc2-ai-behavior-simulator (with OPFOR's bot layer)
+### 4.8 moh-ai-behavior-simulator (with OPFOR's bot layer)
 
 - **The rule this brings forward:** OPFOR's bot decision logic is written as an engine-independent
   library. It reaches the world only through an interface: positions, line of sight, paths, objective
@@ -274,7 +274,7 @@ generator. Every library is under a permissive licence (MIT, zlib, BSD).
   runs faster than real time; results into the test harness.
 - **Out of scope:** controls, physics, animation, weapon ballistics. Those stay with in-game tests.
 
-### 4.9 bfbc2-asset-builder: asset builder & validator (in the Project OPFOR repo)
+### 4.9 moh-asset-builder: asset builder & validator (in the Project OPFOR repo)
 
 - **Inputs:** NavKit output and side files, tactical annotations, level ports and recipes (such as the
   console Onslaught builds), menu patches.
@@ -301,7 +301,7 @@ generator. Every library is under a permissive licence (MIT, zlib, BSD).
 
 ```json
 {
-  "format": "bfbc2-navtune", "version": 1,
+  "format": "moh-navtune", "version": 1,
   "level": "Levels/MP_005", "base": {"kind": "navkit", "sha1": "..."},
   "operations": [
     {"op": "walkable",   "region": {"polygon": [[x, z], ...], "y": [low, high]}, "value": true,
@@ -337,7 +337,7 @@ Its `sha1` lets `navkit apply` warn when the base has changed since.
 Status (2026-10-16): walkability operations work (`navkit.py apply <level> [--navtune file] [--out file]`, a full
 rebuild), and link and edge operations are written into the route graph (both nodes in one sector; on a DICE
 base into a copy of DICE's file, never shared), and traversal operations go to `<level>.traversal.json`
-(format in `bfbc2-auto-navkit/tools/navtraversal.py`): each annotation with its ends, the route node and island
+(format in `moh-auto-navkit/tools/navtraversal.py`): each annotation with its ends, the route node and island
 at each end, and whether it joins two islands. Every run writes `<output>.report.txt`; `--install` installs
 the result with its traversal file (`<game>\Output\win32\ai\levels\<level>\infantry\<level>.traversal.json`,
 where OPFOR's bot layer will read it).
@@ -366,7 +366,7 @@ OPFOR telemetry module, and is versioned.
 
 ```json
 {
-  "format": "bfbc2-harness-run", "version": 1, "name": "nightly", "date": "2026-10-26 23:40", "host": "PC name",
+  "format": "moh-harness-run", "version": 1, "name": "nightly", "date": "2026-10-26 23:40", "host": "PC name",
   "suite": {"commit": "9d085a9", "changed": false}, "options": {"levels": ["sp_004_b"], "pairs": 200, "seed": 1},
   "seconds": 312,
   "levels": {"sp_004_b": {
@@ -393,18 +393,18 @@ on the same points compare pair by pair. A newer version is refused by older rea
 | Milestone | Delivers | Also gives |
 |---|---|---|
 | M1 | the core: data layer (Python DBX reader, collision, terrain heightfield), scene, view, camera, picking, panels (done 2026-10-16) | |
-| M2 | Map Inspector: entities, spawns, objectives, destructibles, properties, search (done 2026-10-16: see `bfbc2-map-inspector/README.md`; water added the same day) | |
-| M3 | Navigation Studio, viewing: navigation layers, islands, detailed zones, difference view against DICE (done 2026-10-16: `bfbc2-navigation-studio/README.md`, `core/bfbc2core/navdata.py`) | the 3D view for NavKit's parity work |
-| M4 | Navigation Studio, editing: regions, seeds, links, traversal annotations, path test, finished file and side file, `navkit apply` (steps 1-6 done 2026-10-16: `bfbc2-navigation-studio/README.md`; step 7, an in-game check that the game's AI uses a hand-made link, open) | |
-| M5 | Test harness, offline: reachability, path batteries, parity, saved runs (the suite's own tests came first, 2026-10-16: `run_tests.py`; NavKit's parity runs and regression - `navparity`, `navregress`, `navboundary` - exist in NavKit, 2026-10-16 to 10-19; the harness, 2026-10-26: `bfbc2-automated-map-and-bot-test-harness/harness.py` - structure, reachability, batteries, orders, sector offsets, parity, AI readiness from the game copy's bundles, saved runs and their comparison, `import-log` for in-game sessions; running `testrun.bat` per level on hold until play-tested) | the harness's level checks for stock-MP bot maps (`STOCK_MP_AI_PLAN.md` 6.3) |
+| M2 | Map Inspector: entities, spawns, objectives, destructibles, properties, search (done 2026-10-16: see `moh-map-inspector/README.md`; water added the same day) | |
+| M3 | Navigation Studio, viewing: navigation layers, islands, detailed zones, difference view against DICE (done 2026-10-16: `moh-navigation-studio/README.md`, `core/mohcore/navdata.py`) | the 3D view for NavKit's parity work |
+| M4 | Navigation Studio, editing: regions, seeds, links, traversal annotations, path test, finished file and side file, `navkit apply` (steps 1-6 done 2026-10-16: `moh-navigation-studio/README.md`; step 7, an in-game check that the game's AI uses a hand-made link, open) | |
+| M5 | Test harness, offline: reachability, path batteries, parity, saved runs (the suite's own tests came first, 2026-10-16: `run_tests.py`; NavKit's parity runs and regression - `navparity`, `navregress`, `navboundary` - exist in NavKit, 2026-10-16 to 10-19; the harness, 2026-10-26: `moh-automated-map-and-bot-test-harness/harness.py` - structure, reachability, batteries, orders, sector offsets, parity, AI readiness from the game copy's bundles, saved runs and their comparison, `import-log` for in-game sessions; running `testrun.bat` per level on hold until play-tested) | the harness's level checks for stock-MP bot maps (`STOCK_MP_AI_PLAN.md` 6.3) |
 | M6 | OPFOR telemetry module and Bot AI Debugger, on the game's own AI first | the harness's in-game tests |
 | M7 | Tactical authoring tool, once the bot layer's needs are known | |
 | alongside | asset pipeline (geometry and entities with M1; dependency report with M2; textures later), diff workbench patterns (with each format researched) | |
-| with Goal 3 | the bot decision library (engine-independent) and the AI behaviour simulator; bfbc2-asset-builder with the installer | |
+| with Goal 3 | the bot decision library (engine-independent) and the AI behaviour simulator; moh-asset-builder with the installer | |
 
 ## 7. Open questions
 
-1. **Terrain heightfield: resolved (2026-10-16).** Decoder in `core/bfbc2core/terrain.py`; the layout:
+1. **Terrain heightfield: resolved (2026-10-16).** Decoder in `core/mohcore/terrain.py`; the layout:
    - **Header (little-endian):** six floats (the world bounds: min x, y, z, max x, y, z), the grid size
      (1024 or 2048 samples per side), five more u32 (log2(size) - 3, log2(size) - 2, about 256 × size, 0, a
      count; not needed for heights), then **one byte, 0 in every level**.
@@ -418,7 +418,7 @@ on the same points compare pair by pair. A newer version is refused by older rea
    - **Why it took a second look:** the odd byte at 0x30 makes the heights start at an odd offset. Read from
      0x30 as big-endian, the values look nearly right (a value's high byte comes from its neighbour), so
      about 20 % of samples were 1-4 m off along contour lines; the earlier test at even offsets found nothing.
-2. **Water: resolved (2026-10-16).** Decoder in `core/bfbc2core/water.py`.
+2. **Water: resolved (2026-10-16).** Decoder in `core/mohcore/water.py`.
    - **WaterMesh** (`.Water.Mesh.res`, little-endian): u32 bodies (1 everywhere), then per body u32 vertex
      count, (f32 x, y, z) vertices, u32 index count, u32 indices. Read on all 36 levels with a terrain
      bundle, each file consumed exactly; SP_006 and SP_009 have 0 vertices (no water). Heights are per
@@ -453,7 +453,7 @@ on the same points compare pair by pair. A newer version is refused by older rea
      types).
 7. **Vehicle navigation data:** NavKit made infantry data only until 2026-10-26. Vehicle data (pitch 1 m, larger
    radius) is needed for vehicle-only regions and for the bots' vehicle use (Goal 4). **Since 2026-10-26:**
-   `bfbc2-auto-navkit/tools/navvehicle.py` builds land-vehicle files offline (77 % of DICE's vehicle ground on 14
+   `moh-auto-navkit/tools/navvehicle.py` builds land-vehicle files offline (77 % of DICE's vehicle ground on 14
    levels; NavKit README "Vehicle path data", spec §2.2); boat meshes (`navwater_mesh.py`) and a cross-domain route
    planner (`navdomains.py`, `research/CROSS_DOMAIN_ROUTES.md`) are prototypes for OPFOR's bot layer. Not yet in
    `navkit.py`, the studio or a play test.

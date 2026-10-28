@@ -2,7 +2,7 @@
 
   python core\\tests\\test_dbx.py <folder or list.txt> [...]
 
-Uses bfbc2-dbx-tools\\tests\\fingerprints_795745.txt (SHA-1 of DbxEdit's XML per input file); every input
+Uses moh-dbx-tools\\tests\\fingerprints_795745.txt (SHA-1 of DbxEdit's XML per input file); every input
 file found under the folders is checked, then every other binary .dbx is parsed (it must not fail).
 """
 import hashlib
@@ -13,7 +13,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 SUITE = os.path.abspath(os.path.join(HERE, '..', '..'))
 sys.path.insert(0, os.path.join(SUITE, 'core'))
-from bfbc2core import dbx  # noqa: E402
+from mohcore import dbx  # noqa: E402
 
 
 def files(roots):
@@ -29,7 +29,7 @@ def files(roots):
 
 def main(argv):
     golden = {}
-    for line in open(os.path.join(SUITE, 'bfbc2-dbx-tools', 'tests', 'fingerprints_795745.txt')):
+    for line in open(os.path.join(SUITE, 'moh-dbx-tools', 'tests', 'fingerprints_795745.txt')):
         p = line.split()
         if len(p) >= 3 and p[0] == 'xml':
             golden[p[1]] = p[2]

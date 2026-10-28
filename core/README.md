@@ -1,12 +1,12 @@
 # core
 
-The suite's shared Python package, `bfbc2core`: the game's data formats, the level loader and the 3D view
+The suite's shared Python package, `mohcore`: the game's data formats, the level loader and the 3D view
 that the 3D tools are built on. Python 3.10+ with `numpy`; the view also needs `moderngl`, `glfw` and
 `imgui-bundle`.
 
 | Module | What it does | Checked by |
 |---|---|---|
-| `dbx.py` | reads binary `.dbx` files into an element tree and writes DbxEdit's XML, from `bfbc2-dbx-tools/FORMAT.md` | `tests/test_dbx.py`: XML identical to DbxEdit's on all 31,404 fingerprinted files |
+| `dbx.py` | reads binary `.dbx` files into an element tree and writes DbxEdit's XML, from `moh-dbx-tools/FORMAT.md` | `tests/test_dbx.py`: XML identical to DbxEdit's on all 31,404 fingerprinted files |
 | `terrain.py` | terrain height fields (`.Heightfield-000.res`): heights, exact height at any point, a mesh | `tests/test_terrain.py`: within 4.5 cm of the in-game terrain for 99.9 % of 40 million samples (13 levels) |
 | `water.py` | water meshes (`.Water.Mesh.res`) and each triangle's shader (from `.Water.res`) | `tests/test_water.py`: all 36 levels |
 | `xmlinst.py` | the `<instance>` elements of a converted level partition (type, guid, body) and a field's reference (`field_ref`), whatever the attribute order (DICE writes `guid` / `ref` first, Napisal `type` / `name` first); used by NavKit's `levelobjects.py` and `ordercheck.py` | output identical to the old readers on the 13 campaign levels and ONS_MP_004 (2026-10-20) |
@@ -17,11 +17,11 @@ that the 3D tools are built on. Python 3.10+ with `numpy`; the view also needs `
 | `navpath.py` | the path test: a route between two points over a file's route graph (costs from the stored edges), or why there is none (no node near, different islands) | `tests/test_navdata.py` |
 | `navtune.py` | navigation side files (`<level>.navtune.json`): the edits made to a level's AI navigation, their author (the PC's name) and the base they were made on | `tests/test_navtune.py` |
 | `pick.py` | the level picker the 3D tools show when started without a level | `../tests/test_viewers.py` |
-| `errors.py` | error handling and logs for every tool: a log per tool and day in `%LOCALAPPDATA%\bfbc2-tool-suite\logs`, the cause and what to do when something fails, a window for the windowed tools | `tests/test_errors.py` |
+| `errors.py` | error handling and logs for every tool: a log per tool and day in `%LOCALAPPDATA%\moh-tool-suite\logs`, the cause and what to do when something fails, a window for the windowed tools | `tests/test_errors.py` |
 
 ```python
 import sys; sys.path.insert(0, r'<suite>\core')
-from bfbc2core import level
+from mohcore import level
 lvl = level.load('mp_005')                    # from Project OPFOR's game copy (found next to the suite)
 flags = [e for e in lvl.entities if e.category == 'capture point']
 lvl.heightfield.height(-111.0, 163.3)         # terrain height there

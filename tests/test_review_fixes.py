@@ -18,8 +18,8 @@ import tempfile
 
 SUITE = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 sys.path.insert(0, os.path.join(SUITE, 'core'))
-sys.path.insert(0, os.path.join(SUITE, 'bfbc2-auto-navkit'))
-sys.path.insert(0, os.path.join(SUITE, 'bfbc2-auto-navkit', 'tools'))
+sys.path.insert(0, os.path.join(SUITE, 'moh-auto-navkit'))
+sys.path.insert(0, os.path.join(SUITE, 'moh-auto-navkit', 'tools'))
 
 
 class Checks:
@@ -38,7 +38,7 @@ class Stop(Exception):
 def navkit_apply(c, work):
     import navkit
     import navbuild
-    from bfbc2core import navtune
+    from mohcore import navtune
     seen = {}
 
     class Pr:
@@ -73,7 +73,7 @@ def navkit_apply(c, work):
 
 
 def stockmp_install(c, work):
-    sys.path.insert(0, os.path.join(SUITE, 'bfbc2-stockmp-ai'))
+    sys.path.insert(0, os.path.join(SUITE, 'moh-stockmp-ai'))
     import stockmp
     import pipeline
     game = os.path.join(work, 'game')
@@ -104,7 +104,7 @@ def stockmp_install(c, work):
 
 
 def studio_args(c):
-    sys.path.insert(0, os.path.join(SUITE, 'bfbc2-navigation-studio'))
+    sys.path.insert(0, os.path.join(SUITE, 'moh-navigation-studio'))
     try:
         import studio
     except ImportError as e:
@@ -120,7 +120,7 @@ def studio_args(c):
 
 def navdata_key(c, work):
     import numpy as np
-    from bfbc2core import navdata, terrain
+    from mohcore import navdata, terrain
     p = os.path.join(work, 'x.hpd')
     open(p, 'wb').write(b'x')
 

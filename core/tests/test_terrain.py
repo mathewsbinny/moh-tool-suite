@@ -12,7 +12,7 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..'))
-from bfbc2core import level as levelmod  # noqa: E402  (also puts NavKit's tools on the path)
+from mohcore import level as levelmod  # noqa: E402  (also puts NavKit's tools on the path)
 
 import navkit  # noqa: E402
 import navsample  # noqa: E402

@@ -1,6 +1,6 @@
 r"""Every command-line tool's error handling (no game data): each is run with input that must fail - a file that is
 missing, or not the kind the tool reads - and must exit with an error code, tell the cause and what to do in
-words, name its log, and record the error in that log (%LOCALAPPDATA%\bfbc2-tool-suite\logs; a temporary folder
+words, name its log, and record the error in that log (%LOCALAPPDATA%\moh-tool-suite\logs; a temporary folder
 here). The C# tools (FbrbTool, LevelDiff, DbxEdit) and the Python ones (NavKit's, the crash reader, the console
 readers, the test harness) alike.
 
@@ -25,34 +25,34 @@ def main(argv):
         failed += not ok
         print(f'{"ok  " if ok else "FAIL"} {what}', flush=True)
 
-    for bat in ('bfbc2-fbrb-tool', 'bfbc2-dbx-tools', os.path.join('bfbc2-diff-workbench', 'level-diff')):
+    for bat in ('moh-fbrb-tool', 'moh-dbx-tools', os.path.join('moh-diff-workbench', 'level-diff')):
         exe = glob.glob(os.path.join(SUITE, bat, '*.exe'))
         if not exe:
             subprocess.run(['cmd', '/c', os.path.join(SUITE, bat, 'build.bat')], capture_output=True)
     tmp = tempfile.mkdtemp(prefix='cli_errors_')
     env = {**os.environ, 'LOCALAPPDATA': tmp}
-    logs = os.path.join(tmp, 'bfbc2-tool-suite', 'logs')
+    logs = os.path.join(tmp, 'moh-tool-suite', 'logs')
     junk = os.path.join(tmp, 'junk.bin')
     open(junk, 'wb').write(b'this is not any kind of game file')
     missing = os.path.join(tmp, 'missing.file')
     notrun = os.path.join(tmp, 'notrun.json')
     open(notrun, 'w').write('{"format": "something else"}')
     cases = [
-        ('FbrbTool, a file that is not a bundle', [os.path.join(SUITE, 'bfbc2-fbrb-tool', 'FbrbTool.exe'), 'list', junk], 'fbrbtool', 'not the kind the tool reads'),
-        ('FbrbTool, a missing bundle', [os.path.join(SUITE, 'bfbc2-fbrb-tool', 'FbrbTool.exe'), 'list', missing], 'fbrbtool', 'missing'),
-        ('LevelDiff, a missing file', [os.path.join(SUITE, 'bfbc2-diff-workbench', 'level-diff', 'LevelDiff.exe'), missing, junk], 'leveldiff', 'what to do'),
-        ('DbxEdit, a missing file', [os.path.join(SUITE, 'bfbc2-dbx-tools', 'DbxEdit.exe'), 'edit', missing, junk + '.out', 'drop=x'], 'dbxedit', 'missing'),
-        ('hpdtool, a file that is not path data', [PY, os.path.join(SUITE, 'bfbc2-auto-navkit', 'tools', 'hpdtool.py'), 'info', junk], 'hpdtool', 'what to do'),
-        ('crash reader, a report that is not XML', [PY, os.path.join(SUITE, 'bfbc2-automated-map-and-bot-test-harness', 'crash-reader', 'crashreader.py'), junk, '--no-code'], 'crashreader', 'what to do'),
-        ('STFS reader, a missing package', [PY, os.path.join(SUITE, 'bfbc2-console-readers', 'stfs', 'stfs.py'), 'info', missing], 'stfs', 'missing'),
-        ('aptcheck, a file that is not a menu movie', [PY, os.path.join(SUITE, 'bfbc2-menu-tools', 'aptcheck.py'), 'check', junk], 'aptcheck', 'not a menu movie'),
-        ('aptrefs, an exe that is not one', [PY, os.path.join(SUITE, 'bfbc2-menu-tools', 'aptrefs.py'), 'table', '--exe', junk], 'aptrefs', 'not a windows program'),
-        ('bc2loc, a file that is not a language file', [PY, os.path.join(SUITE, 'bfbc2-menu-tools', 'bc2loc.py'), 'get', 'X', '--file', junk], 'bc2loc', 'not a localization'),
-        ('exeref, a missing exe', [PY, os.path.join(SUITE, 'bfbc2-automated-map-and-bot-test-harness', 'crash-reader', 'exeref.py'), 'str', 'x', '--exe', missing], 'exeref', 'missing'),
-        ('navdiff, missing files', [PY, os.path.join(SUITE, 'bfbc2-auto-navkit', 'tools', 'navdiff.py'), missing, missing], 'navdiff', 'missing'),
-        ('navboundary, a missing NavKit file', [PY, os.path.join(SUITE, 'bfbc2-auto-navkit', 'tools', 'navboundary.py'), 'sp_004_b', missing], 'navboundary', 'what to do'),
-        ('test harness, a missing saved run', [PY, os.path.join(SUITE, 'bfbc2-automated-map-and-bot-test-harness', 'harness.py'), 'show', missing + '.json'], 'harness', 'missing'),
-        ('test harness, a file that is not a run', [PY, os.path.join(SUITE, 'bfbc2-automated-map-and-bot-test-harness', 'harness.py'), 'compare', notrun, notrun], 'harness', 'what to do'),
+        ('FbrbTool, a file that is not a bundle', [os.path.join(SUITE, 'moh-fbrb-tool', 'FbrbTool.exe'), 'list', junk], 'fbrbtool', 'not the kind the tool reads'),
+        ('FbrbTool, a missing bundle', [os.path.join(SUITE, 'moh-fbrb-tool', 'FbrbTool.exe'), 'list', missing], 'fbrbtool', 'missing'),
+        ('LevelDiff, a missing file', [os.path.join(SUITE, 'moh-diff-workbench', 'level-diff', 'LevelDiff.exe'), missing, junk], 'leveldiff', 'what to do'),
+        ('DbxEdit, a missing file', [os.path.join(SUITE, 'moh-dbx-tools', 'DbxEdit.exe'), 'edit', missing, junk + '.out', 'drop=x'], 'dbxedit', 'missing'),
+        ('hpdtool, a file that is not path data', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tools', 'hpdtool.py'), 'info', junk], 'hpdtool', 'what to do'),
+        ('crash reader, a report that is not XML', [PY, os.path.join(SUITE, 'moh-automated-map-and-bot-test-harness', 'crash-reader', 'crashreader.py'), junk, '--no-code'], 'crashreader', 'what to do'),
+        ('STFS reader, a missing package', [PY, os.path.join(SUITE, 'moh-console-readers', 'stfs', 'stfs.py'), 'info', missing], 'stfs', 'missing'),
+        ('aptcheck, a file that is not a menu movie', [PY, os.path.join(SUITE, 'moh-menu-tools', 'aptcheck.py'), 'check', junk], 'aptcheck', 'not a menu movie'),
+        ('aptrefs, an exe that is not one', [PY, os.path.join(SUITE, 'moh-menu-tools', 'aptrefs.py'), 'table', '--exe', junk], 'aptrefs', 'not a windows program'),
+        ('bc2loc, a file that is not a language file', [PY, os.path.join(SUITE, 'moh-menu-tools', 'bc2loc.py'), 'get', 'X', '--file', junk], 'bc2loc', 'not a localization'),
+        ('exeref, a missing exe', [PY, os.path.join(SUITE, 'moh-automated-map-and-bot-test-harness', 'crash-reader', 'exeref.py'), 'str', 'x', '--exe', missing], 'exeref', 'missing'),
+        ('navdiff, missing files', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tools', 'navdiff.py'), missing, missing], 'navdiff', 'missing'),
+        ('navboundary, a missing NavKit file', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tools', 'navboundary.py'), 'sp_004_b', missing], 'navboundary', 'what to do'),
+        ('test harness, a missing saved run', [PY, os.path.join(SUITE, 'moh-automated-map-and-bot-test-harness', 'harness.py'), 'show', missing + '.json'], 'harness', 'missing'),
+        ('test harness, a file that is not a run', [PY, os.path.join(SUITE, 'moh-automated-map-and-bot-test-harness', 'harness.py'), 'compare', notrun, notrun], 'harness', 'what to do'),
         ('test runner, an unknown test name', [PY, os.path.join(SUITE, 'run_tests.py'), 'quick', '--only'], 'run-tests', 'what to do'),
     ]
     try:

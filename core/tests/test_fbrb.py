@@ -15,7 +15,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SUITE = os.path.abspath(os.path.join(HERE, '..', '..'))
-TOOL = os.path.join(SUITE, 'bfbc2-fbrb-tool', 'FbrbTool.exe')
+TOOL = os.path.join(SUITE, 'moh-fbrb-tool', 'FbrbTool.exe')
 DELETED = '*deleted*'
 
 
@@ -86,7 +86,7 @@ def roundtrip(bundle, work, old_style=False):
 
 def main(argv):
     if not os.path.isfile(TOOL):
-        print(f'FAIL: {TOOL} not built (run bfbc2-fbrb-tool\\build.bat)')
+        print(f'FAIL: {TOOL} not built (run moh-fbrb-tool\\build.bat)')
         return 1
     failed = 0
     work = tempfile.mkdtemp(prefix='fbrb_test_')
@@ -109,7 +109,7 @@ def main(argv):
                 failed += 1
                 print('FAIL empty non-marker entry was not written')
         if '--game' in argv:
-            sys.path.insert(0, os.path.join(SUITE, 'bfbc2-auto-navkit'))
+            sys.path.insert(0, os.path.join(SUITE, 'moh-auto-navkit'))
             import navkit
             game = os.path.join(navkit.find_opfor(None), 'game')
             k = argv.index('--game')

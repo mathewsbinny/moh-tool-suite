@@ -11,9 +11,9 @@ import tempfile
 
 SUITE = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 RUNS = [
-    ('Map Inspector', os.path.join(SUITE, 'bfbc2-map-inspector', 'inspector.py'), []),
-    ('Navigation Studio, islands', os.path.join(SUITE, 'bfbc2-navigation-studio', 'studio.py'), ['--color', 'island']),
-    ('Navigation Studio, difference', os.path.join(SUITE, 'bfbc2-navigation-studio', 'studio.py'), ['--color', 'difference']),
+    ('Map Inspector', os.path.join(SUITE, 'moh-map-inspector', 'inspector.py'), []),
+    ('Navigation Studio, islands', os.path.join(SUITE, 'moh-navigation-studio', 'studio.py'), ['--color', 'island']),
+    ('Navigation Studio, difference', os.path.join(SUITE, 'moh-navigation-studio', 'studio.py'), ['--color', 'difference']),
 ]
 
 

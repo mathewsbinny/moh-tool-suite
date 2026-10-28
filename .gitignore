@@ -2,4 +2,4 @@ __pycache__/
 *.pyc
 
 # hello_imgui window layout, per user
-BFBC2_*.ini
+MOH_*.ini

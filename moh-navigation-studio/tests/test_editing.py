@@ -1,0 +1,138 @@
+r"""The Navigation Studio's edit mode without a window: the studio is built for a level (sp_004_b) and the editor
+is driven as clicks would drive it - every tool, an outline finished with Enter, a box, two-point tools, a
+note without text refused, undo / redo, save and reload, the click mode (clicks stop selecting while a tool
+is on), and a DICE base refusing region edits. Needs Project OPFOR's game copy and a NavKit build of the level.
+
+  python test_editing.py [level]
+"""
+import os
+import shutil
+import sys
+import tempfile
+
+import numpy as np
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+STUDIO = os.path.abspath(os.path.join(HERE, '..'))
+sys.path.insert(0, STUDIO)
+sys.path.insert(0, os.path.join(STUDIO, '..', 'core'))
+import studio  # noqa: E402
+import editing  # noqa: E402
+from mohcore import level as levelmod, navdata, navpath, navtune as nt  # noqa: E402
+
+
+class FakeViewer:
+    """What the editor and studio use of the viewer: the click mode, the overlay and the camera."""
+    def __init__(self):
+        self.select_on_click = True
+        self.overlay = []
+
+    def set_overlay(self, segs):
+        self.overlay = list(segs)
+
+
+def main(argv):
+    lv = argv[1] if len(argv) > 1 else 'sp_004_b'
+    failed = 0
+
+    def check(ok, what):
+        nonlocal failed
+        failed += not ok
+        print(f'{"ok  " if ok else "FAIL"} {what}')
+
+    lvl = levelmod.load(lv, log=lambda *a: None)
+    cand, ref = studio.default_files(lvl.opfor, lvl.lv)
+    cache = os.path.join(lvl.opfor, 'work', 'navstudio', 'cache')
+    files = {name: navdata.load(p, lvl.heightfield, cache) for name, p in (('NavKit', cand), ('DICE', ref)) if p}
+    if 'NavKit' not in files:
+        print(f'FAIL no NavKit build of {lv} (run navkit.py build or navregress.py first)')
+        return 1
+    st = studio.Studio(lvl, files)
+    tmp = tempfile.mkdtemp(prefix='editing_test_')
+    try:
+        v = FakeViewer()
+        ed = editing.Editor(st, lvl.opfor, lvl.lv, f'Levels/{lvl.name}')
+        ed.path = os.path.join(tmp, f'{lv}.navtune.json')
+        ed.tune = nt.NavTune.new(f'Levels/{lvl.name}', files['NavKit'].path)
+        st.editor = ed
+        check(ed.target == 'NavKit' and ed.tune.kind == 'navkit', 'the editor works on NavKit\'s build (a NavKit base)')
+        g = navpath.ground_nodes(files['NavKit'])
+        p0 = g[np.nonzero(files['NavKit'].node_island == 0)[0][50]]
+        pts = [p0 + d for d in ([0, 0, 0], [10, 0, 0], [10, 1, 10], [0, 1, 10])]
+
+        ed.set_open(v, True)
+        ed.tool = 'unwalkable'
+        st.sync_click_mode(v)
+        check(not v.select_on_click, 'with a tool on, clicks stop selecting')
+        for p in pts:
+            ed.click(v, p)
+        ed.finish_polygon(v)
+        o = ed.tune.operations[-1]
+        check(o['op'] == 'unwalkable' and len(o['region']['polygon']) == 4 and o['by'] == nt.author(),
+              'an outline of 4 clicks becomes an unwalkable region, recorded as this PC')
+        lo, hi = o['region']['y']
+        check(abs(lo - (p0[1] - 2.0)) < 0.01 and abs(hi - (p0[1] + 1 + 4.0)) < 0.01, 'its height range: 2 m below, 4 m above the clicks')
+        ed.tool, ed.shape = 'walkable', 'box'
+        ed.click(v, pts[0]); ed.click(v, pts[2])
+        check(ed.tune.operations[-1]['op'] == 'walkable' and 'box' in ed.tune.operations[-1]['region'], 'two corners make a walkable box')
+        ed.shape = 'polygon'
+        for tool in ('seed', 'unseed'):
+            ed.tool = tool
+            ed.click(v, pts[1])
+        ed.tool = 'note'
+        ed.note_text = ''
+        n = len(ed.tune.operations)
+        ed.click(v, pts[1])
+        check(len(ed.tune.operations) == n and ed.message == 'type the note first', 'a note without text is not added')
+        ed.note_text = 'check the stairs'
+        ed.click(v, pts[1])
+        for tool in ('link-areas', 'route-edge add', 'route-edge remove'):
+            ed.tool = tool
+            ed.click(v, pts[0]); ed.click(v, pts[3])
+        ed.tool, ed.trav_kind, ed.two_way = 'traversal', 0, False
+        ed.click(v, pts[0]); ed.click(v, pts[0] + [0, 6, 0])
+        names = [o['op'] + (' ' + o['action'] if 'action' in o else '') for o in ed.tune.operations]
+        check(names == ['unwalkable', 'walkable', 'seed', 'unseed', 'note', 'link-areas', 'route-edge add', 'route-edge remove', 'traversal'],
+              'every tool adds its operation')
+        t = ed.tune.operations[-1]
+        check(t['kind'] == 'ladder' and t['two-way'] is False and t['top'][1] - t['bottom'][1] == 6.0, 'the traversal: a one-way ladder, 6 m')
+        check(len(v.overlay) > 40, f'the edits are drawn ({len(v.overlay)} overlay lines)')
+        ed.undo(v); ed.undo(v)
+        check(len(ed.tune.operations) == 7, 'undo twice')
+        ed.redo(v)
+        check(len(ed.tune.operations) == 8, 'redo once')
+        ed.tune.save(ed.path)
+        again = nt.load(ed.path)
+        check(again.operations == ed.tune.operations, 'saved and loaded back unchanged')
+        # the apply button: navkit apply in the background, on a copy of the side file, into a temporary file
+        ed.job_out = os.path.join(tmp, 'edited.hpd')
+        ed.start_apply()
+        import time
+        t0 = time.time()
+        while ed.job_state() == 'running' and time.time() - t0 < 900:
+            time.sleep(2)
+        state = ed.job_state()
+        check(state == 'done' and os.path.isfile(ed.job_out) and any('read back' in l for l in ed.job_log),
+              f'the apply button builds with the edits in the background ({time.time() - t0:.0f} s): {state}')
+        check(any('link / route-edge edit(s) applied' in l for l in ed.job_log), 'its log reports the links and route edges')
+        ed.set_open(v, False)
+        check(v.select_on_click and ed.tool is None, 'closing the panel gives clicks back to selecting')
+
+        dice = editing.Editor(st, lvl.opfor, lvl.lv, f'Levels/{lvl.name}')
+        dice.target = 'DICE'
+        dice.tune = nt.NavTune.new(f'Levels/{lvl.name}', files['DICE'].path, kind='dice') if 'DICE' in files else None
+        if dice.tune is not None:
+            dice.open, dice.tool = True, 'seed'
+            dice.click(v, pts[0])
+            check(not dice.tune.operations and 'DICE base' in dice.message, 'on a DICE base, region edits are refused')
+            dice.tool = 'link-areas'
+            dice.click(v, pts[0]); dice.click(v, pts[3])
+            check(len(dice.tune.operations) == 1, 'and links are taken')
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    print('all passed' if not failed else f'{failed} check(s) failed')
+    return 1 if failed else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))

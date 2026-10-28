@@ -18,7 +18,7 @@ import tempfile
 SUITE = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 GAME_TYPES = re.compile(r'\.(dbx|res|fbrb|hpd|sb|raw|bik|fsb|fev|dds|tga|hkx)$', re.I)
 MAX_BLOB = 1_000_000
-LARGE_ALLOWED = {'bfbc2-dbx-tools/tests/fingerprints_795745.txt'}       # SHA-1 hashes only
+LARGE_ALLOWED = {'moh-dbx-tools/tests/fingerprints_795745.txt'}       # SHA-1 hashes only
 ATTRIBUTION = re.compile(r'co-authored-by|generated with \[?claude|noreply@anthropic', re.I)
 TRACKED_NEVER = re.compile(r'(\.exe|\.pyc|\.dll|\.pdb)$|(^|/)__pycache__/', re.I)
 
@@ -61,7 +61,7 @@ def main(argv):
     tracked = git('ls-files').splitlines()
     results.append(('no build output or caches tracked', [t for t in tracked if TRACKED_NEVER.search(t)]))
 
-    folders = [d for d in sorted(os.listdir(SUITE)) if os.path.isdir(os.path.join(SUITE, d)) and (d.startswith('bfbc2-') or d == 'core')]
+    folders = [d for d in sorted(os.listdir(SUITE)) if os.path.isdir(os.path.join(SUITE, d)) and (d.startswith('moh-') or d == 'core')]
     results.append(('a README.md in every tool folder', [d for d in folders if not os.path.isfile(os.path.join(SUITE, d, 'README.md'))]))
     results.append(('LICENSE at the root', [] if os.path.isfile(os.path.join(SUITE, 'LICENSE')) else ['LICENSE missing']))
 

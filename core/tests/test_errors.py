@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(HERE, '..'))
 def main(argv):
     tmp = tempfile.mkdtemp(prefix='errors_test_')
     os.environ['LOCALAPPDATA'] = tmp                       # logs go here, not to the real log folder
-    from bfbc2core import errors
+    from mohcore import errors
     failed = 0
 
     def check(ok, what):
@@ -48,8 +48,8 @@ def main(argv):
 
         errors.setup('test-tool', gui=False)
         path = errors._state['path']
-        check(os.path.isfile(path) and os.path.dirname(path) == os.path.join(tmp, 'bfbc2-tool-suite', 'logs'),
-              'the log file is in %LOCALAPPDATA%\\bfbc2-tool-suite\\logs')
+        check(os.path.isfile(path) and os.path.dirname(path) == os.path.join(tmp, 'moh-tool-suite', 'logs'),
+              'the log file is in %LOCALAPPDATA%\\moh-tool-suite\\logs')
         try:
             {}['missing key']
         except KeyError as ex:
@@ -82,14 +82,14 @@ def main(argv):
             code = ex.code
         check(code == 130, 'guard: Ctrl+C exits with 130')
 
-        logs = os.path.join(tmp, 'bfbc2-tool-suite', 'logs')
+        logs = os.path.join(tmp, 'moh-tool-suite', 'logs')
         for k in range(30):
             open(os.path.join(logs, f'old-tool-2020-01-{k + 1:02d}.log'), 'w').close()
         errors._prune('old-tool')
         kept = sorted(f for f in os.listdir(logs) if f.startswith('old-tool'))
         check(len(kept) == 20 and kept[0] == 'old-tool-2020-01-11.log', 'old logs: the 20 newest per tool are kept')
 
-        from bfbc2core import viewer
+        from mohcore import viewer
         v = viewer.Viewer(viewer.Scene(), 'test')
 
         def bad_panel(_):
@@ -101,9 +101,9 @@ def main(argv):
               'the 3D view: a failing panel is logged once and listed in Problems (the frame goes on)')
     finally:
         import logging
-        for h in list(logging.getLogger('bfbc2').handlers):
+        for h in list(logging.getLogger('moh').handlers):
             h.close()
-            logging.getLogger('bfbc2').removeHandler(h)
+            logging.getLogger('moh').removeHandler(h)
         shutil.rmtree(tmp, ignore_errors=True)
     print('all passed' if not failed else f'{failed} check(s) failed')
     return 1 if failed else 0
