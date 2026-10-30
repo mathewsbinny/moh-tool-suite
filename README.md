@@ -34,9 +34,10 @@ The suite came from the BFBC2 suite and is being moved to Medal of Honor (2010).
   one, and its map's `common_mp_<nn>` before `common_mp`; two DLC levels (`mp_03_elimination`, `mp_07_koth`) have
   no bundle of their own and come from `common_mp_03` / `common_mp_07`. NavKit's prepare step, the level loader and
   the 3D tools read them that way (checked on mp_01 and mp_03_elimination).
-- **No AI in MoHMPGame.exe:** the multiplayer client has no Kynapse runtime and no AI entity types (no AI
-  spawners, orders, `HasAI`, `PathfindingTypes` or `SectorOffsets`); Medal of Honor's AI is in the Unreal Engine 3
-  singleplayer game. No level ships `pathdata.hpd`. So the parts built on the BFBC2 game's own AI - DICE parity
+- **No AI in MoHMPGame.exe:** the multiplayer client has no Kynapse runtime and no AI behaviour (no AI orders,
+  `HasAI`, `PathfindingTypes` or `SectorOffsets`) - only the leftover AI-player spawn path (`SoldierSpawnEntityData`
+  with `PlayerType` `SSAiPlayer`), which OPFOR's bots will use as BF1943's do (project-opfor-moh\BOT_PLAN.md);
+  Medal of Honor's AI is in the Unreal Engine 3 singleplayer game. No level ships `pathdata.hpd`. So the parts built on the BFBC2 game's own AI - DICE parity
   scores, the stock-MP AI layer (`moh-stockmp-ai`), the harness's AI-readiness checks, NavKit's in-game sampler and
   install step - have nothing to run against yet: OPFOR's bots need their own runtime, which will read NavKit's
   navigation data. Their tests still use BFBC2 fixtures (`sp_*`, `ons_mp_*`, build 795745).

@@ -6,3 +6,11 @@
 00407980  registry write (HKLM\SOFTWARE\DICE\PYTHON\Game, a DWORD value)  | the OPFOR core sends this key to HKCU\Software\Project OPFOR\MOH\DICE\PYTHON\Game
 009349F0  Documents folder: <Documents>\EA Games\Medal of Honor\Multiplayer (SHGetSpecialFolderPathA + SHCreateDirectoryExA)  | with the OPFOR core: <Documents>\Project OPFOR\MOH\EA Games\Medal of Honor\Multiplayer
 0108D200  SingleMgr mutex (SingleMgrMutex<pid>, one per process)
+00439CD0  client state machine: change state ("Client switching state")
+0048CDA0  LAN backend: name ("Lan")
+00536A60  ServerMain (reads Server.Backend at 0x00536C21)
+00946730  settings lookup (name, type object) -> pointer to the value
+00946840  command-line argument (name, default, index); the single-instance check asks it for runMultipleGameInstances at 0x004023DD
+00C8D970  BlazeHub::initialize (BlazeSDK 2.11.5.2)  | an online start-up: the client tries EA's Blaze redirector - OPFOR's offline plan replaces this path (project-opfor-moh\OFFLINE_PLAN.md)
+00C8DAC0  Blaze redirector connect failure
+01010900  NetConnStartup
