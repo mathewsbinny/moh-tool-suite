@@ -8,8 +8,8 @@ share one core: level loading, a 3D view, picking and the game's data formats.
 1. Install Python 3.10 or newer, then the libraries the tools use:
    `pip install numpy matplotlib moderngl glfw imgui-bundle pillow` (and `pefile capstone` for the crash
    reader's code view).
-2. Put this folder next to your `Project OPFOR` folder (or set `OPFOR_ROOT` to it): the tools read the game
-   copy there.
+2. Put this folder next to your `project-opfor-moh` folder (or set `OPFOR_ROOT` to it): the tools read the
+   game copy in its `game\` folder (`game\MP\MoHMPGame.exe` and its data; `core\mohcore\gamecopy.py` has the layout).
 3. Double-click **`MOH Tool Suite.pyw`**. One window has every tool:
    - **Levels:** choose a level, then **Open in Map Inspector** or **Open in Navigation Studio** (or
      double-click the level). A level is unpacked the first time (offline, about 20 s); the tool's progress
@@ -23,7 +23,26 @@ share one core: level loading, a 3D view, picking and the game's data formats.
 
 The 3D tools can also be started on their own: double-click `moh-map-inspector\inspector.py` or
 `moh-navigation-studio\studio.py` and a level picker opens, or give the level on the command line
-(`python studio.py sp_01`). On a laptop with two GPUs, see "The 3D tools and your GPU" below.
+(`python studio.py mp_01`). On a laptop with two GPUs, see "The 3D tools and your GPU" below.
+
+### Medal of Honor's data (2026-10-29)
+
+The suite came from the BFBC2 suite and is being moved to Medal of Honor (2010). What holds now:
+
+- **Levels:** the 26 multiplayer levels of `package.mft`, base and DLC (`mp_01` ... `mp_10_tdm`, the Elimination
+  and King of the Hill maps). A level loads the patch's copy of a bundle (`MP\dist\win32\patch\`) over the base
+  one, and its map's `common_mp_<nn>` before `common_mp`; two DLC levels (`mp_03_elimination`, `mp_07_koth`) have
+  no bundle of their own and come from `common_mp_03` / `common_mp_07`. NavKit's prepare step, the level loader and
+  the 3D tools read them that way (checked on mp_01 and mp_03_elimination).
+- **No AI in MoHMPGame.exe:** the multiplayer client has no Kynapse runtime and no AI entity types (no AI
+  spawners, orders, `HasAI`, `PathfindingTypes` or `SectorOffsets`); Medal of Honor's AI is in the Unreal Engine 3
+  singleplayer game. No level ships `pathdata.hpd`. So the parts built on the BFBC2 game's own AI - DICE parity
+  scores, the stock-MP AI layer (`moh-stockmp-ai`), the harness's AI-readiness checks, NavKit's in-game sampler and
+  install step - have nothing to run against yet: OPFOR's bots need their own runtime, which will read NavKit's
+  navigation data. Their tests still use BFBC2 fixtures (`sp_*`, `ons_mp_*`, build 795745).
+- **Build:** the MP client is build 592256. The crash reader and exeref name its functions from
+  `symbols_592256.txt` (a start: the window-position registry key, the Documents folder); aptrefs reads its extern
+  table but its getter tables are still BFBC2's (build 795745) and are skipped.
 
 ### When something goes wrong
 
@@ -75,7 +94,7 @@ section 4.9).
 The Map Inspector and the Navigation Studio draw with OpenGL 3.3. Each prints the GPU it uses when it starts
 (and shows it in its status line). On a laptop with two GPUs, Windows may give Python the slower integrated
 one: set `python.exe` to "High performance" in Settings > System > Display > Graphics. On the development
-PC that took the Navigation Studio on SP_01 (10.4 million triangles) from the AMD Radeon integrated GPU to
+PC that took the Navigation Studio on a 10.4-million-triangle level from the AMD Radeon integrated GPU to
 the GeForce RTX 4060, at 144 frames a second.
 
 ## Tests

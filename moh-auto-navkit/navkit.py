@@ -49,6 +49,8 @@ import time
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)   # no console flashes when run from the GUI
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, 'tools'))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'core'))
+from mohcore import gamecopy  # noqa: E402  (the game copy's layout)
 
 DETAILED_BUDGET_MS = 400   # pitch-0.2 runs: ms of sampling per frame - 10x the columns of a normal run, so it must finish
                            # in less game time than a round or a campaign level allows an idle player (150: ONS_MP_002 at
@@ -72,22 +74,12 @@ class NavKitError(Exception):
 
 
 def find_opfor(given=None):
-    """The Project OPFOR folder: --opfor, else OPFOR_ROOT, else the closest folder (walking up
-    and checking each ancestor and its children) that holds the MOH copy."""
-    candidates = [given, os.environ.get('OPFOR_ROOT')]
-    d = HERE
-    while os.path.dirname(d) != d:
-        d = os.path.dirname(d)
-        candidates.append(d)
-        try:
-            candidates.extend(os.path.join(d, s) for s in os.listdir(d))
-        except OSError:
-            pass
-    for c in candidates:
-        if c and os.path.isfile(os.path.join(c, 'Medal of Honor', 'MP', 'mohmpgame.exe')):
-            return os.path.abspath(c)
-    raise NavKitError('Project OPFOR not found - pass --opfor <folder> or set OPFOR_ROOT '
-                      f'(looked for a game\\ folder in: {", ".join(c for c in candidates if c)})')
+    """The Project OPFOR: Medal of Honor folder: --opfor, else OPFOR_ROOT, else project-opfor-moh next to the suite
+    (core\\mohcore\\gamecopy.py)."""
+    try:
+        return gamecopy.find_root(given)
+    except gamecopy.GameNotFound as e:
+        raise NavKitError(str(e)) from None
 
 
 def find_tool(opfor, exe, toolkit_dir):
@@ -101,24 +93,29 @@ def find_tool(opfor, exe, toolkit_dir):
 class Project:
     def __init__(self, root=None):
         self.root = find_opfor(root)
-        self.game = os.path.join(self.root, 'Medal of Honor', 'MP')
+        self.copy = gamecopy.GameCopy(self.root)
+        self.game = self.copy.mp          # the MP client's folder (MoHMPGame.exe, dist\\, Output\\)
         self.work = os.path.join(self.root, 'work')
-        self.ini = os.path.join(self.game, 'opfor.ini')
-        self.log_path = os.path.join(self.game, 'logs', 'opfor.log')
-        if not os.path.isfile(os.path.join(self.game, 'mohmpgame.exe')):
-            raise NavKitError(f'no game copy in {self.game} (run OPFOR\'s setup_game.bat first)')
+        self.ini = self.copy.ini
+        self.log_path = self.copy.log
         self.fbrbtool = find_tool(self.root, 'FbrbTool.exe', 'moh-fbrb-tool')
         self.dbxedit = find_tool(self.root, 'DbxEdit.exe', 'moh-dbx-tools')
 
     # --- levels --------------------------------------------------------------------------------------
     def level_dirs(self):
-        base = os.path.join(self.game, 'dist', 'win32', 'levels')
-        return {d.lower(): os.path.join(base, d) for d in sorted(os.listdir(base))
-                if os.path.isfile(os.path.join(base, d, 'level-00.fbrb')) and not d.lower().startswith('common_mp')
-                and not d.lower().startswith('opfor_')}   # opfor_*: OPFOR's data-fill bundles, not levels
+        """{level: the folder of its lowest level-00.fbrb} - base levels in dist\\win32\\levels, DLC levels only in
+        dist\\win32\\patch\\levels; level_bundles gives every layer."""
+        out = {}
+        for lv in self.copy.levels():
+            own = self.copy.level_bundles(lv) or self.copy.load_set(lv)[-1:]   # mp_03_elimination: its common_mp_03
+            out[lv] = os.path.dirname(own[0]) if own else None
+        return {lv: d for lv, d in out.items() if d}
+
+    def level_bundles(self, lv, name='level-00.fbrb'):
+        return self.copy.level_bundles(lv, name)
 
     def pathdata(self, lv):
-        return os.path.join(self.game, 'Output', 'win32', 'ai', 'levels', lv, 'infantry', 'pathdata.hpd')
+        return self.copy.pathdata(lv)
 
     def dice_pathdata(self, lv):
         """The level's original path data (the backup if NavKit's file is installed), or None."""
@@ -188,7 +185,7 @@ class Project:
 
 # --- steps -----------------------------------------------------------------------------------------------
 def levels(pr, log=print):
-    log('level        AI path data   NavKit')
+    log('level              AI path data   NavKit')
     for lv, d in pr.level_dirs().items():
         ai = 'yes (samplable)' if pr.dice_pathdata(lv) else 'no'
         done = []
@@ -198,7 +195,7 @@ def levels(pr, log=print):
             done.append('built')
         if os.path.isfile(pr.pathdata(lv) + BACKUP_SUFFIX) or os.path.isfile(pr.pathdata(lv) + NEW_SUFFIX):
             done.append('INSTALLED')
-        log(f'{lv:12s} {ai:14s} {", ".join(done)}')
+        log(f'{lv:18s} {ai:14s} {", ".join(done)}')
 
 
 def level_names(pr):
@@ -210,18 +207,15 @@ def prepare(pr, lv, log=print, box=None, y=None):
     import levelobjects
     log(f'== prepare {lv}')
     common = []
-    for c in ('common_mp',):
-        dest = os.path.join(pr.work, 'navkit', 'common', c)
-        pr.unpack(os.path.join(pr.game, 'dist', 'win32', 'levels', c, 'level-00.fbrb'), dest, log)
-        common.append(dest)
+    for c in pr.copy.commons(lv):
+        # the base copy into common\\<c>, the patch's (which replaces entries) into common\\<c>.patch
+        for bundle in pr.copy.layers(f'levels/{c}/level-00.fbrb'):
+            name = c + ('.patch' if os.path.normcase(bundle).startswith(os.path.normcase(pr.copy.patch)) else '')
+            pr.unpack(bundle, os.path.join(pr.work, 'navkit', 'common', name), log)
+    common = common_dirs(pr.root, lv)
     L = pr.level_work(lv)
-    pr.unpack(os.path.join(pr.level_dirs()[lv], 'level-00.fbrb'), os.path.join(L, 'dist'), log)
-    pkg = os.path.join(pr.game, 'Package', 'levels', os.path.basename(pr.level_dirs()[lv]), 'level-00.fbrb')
-    if os.path.isfile(pkg):
-        pr.unpack(pkg, os.path.join(L, 'pkg'), log)
-    else:
-        os.makedirs(os.path.join(L, 'pkg'), exist_ok=True)
-    LV = level_partition_name(L, lv)
+    unpack_level(pr, lv, L, log, common)
+    LV = level_partition_name(L, lv, common)
     log('  extracting objects, collision and spawn points ...')
     levelobjects.main(['levelobjects.py', L, LV] + common)
     import ladders
@@ -256,11 +250,64 @@ def prepare(pr, lv, log=print, box=None, y=None):
     log(f'  settings: {os.path.relpath(pr.settings_path(lv), pr.root)}')
 
 
-def level_partition_name(L, lv):
-    for f in glob.glob(os.path.join(L, 'dist', 'levels', '*.xml')):
-        b = os.path.splitext(os.path.basename(f))[0]
-        if b.lower() == lv:
-            return b
+def common_dirs(root, lv=None):
+    """The unpacked shared bundles a level loads (work\\navkit\\common\\<c>[.patch]) in the game's order - its map's
+    common_mp_<nn>, then common_mp, each the patch's copy first; readers take the first file found. Without a level:
+    common_mp alone."""
+    out = []
+    for c in (gamecopy.GameCopy(root).commons(lv) if lv else ['common_mp']):
+        for name in (c + '.patch', c):
+            d = os.path.join(root, 'work', 'navkit', 'common', name)
+            if os.path.isdir(d):
+                out.append(d)
+    return out
+
+
+def unpack_level(pr, lv, L, log, common=()):
+    """The level as the game loads it, in L\\dist: its level-00 bundle unpacked there, with the patch's copy (unpacked
+    into L\\pkg) laid over it file by file - levelobjects.py and the other readers read L\\dist. A level without a
+    bundle of its own (mp_03_elimination, mp_07_koth) gets its files (levels\\<lv>.*, levels\\<lv>\\) from its map's
+    common bundles ('common': their unpacked folders, first found wins). Returns the files laid over the base copy
+    (listed in L\\pkg_overlay.txt)."""
+    layers = pr.level_bundles(lv)
+    dist, pkg = os.path.join(L, 'dist'), os.path.join(L, 'pkg')
+    os.makedirs(pkg, exist_ok=True)
+    if layers:
+        pr.unpack(layers[0], dist, log)
+        if len(layers) == 1:
+            return []
+        pr.unpack(layers[-1], pkg, log)
+        sources = [pkg]
+    else:
+        os.makedirs(dist, exist_ok=True)
+        sources = list(common)
+    copied, seen = [], set()
+    for src in sources:
+        top = os.path.join(src, 'levels')
+        for dp, _, fs in os.walk(top):
+            for f in fs:
+                rel = os.path.relpath(os.path.join(dp, f), top)
+                first = rel.replace('\\', '/').split('/')[0].lower()
+                if not layers and not (first == lv or first.startswith(lv + '.') or first.startswith(lv + '_description')):
+                    continue                                   # from a common bundle: this level's files only
+                if rel.lower() in seen:
+                    continue
+                seen.add(rel.lower())
+                dst = os.path.join(dist, 'levels', rel)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copyfile(os.path.join(dp, f), dst)
+                copied.append(rel)
+    open(os.path.join(L, 'pkg_overlay.txt'), 'w', encoding='utf-8').write('\n'.join(sorted(copied)) + '\n')
+    log(f'  {"patch" if layers else "common"} overlay: {len(copied)} level files laid over {os.path.relpath(dist, pr.root)}')
+    return copied
+
+
+def level_partition_name(L, lv, common=()):
+    for d in [os.path.join(L, 'pkg'), os.path.join(L, 'dist')] + list(common):
+        for f in glob.glob(os.path.join(d, 'levels', '*.xml')):
+            b = os.path.splitext(os.path.basename(f))[0]
+            if b.lower() == lv:
+                return b
     raise NavKitError(f'{lv}: level partition levels/{lv}.xml not found in the bundle')
 
 
@@ -298,9 +345,9 @@ def fmt(v):
 
 
 def game_running():
-    r = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq mohmpgame.exe', '/NH'], capture_output=True, text=True,
+    r = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq MoHMPGame.exe', '/NH'], capture_output=True, text=True,
                        creationflags=NO_WINDOW)
-    return 'mohmpgame.exe' in r.stdout
+    return 'mohmpgame.exe' in r.stdout.lower()
 
 
 def ini_set(text, section, key, value):
@@ -376,7 +423,7 @@ def detailed_sectors(pr, lv):
         c = json.load(open(cache))
         if c.get('key') == key:
             return [tuple(x) for x in c['sectors']]
-    common = [os.path.join(pr.work, 'navkit', 'common', c) for c in ('common_mp',)]
+    common = common_dirs(pr.root, lv)
     chosen, why = detailed.choose(pr.level_work(lv), common, sp, s['xoff'], s['zoff'])
     json.dump({'key': key, 'sectors': chosen, 'why': why}, open(cache, 'w'))
     return chosen
@@ -530,12 +577,12 @@ def read_log(pr, start):
 def close_game():
     if not game_running():
         return
-    subprocess.run(['taskkill', '/IM', 'mohmpgame.exe'], capture_output=True, creationflags=NO_WINDOW)
+    subprocess.run(['taskkill', '/IM', 'MoHMPGame.exe'], capture_output=True, creationflags=NO_WINDOW)
     for _ in range(10):
         time.sleep(1)
         if not game_running():
             return
-    subprocess.run(['taskkill', '/F', '/IM', 'mohmpgame.exe'], capture_output=True, creationflags=NO_WINDOW)
+    subprocess.run(['taskkill', '/F', '/IM', 'MoHMPGame.exe'], capture_output=True, creationflags=NO_WINDOW)
     time.sleep(2)
 
 

@@ -10,7 +10,7 @@ r"""exeref.py - where mohmpgame.exe uses a string or an address, with a short di
         a short window of code around an address (at most 0x100 bytes each way), the instruction at it marked;
         strings and known functions named
 Options: --exe <mohmpgame.exe> (default: Project OPFOR's game copy, as the crash reader finds it), --symbols <file>
-(more names, the crash reader's format; symbols_795745.txt is always read).
+(more names, the crash reader's format; symbols_592256.txt is always read).
 
 For targeted questions ("which code reads this setting name", "who calls this function") - the suite's rule is short,
 targeted disassembly, no bulk decompiling: windows are capped and nothing is exported. Needs pefile and capstone
@@ -213,13 +213,13 @@ def main(argv):
     cmd = args.pop(0)
     exe_path = take(args, '--exe') or crashreader.find_exe()
     if not exe_path or exe_path is True:
-        raise ExeRefError('mohmpgame.exe not found - give it with --exe <path>')
+        raise ExeRefError('MoHMPGame.exe not found - give it with --exe <path>')
     if not os.path.isfile(exe_path):
         raise FileNotFoundError(exe_path)
     extra = []
     while '--symbols' in args:
         extra.append(take(args, '--symbols'))
-    syms = crashreader.read_symbols([os.path.join(HERE, 'symbols_795745.txt')] + extra)
+    syms = crashreader.read_symbols([crashreader.SYMBOLS] + extra)
     exact = take(args, '--exact', False, has_value=False)
     mx = int(take(args, '--max', '40'))
     dis = take(args, '--dis')

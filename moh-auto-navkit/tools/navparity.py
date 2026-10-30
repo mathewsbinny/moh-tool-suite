@@ -50,7 +50,8 @@ def opfor_root(given=None):
 
 
 def reference_of(root, lv):
-    p = os.path.join(root, 'game', 'Output', 'win32', 'ai', 'levels', lv, 'infantry', 'pathdata.hpd')
+    import navkit
+    p = navkit.gamecopy.GameCopy(root).pathdata(lv)
     return p + '.opfor-orig' if os.path.isfile(p + '.opfor-orig') else p
 
 

@@ -21,6 +21,7 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.dirname(HERE))   # navkit.py
 import levelobjects  # noqa: E402
 import navsample  # noqa: E402
 
@@ -94,14 +95,15 @@ def main(argv):
         return 1
     lv = argv[1].lower()
     opts = dict(zip(argv[2:], argv[3:]))
-    root = os.environ.get('OPFOR_ROOT') or r'C:\Games\Project OPFOR'
+    import navkit
+    root = navkit.find_opfor(opts.get('--opfor'))
     L = os.path.join(root, 'work', 'levels', lv)
-    common = [os.path.join(root, 'work', 'navkit', 'common', c) for c in ('mp_common', 'sp_common')]
+    common = navkit.common_dirs(root, lv)
     xoff, zoff = (int(v) for v in opts['--offsets'].split(','))
     chosen, why = choose(L, common, opts.get('--samples'), xoff, zoff)
     print(f'{lv}: {len(chosen)} detailed sectors ({why})')
     if '--score' in argv:
-        p = os.path.join(root, 'game', 'Output', 'win32', 'ai', 'levels', lv, 'infantry', 'pathdata.hpd')
+        p = navkit.Project(root).pathdata(lv)
         if os.path.isfile(p + '.opfor-orig'):
             p += '.opfor-orig'
         f, d, x = score(chosen, p)

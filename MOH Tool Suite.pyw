@@ -305,7 +305,7 @@ class Hub:
         if self.pr is None:
             self.tree.insert('', 'end', text='(no game copy found)', values=('', '', '', ''))
             self.write(f'Levels: {getattr(self, "pr_error", "Project OPFOR not found")}\n'
-                       'Put the suite next to the "Project OPFOR" folder, or set OPFOR_ROOT.\n')
+                       'Put the suite next to the project-opfor-moh folder (with its game\\ copy), or set OPFOR_ROOT.\n')
             return
         for lv in self.pr.level_dirs():
             work = os.path.join(self.pr.work, 'levels', lv)

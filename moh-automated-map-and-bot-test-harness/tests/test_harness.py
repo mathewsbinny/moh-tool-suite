@@ -337,14 +337,15 @@ def quick(check, tmp):
           and levelchecks.kits_loaded(info).status == 'warn', 'the template itself not loadable: fail; a kit missing: a warning')
     mft = os.path.join(tmp, 'package.mft')
     open(mft, 'w').write('BundleSource game:levels/other/level-00.fbrb\nBundleTarget game:levels/other/level-00.fbrb\n\n'
-                         'BundleSource game:levels/test_level/level-00.fbrb\nBundleTarget package:levels/test_level/level-00.fbrb\n'
-                         'BundleTarget game:levels/test_level/level-00.fbrb\nBundleTarget game:levels/sp_common/level-00.fbrb\n\n'
+                         'BundleSource game:levels/test_level/level-00.fbrb\nBundleTarget game:patch/levels/test_level/level-00.fbrb\n'
+                         'BundleTarget game:levels/test_level/level-00.fbrb\nBundleTarget game:levels/common_mp/level-00.fbrb\n\n'
                          'BundleSource game:levels/test_level/loader-00.fbrb\nBundleTarget game:levels/test_level/loader-00.fbrb\n')
     ls = levelinfo.load_set(tmp, 'test_level', mft)
-    check([x[0] for x in ls] == ['package:levels/test_level/level-00.fbrb', 'game:levels/test_level/level-00.fbrb', 'game:levels/sp_common/level-00.fbrb']
-          and ls[0][1] == os.path.join(tmp, 'game', 'Package', 'levels', 'test_level', 'level-00.fbrb')
-          and ls[2][1] == os.path.join(tmp, 'game', 'Dist', 'win32', 'levels', 'sp_common', 'level-00.fbrb'),
-          'load set from package.mft: the level-00 block only; package: and game: targets as files')
+    dist = os.path.join(tmp, 'game', 'MP', 'dist', 'win32')
+    check([x[0] for x in ls] == ['game:patch/levels/test_level/level-00.fbrb', 'game:levels/test_level/level-00.fbrb', 'game:levels/common_mp/level-00.fbrb']
+          and ls[0][1] == os.path.join(dist, 'patch', 'levels', 'test_level', 'level-00.fbrb')
+          and ls[2][1] == os.path.join(dist, 'levels', 'common_mp', 'level-00.fbrb'),
+          'load set from package.mft: the level-00 block only; patch and base targets as files')
     check(levelinfo.load_set(tmp, 'missing_level', mft) == [], 'a level without a block: an empty load set')
 
     # fbrb

@@ -119,16 +119,18 @@ def bundle_read(path, wanted, cache_dir):
 # ------------------------------------------------------------------------------------------------ game copy
 
 def bundle_path(root, target):
-    """package.mft's 'game:levels/x/level-00.fbrb' (Dist) or 'package:levels/x/...' (Package) as a file path."""
-    where, _, rel = target.partition(':')
-    base = os.path.join(root, 'game', 'Package') if where.lower() == 'package' else os.path.join(root, 'game', 'Dist', 'win32')
-    return os.path.join(base, *rel.split('/'))
+    """package.mft's 'game:levels/x/level-00.fbrb' or 'game:patch/levels/x/...' as a file path (under MP\\dist\\win32)."""
+    from mohcore import gamecopy
+    _, _, rel = target.partition(':')
+    return os.path.join(gamecopy.GameCopy(root).dist, *rel.split('/'))
 
 
 def load_set(root, lv, mft=None):
     """[(target, path, exists)]: the bundles that load with the level's level-00.fbrb (its BundleSource block in
-    Dist\\win32\\package.mft, as OPFOR's apply_ai_template.py reads it); [] when there is no block."""
-    mft = mft or os.path.join(root, 'game', 'Dist', 'win32', 'package.mft')
+    MP\\dist\\win32\\package.mft: the patch's copy, the level's own, its map's common_mp_<nn>, common_mp); [] when
+    there is no block."""
+    from mohcore import gamecopy
+    mft = mft or os.path.join(gamecopy.GameCopy(root).dist, 'package.mft')
     lines = open(mft, encoding='utf-8', errors='replace').read().splitlines()
     src = f'BundleSource game:levels/{lv}/level-00.fbrb'.lower()
     for i, line in enumerate(lines):
@@ -230,7 +232,8 @@ def game_level(root, lv, info, cache_dir, log):
         except Exception as e:
             info.template_refs[tpl] = []
             info.notes.append(f'template {tpl} not read: {e}')
-    inst = os.path.join(root, 'game', 'Output', 'win32', 'ai', 'levels', lv, 'infantry', 'pathdata.hpd')
+    from mohcore import gamecopy
+    inst = gamecopy.GameCopy(root).pathdata(lv)
     info.installed = inst if os.path.isfile(inst) else None
 
 
@@ -343,8 +346,9 @@ def pathdata_files(root, lv, which=('dice', 'navkit'), navkit_source='auto'):
                  path with {lv}"""
     import navparity
     out = []
+    from mohcore import gamecopy
     dice = navparity.reference_of(root, lv)
-    inst = os.path.join(root, 'game', 'Output', 'win32', 'ai', 'levels', lv, 'infantry', 'pathdata.hpd')
+    inst = gamecopy.GameCopy(root).pathdata(lv)
     for key in which:
         if key == 'dice' and os.path.isfile(dice) and _is_dice(dice):
             out.append(('dice', dice))

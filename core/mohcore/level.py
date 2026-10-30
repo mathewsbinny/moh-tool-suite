@@ -21,7 +21,7 @@ from typing import List, Optional
 
 import numpy as np
 
-from . import dbx, terrain, water
+from . import dbx, gamecopy, terrain, water
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SUITE = os.path.abspath(os.path.join(HERE, '..', '..'))
@@ -163,10 +163,10 @@ def load(level, opfor=None, terrain_stride=2, log=print, geometry=True):
         pr = navkit.Project(root)
         navkit.prepare(pr, pr.level(lv), log=log)
     bases = [os.path.join(base, 'pkg'), os.path.join(base, 'dist')]
-    bases += [d for d in glob.glob(os.path.join(root, 'work', 'navkit', 'common', '*')) if os.path.isdir(d)]
-    # the level partition (a Package overlay wins over Dist)
+    bases += navkit.common_dirs(root, lv)
+    # the level partition (the patch's copy wins over the base one; mp_03_elimination's is in common_mp_03)
     part = None
-    for b in bases[:2]:
+    for b in bases:
         for f in glob.glob(os.path.join(b, 'levels', '*.dbx')):
             if os.path.splitext(os.path.basename(f))[0].lower() == lv:
                 part = part or f
@@ -182,8 +182,8 @@ def load(level, opfor=None, terrain_stride=2, log=print, geometry=True):
         lvl.entities.append(Entity(len(lvl.entities), el.attr('guid') or '', t, t.rsplit('.', 1)[-1], category_of(t), el.attr('id'),
                                    (el.child('Name').text if el.child('Name') is not None and el.child('Name').kind == dbx.TEXT else None),
                                    pname, transform_of(el), blueprint_of(el), el))
-    # static model groups: one entity per member placement. Each group file once: the Package copy wins over
-    # Dist, as in the game (and levels\ / Levels\ are the same folder on Windows)
+    # static model groups: one entity per member placement. Each group file once: the patch's copy wins over
+    # the base one, as in the game (and levels\ / Levels\ are the same folder on Windows)
     group_files = {}
     for b in (bases[:2] if geometry else ()):
         for gf in glob.glob(os.path.join(b, 'levels', lv, '*_HavokAsset.dbx')):
@@ -394,23 +394,20 @@ def heightfield_of(root, lv, log=print, name=None):
                     part = part or f
         name = terrain_name(dbx.read(part).instances) if part else None
     name = name or lv
+    # the lowest terrain bundle in work\levels\<lv>\terrain (a DLC level's only one, from the patch), the patch's
+    # copy of a base level's in terrain.patch; the patch's file wins, as the game loads its entries over the base's
     dest = os.path.join(root, 'work', 'levels', lv, 'terrain')
-    path = terrain.find(dest, name) if os.path.isdir(dest) else None
+    layers = gamecopy.GameCopy(root).level_bundles(lv, 'terrain-00.fbrb')
+    tool = None
+    path = None
+    for bundle, d in reversed(list(zip(layers, (dest, dest + '.patch')))):
+        if not os.path.isdir(d):
+            log(f'{lv}: unpacking {os.path.relpath(bundle, root)}')
+            tool = tool or navkit.find_tool(root, 'FbrbTool.exe', 'moh-fbrb-tool')
+            subprocess.run([tool, 'unpack', bundle, d], check=True, capture_output=True)
+        path = path or terrain.find(d, name)
     if path is None:
-        bundle = None
-        # Dist first; a level whose terrain bundle is only in Package (ONS_MP_005GR) takes that one
-        for top in (os.path.join(root, 'Medal of Honor', 'MP', 'dist', 'win32', 'levels'),):
-            for d in glob.glob(os.path.join(top, '*')):
-                if bundle is None and os.path.basename(d).lower() == lv and os.path.isfile(os.path.join(d, 'terrain-00.fbrb')):
-                    bundle = os.path.join(d, 'terrain-00.fbrb')
-        if bundle is None:
-            return None
-        log(f'{lv}: unpacking {os.path.relpath(bundle, root)}')
-        tool = navkit.find_tool(root, 'FbrbTool.exe', 'moh-fbrb-tool')
-        subprocess.run([tool, 'unpack', bundle, dest], check=True, capture_output=True)
-        path = terrain.find(dest, name)
-        if path is None:
-            return None
+        return None
     return terrain.read(path)
 
 

@@ -339,7 +339,7 @@ def cmd_import_log(args):
     folder = runs_folder(args)
     path = runs.path_of(p[0], folder)
     run = runs.load(path)
-    log_path = opt(args, '--log') or os.path.join(opfor(opt(args, '--opfor')), 'game', 'logs', 'opfor.log')
+    log_path = opt(args, '--log') or os.path.join(opfor(opt(args, '--opfor')), 'game', 'logs', 'opfor_mp.log')
     text = open(log_path, encoding='utf-8', errors='replace').read()      # read only
     found = ingame.for_level(ingame.sessions(text), lv)
     if not found:

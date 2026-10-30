@@ -10,7 +10,7 @@ config.zz is a ZIP holding the Frostbite config (.cfg / .lua). `reflect` reads t
 engine's own reflection tables (the `fieldinf` PE section of mohmpgame.exe) to enumerate
 the config surface: enums with their integer values, and fields with their offsets.
 
-Paths are auto-detected from the MOH game copy (walking up + checking sibling folders);
+Paths are auto-detected from Project OPFOR's game copy (project-opfor-moh\\game next to the suite, or OPFOR_ROOT);
 override with --zz / --exe.
 """
 from __future__ import annotations
@@ -25,20 +25,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def find_game():
-    """Locate the 'Medal of Honor' game copy."""
-    candidates = []
-    d = HERE
-    while os.path.dirname(d) != d:
-        d = os.path.dirname(d)
-        candidates.append(d)
-        try:
-            candidates.extend(os.path.join(d, s) for s in os.listdir(d))
-        except OSError:
-            pass
-    for c in candidates:
-        if os.path.isfile(os.path.join(c, 'Medal of Honor', 'MP', 'mohmpgame.exe')):
-            return os.path.join(c, 'Medal of Honor')
-    return None
+    """Project OPFOR's game copy (its game\\ folder, found by core\\mohcore\\gamecopy.py), or None."""
+    sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'core'))
+    from mohcore import gamecopy
+    try:
+        return gamecopy.GameCopy().game
+    except gamecopy.GameNotFound:
+        return None
 
 
 def default_zz():
@@ -48,7 +41,7 @@ def default_zz():
 
 def default_exe():
     g = find_game()
-    return os.path.join(g, 'MP', 'mohmpgame.exe') if g else None
+    return os.path.join(g, 'MP', 'MoHMPGame.exe') if g else None
 
 
 # --- config.zz ---------------------------------------------------------------

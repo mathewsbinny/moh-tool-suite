@@ -37,7 +37,7 @@ def pick_level(title):
     try:
         items = levels()
     except Exception as e:
-        messagebox.showerror(title, f'No game copy found: {e}\nPut the suite next to the "Project OPFOR" folder, '
+        messagebox.showerror(title, f'No game copy found: {e}\nPut the suite next to the project-opfor-moh folder (with its game\\ copy), '
                                     f'or set OPFOR_ROOT.')
         root.destroy()
         return None

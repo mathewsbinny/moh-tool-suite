@@ -1,16 +1,16 @@
 """Medal of Honor (2010) crash-report reader: turns crashreport.xml into something you can act on.
 
-  python crashreader.py [crashreport.xml] [--exe mohmpgame.exe] [--symbols file]... [--log opfor.log] [--no-code]
+  python crashreader.py [crashreport.xml] [--exe MoHMPGame.exe] [--symbols file]... [--log opfor.log] [--no-code]
 
-Without a path it uses the newest crashreport.xml in Documents\\Project OPFOR\\MOH or Documents\\MOH (OneDrive
-Documents too). It shows:
+Without a path it uses the newest crashreport.xml in Documents\\Project OPFOR\\MOH\\EA Games\\Medal of Honor\\Multiplayer
+(OPFOR's) or Documents\\EA Games\\Medal of Honor\\Multiplayer (the base game's). It shows:
   - when, which build, the crash address, and the registers (null ones marked)
-  - the code around the crash, disassembled from your own mohmpgame.exe (needs: pip install pefile capstone),
+  - the code around the crash, disassembled from your own MoHMPGame.exe (needs: pip install pefile capstone),
     with the register the faulting instruction reads through when that register is null
-  - the call stack: each return address with its function's name (from symbols_795745.txt and --symbols files)
+  - the call stack: each return address with its function's name (from symbols_592256.txt and --symbols files)
     and the call instruction that made it; values that are not code addresses are marked
   - hints for known crash sites (e.g. a broken level: run DbxEdit check)
-  - with --log (or OPFOR's game\\logs\\opfor.log found next to the exe), the log lines just before the crash
+  - with --log (or OPFOR's game\\logs\\opfor_mp.log found above the exe), the log lines just before the crash
 
 The game's own crash reporter writes the file; this tool only reads it and the exe. Nothing is sent anywhere.
 """
@@ -22,36 +22,36 @@ import sys
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+BUILD = '592256'                          # MoHMPGame.exe as patched (PE time stamp 0x4CC17C02)
+SYMBOLS = os.path.join(HERE, f'symbols_{BUILD}.txt')
 REGISTERS = ['Eax', 'Ebx', 'Ecx', 'Edx', 'Esi', 'Edi', 'Ebp', 'Esp', 'Eip']
 
 
 # --------------------------------------------------------------------------------------------------- inputs
 
+def _gamecopy():
+    sys.path.insert(0, os.path.join(HERE, '..', '..', 'core'))
+    from mohcore import gamecopy
+    return gamecopy
+
+
 def find_reports():
-    home = os.path.expanduser('~')
-    docs = [os.path.join(home, 'Documents'), os.path.join(home, 'OneDrive', 'Documents')]
-    docs += glob.glob(os.path.join(home, 'OneDrive*', 'Documents'))
+    """The MP client's crashreport.xml files, newest first: OPFOR's (Documents\\Project OPFOR\\MOH\\EA Games\\Medal of
+    Honor\\Multiplayer, where the OPFOR core sends the game's Documents folder), then the base game's."""
     found = []
-    for d in docs:
-        for sub in ('Project OPFOR\\MOH', 'MOH'):
-            p = os.path.join(d, sub, 'crashreport.xml')
-            if os.path.isfile(p):
-                found.append(p)
+    for d in _gamecopy().documents_dirs():
+        p = os.path.join(d, 'crashreport.xml')
+        if os.path.isfile(p):
+            found.append(p)
     return sorted(set(found), key=os.path.getmtime, reverse=True)
 
 
 def find_exe():
-    candidates = []
-    if os.environ.get('OPFOR_ROOT'):
-        candidates.append(os.path.join(os.environ['OPFOR_ROOT'], 'game', 'mohmpgame.exe'))
-    d = HERE   # a "Project OPFOR" folder next to one of the folders this tool sits in
-    while os.path.dirname(d) != d:
-        d = os.path.dirname(d)
-        candidates.append(os.path.join(d, 'Project OPFOR', 'game', 'mohmpgame.exe'))
-    for c in candidates:
-        if os.path.isfile(c):
-            return c
-    return None
+    gamecopy = _gamecopy()
+    try:
+        return gamecopy.GameCopy().exe
+    except gamecopy.GameNotFound:
+        return None
 
 
 def read_report(path):
@@ -192,10 +192,10 @@ def main(argv):
         i += 1
     report_path = args[0] if args else next(iter(find_reports()), None)
     if not report_path:
-        print('No crashreport.xml found (looked in Documents\\Project OPFOR\\MOH and Documents\\MOH). Give its path.')
+        print('No crashreport.xml found (looked in ' + ' and '.join(_gamecopy().documents_dirs()[:2]) + '). Give its path.')
         return 1
     r = read_report(report_path)
-    syms = read_symbols([os.path.join(HERE, 'symbols_795745.txt')] + opts['--symbols'])
+    syms = read_symbols([SYMBOLS] + opts['--symbols'])
     exe = opts.get('--exe') or find_exe()
     image = None
     if exe and not opts.get('--no-code'):
@@ -209,8 +209,8 @@ def main(argv):
     when = datetime.datetime.fromtimestamp(os.path.getmtime(report_path)).strftime('%Y-%m-%d %H:%M:%S')
     print(f'Crash report {report_path}')
     print(f'  written {when} local ({r["time"]} UTC); type {r["type"]}; build {r["build"]}; {r["sku"]}')
-    if r['build'] and r['build'] != '795745':
-        print('  note: this is not build 795745 - the bundled names may not match')
+    if r['build'] and r['build'] != BUILD:
+        print(f'  note: this is not build {BUILD} - the bundled names may not match')
     eip = r['registers'].get('Eip') or r['category']
     name, hint = name_of(eip, syms, image) if eip else ('', '')
     print(f'\nCrash at 0x{eip:08X}  {name}' if eip else '\nCrash address unknown')
@@ -261,7 +261,7 @@ def main(argv):
 
     log = opts.get('--log')
     if not log and exe:
-        candidate = os.path.join(os.path.dirname(exe), 'logs', 'opfor.log')
+        candidate = os.path.join(os.path.dirname(os.path.dirname(exe)), 'logs', 'opfor_mp.log')   # game\\logs
         log = candidate if os.path.isfile(candidate) else None
     if log:
         before = log_before_crash(log)

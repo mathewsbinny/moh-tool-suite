@@ -33,7 +33,7 @@ CAUSES = [
                'Settings > System > Display > Graphics.'),
     (lambda e: 'no game copy' in str(e).lower() or 'project opfor' in str(e).lower() and 'not found' in str(e).lower(),
      lambda e: 'The tools could not find Project OPFOR\'s game copy.',
-     lambda e: 'Put the suite folder next to the "Project OPFOR" folder, or set OPFOR_ROOT to it.'),
+     lambda e: 'Put the suite folder next to the project-opfor-moh folder (with its game\\ copy), or set OPFOR_ROOT to it.'),
     (lambda e: 'not prepared' in str(e).lower() or 'unknown level' in str(e).lower(),
      lambda e: f'The level is not available: {e}',
      lambda e: 'Choose a level from the list, or prepare it first (Levels tab: Prepare level).'),

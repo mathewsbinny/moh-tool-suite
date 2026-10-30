@@ -36,8 +36,10 @@ def opfor():
 
 def dice_pathdata_files(root):
     """DICE's path-data files in the game copy: pathdata.hpd, or its kept original where NavKit's is installed."""
+    sys.path.insert(0, os.path.join(SUITE, 'core'))
+    from mohcore import gamecopy
     out = []
-    for dp, _, fs in os.walk(os.path.join(root, 'game', 'Output', 'win32', 'ai')):
+    for dp, _, fs in os.walk(gamecopy.GameCopy(root).ai_dir()):
         if 'pathdata.hpd' in [f.lower() for f in fs]:
             orig = [f for f in fs if f.lower().startswith('pathdata.hpd.')]
             out.append(os.path.join(dp, orig[0] if orig else 'pathdata.hpd'))
@@ -47,8 +49,10 @@ def dice_pathdata_files(root):
 def pathdata_files(root):
     """Every path-data file: the game copy's (with DICE's originals kept as pathdata.hpd.<suffix> where NavKit's
     is installed) and OPFOR's work folder's (Xbox Onslaught copies, NavKit's own builds)."""
+    sys.path.insert(0, os.path.join(SUITE, 'core'))
+    from mohcore import gamecopy
     out = []
-    for top in (os.path.join(root, 'game', 'Output', 'win32', 'ai'), os.path.join(root, 'work')):
+    for top in (gamecopy.GameCopy(root).ai_dir(), os.path.join(root, 'work')):
         for dp, _, fs in os.walk(top):
             out += [os.path.join(dp, f) for f in fs if f.lower().startswith('pathdata.hpd')]
     return sorted(out)

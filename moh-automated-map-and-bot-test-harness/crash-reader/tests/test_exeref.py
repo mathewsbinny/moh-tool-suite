@@ -1,11 +1,12 @@
-r"""exeref.py on a program built here (quick), and with --game on Project OPFOR's mohmpgame.exe:
+r"""exeref.py on a program built here (quick), and with --game on Project OPFOR's MoHMPGame.exe (build 592256):
 
 - a string found (part of it, any case; or whole with --exact), the instruction that pushes its address, in which
   function (named from a symbols file); a function's callers (call rel32); an address held in data (a table);
 - the short window: the line at the address marked, the string and the called function named, the window capped;
 - the command line, and an address outside the code refused.
-With --game: "Server.UnrestrictedUnlocks" (0x0143375C) pushed at 0x008527FC in applyLicenses, which Unlocks::compute
-calls at 0x00863B1E; the generic getter's "Win32" push at 0x0095B7D3; "presenceRequestOnline" held in the extern table.
+With --game: "ClientWindowPosX" (0x014FCFA8) pushed at 0x0043A2D7 before the registry write 0x00407980, which is
+called there at 0x0043A2DC; the Documents folder function's SHGetSpecialFolderPathA call at 0x009349FD;
+"SOFTWARE\\DICE\\PYTHON\\Game" held in data (0x015F88A8); "presenceRequestOnline" held in the extern table.
 Needs pefile and capstone (as the crash reader's code view); without them the test says so and passes.
 
   python test_exeref.py [--game]
@@ -124,17 +125,21 @@ def main(argv):
             import crashreader
             game = crashreader.find_exe()
             if not game:
-                print('skip --game: mohmpgame.exe not found')
+                print('skip --game: MoHMPGame.exe not found')
             else:
-                code, out = run('str', 'Server.UnrestrictedUnlocks', '--exact')
-                c.check(code == 0 and '0143375C' in out and '008527FC  push 0x143375c' in out, 'game: the setting name pushed in '
-                        'applyLicenses', out[-400:])
-                code, out = run('refs', '0x8527D0')
-                c.check(code == 0 and '00863B1E  call 0x8527d0' in out, 'game: applyLicenses called from Unlocks::compute', out[-400:])
-                code, out = run('dis', '0x95B7D3', '--before', '0x10', '--after', '0x10')
-                c.check(code == 0 and '> 0095B7D3  push   0x140b670   ; "Win32"' in out, 'game: the generic getter\'s "Win32"', out)
+                code, out = run('str', 'ClientWindowPosX', '--exact')
+                c.check(code == 0 and '014FCFA8' in out and '0043A2D7  push 0x14fcfa8' in out, 'game: the value name pushed '
+                        'before the registry write', out[-400:])
+                code, out = run('refs', '0x407980')
+                c.check(code == 0 and 'registry write' in out and '0043A2DC  call 0x407980' in out,
+                        'game: the registry write (named from the symbols) and its callers', out[-400:])
+                code, out = run('dis', '0x9349FD', '--before', '0x10', '--after', '0x10')
+                c.check(code == 0 and '> 009349FD  call   dword ptr [0x1c60894]' in out and 'Documents folder' in out,
+                        'game: the Documents folder function\'s shell call, the function named', out)
+                code, out = run('str', 'SOFTWARE\\DICE\\PYTHON\\Game', '--exact')
+                c.check(code == 0 and 'held in data at 015F88A8' in out, 'game: the window-position key held in data', out)
                 code, out = run('str', 'presenceRequestOnline', '--exact')
-                c.check(code == 0 and 'held in data at 0143C8D0' in out, 'game: an FSCommand name held in the extern table', out)
+                c.check(code == 0 and 'held in data at 0151EAE8' in out, 'game: an FSCommand name held in the extern table', out)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print('all passed' if not c.failed else f'{c.failed} check(s) failed')

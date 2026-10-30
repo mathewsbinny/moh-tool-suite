@@ -134,7 +134,8 @@ def detailed_of(root, lv, samples, xoff, zoff):
     if not os.path.isfile(p02):
         return None
     hi = p02[:-4].replace('_p02', '_hi_p02') + '.bin'
-    common = [os.path.join(root, 'work', 'navkit', 'common', c) for c in ('mp_common', 'sp_common')]
+    import navkit
+    common = navkit.common_dirs(root, lv)
     chosen, _why = detailed.choose(os.path.join(root, 'work', 'levels', lv), common, samples, xoff, zoff)
     return dict(samples=p02, high=hi if os.path.isfile(hi) else None, sectors=set(chosen))
 

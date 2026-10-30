@@ -23,11 +23,10 @@ for _p in (os.path.join(SUITE, 'core'), os.path.join(SUITE, 'moh-console-readers
 import apt  # noqa: E402  (the suite's APT reader)
 
 MENU_BUNDLE = 'menu/main/mainmenu-00.fbrb'
-# bundles with menu movies: (label, path under Dist\win32 and Package); Package entries win over Dist's
-MOVIE_SETS = [('menu', 'menu/main/mainmenu-00.fbrb'), ('mp_hud', 'levels/mp_common/ingame-00.fbrb'),
-              ('mp_loader', 'levels/mp_common/loader-00.fbrb'), ('sp_hud', 'levels/sp_common/ingame-00.fbrb'),
-              ('sp_loader', 'levels/sp_common/loader-00.fbrb'), ('mp2_hud', 'levels/mp2_common/ingame-00.fbrb'),
-              ('nam_hud', 'levels/nam_common/ingame-00.fbrb')]
+# bundles with menu movies: (label, path under MP\dist\win32 and its patch\); the patch's entries win
+MOVIE_SETS = [('menu', 'menu/main/mainmenu-00.fbrb'), ('mp_hud', 'levels/common_mp/ingame-00.fbrb'),
+              ('mp_loader', 'levels/common_mp/loader-00.fbrb'), ('awards', 'async/ondemand_awards-00.fbrb'),
+              ('mycharacter', 'async/ondemand_mycharacter-00.fbrb')]
 
 
 class MenuToolError(Exception):
@@ -35,17 +34,13 @@ class MenuToolError(Exception):
 
 
 def find_opfor(given=None):
-    """The Project OPFOR folder: given, else OPFOR_ROOT, else a "Project OPFOR" folder next to one of the folders
-    this tool sits in."""
-    candidates = [given, os.environ.get('OPFOR_ROOT')]
-    d = HERE
-    while os.path.dirname(d) != d:
-        d = os.path.dirname(d)
-        candidates.append(os.path.join(d, 'Project OPFOR'))
-    for c in candidates:
-        if c and os.path.isdir(os.path.join(c, 'game')):
-            return os.path.abspath(c)
-    raise MenuToolError('Project OPFOR not found - pass --opfor <folder> or set OPFOR_ROOT')
+    """The Project OPFOR folder: given, else OPFOR_ROOT, else project-opfor-moh next to the suite
+    (core\\mohcore\\gamecopy.py)."""
+    from mohcore import gamecopy
+    try:
+        return gamecopy.find_root(given)
+    except gamecopy.GameNotFound as e:
+        raise MenuToolError(str(e)) from None
 
 
 def out_dir(root):
@@ -56,12 +51,9 @@ def out_dir(root):
 
 
 def bundle_layers(root, rel):
-    """The existing copies of a bundle, lowest first: Dist\\win32\\<rel>, then Package\\<rel>."""
-    out = []
-    for p in (os.path.join(root, 'game', 'Dist', 'win32', *rel.split('/')), os.path.join(root, 'game', 'Package', *rel.split('/'))):
-        if os.path.isfile(p):
-            out.append(p)
-    return out
+    """The existing copies of a bundle, lowest first: MP\\dist\\win32\\<rel>, then MP\\dist\\win32\\patch\\<rel>."""
+    from mohcore import gamecopy
+    return gamecopy.GameCopy(root).layers(rel)
 
 
 def bundle_movies(paths):
@@ -364,8 +356,8 @@ def find_exe(root=None, given=None):
         if not os.path.isfile(given):
             raise FileNotFoundError(given)
         return given
-    root = root or find_opfor()
-    p = os.path.join(root, 'game', 'mohmpgame.exe')
+    from mohcore import gamecopy
+    p = gamecopy.GameCopy(root or find_opfor()).exe
     if not os.path.isfile(p):
-        raise MenuToolError(f'no mohmpgame.exe in {os.path.dirname(p)} - pass --exe <path>')
+        raise MenuToolError(f'no MoHMPGame.exe in {os.path.dirname(p)} - pass --exe <path>')
     return p

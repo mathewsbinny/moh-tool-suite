@@ -1061,14 +1061,15 @@ def sample_path(root, lv, suffix=''):
     return os.path.join(out_dir(root), f'{lv}_navkit{suffix}.bin')
 
 
-def common_bases(root):
-    return [os.path.join(root, 'work', 'navkit', 'common', c) for c in ('sp_common', 'mp_common')]
+def common_bases(root, lv=None):
+    import navkit
+    return navkit.common_dirs(root, lv)
 
 
 def load_level(root, lv, box=None, log=print, bodies=None):
     from mohcore import level as levelmod
     L = os.path.join(root, 'work', 'levels', lv)
-    geom = level_geometry(L, common_bases(root), log=log, box=box)
+    geom = level_geometry(L, common_bases(root, lv), log=log, box=box)
     geom = geom.bodies(bodies or BODIES)
     if INTACT_ONLY:
         geom = geom.intact()
@@ -1155,30 +1156,10 @@ def combat_box(root, lv, margin=COMBAT_MARGIN):
 
 
 def package_overlay(pr, lv, log=print):
-    """The game loads a level's Package bundle over its Dist bundle, file by file. Every stock MP map has its level
-    partition and static-group assets in Package (game patches: MP_002 4,067,601 bytes there, 4,023,001 in Dist;
-    MP_002SR's partition is in Package only), but navkit.py prepare and levelobjects.py read the Dist copy. This unpacks
-    both (as prepare does) and copies Package's levels\\ files over the Dist copy in the work folder, so every NavKit
-    step sees the level the game loads. The copied files are listed in work\\levels\\<lv>\\pkg_overlay.txt."""
-    import shutil
-    L = pr.level_work(lv)
-    pr.unpack(os.path.join(pr.level_dirs()[lv], 'level-00.fbrb'), os.path.join(L, 'dist'), log)
-    pkg = os.path.join(pr.game, 'Package', 'levels', os.path.basename(pr.level_dirs()[lv]), 'level-00.fbrb')
-    if not os.path.isfile(pkg):
-        return []
-    pr.unpack(pkg, os.path.join(L, 'pkg'), log)
-    src = os.path.join(L, 'pkg', 'levels')
-    copied = []
-    for dp, _, fs in os.walk(src):
-        for f in fs:
-            rel = os.path.relpath(os.path.join(dp, f), src)
-            dst = os.path.join(L, 'dist', 'levels', rel)
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            shutil.copyfile(os.path.join(dp, f), dst)
-            copied.append(rel)
-    open(os.path.join(L, 'pkg_overlay.txt'), 'w', encoding='utf-8').write('\n'.join(sorted(copied)) + '\n')
-    log(f'  Package overlay: {len(copied)} level files copied over the Dist copy')
-    return copied
+    """The level as the game loads it, the patch's files over the base copy (navkit.unpack_level, which prepare runs
+    too). Returns the files laid over the base copy (work\\levels\\<lv>\\pkg_overlay.txt)."""
+    import navkit
+    return navkit.unpack_level(pr, lv, pr.level_work(lv), log, navkit.common_dirs(pr.root, lv))
 
 
 def prepare_mp(root, lv, log=print):
@@ -1337,7 +1318,7 @@ def detailed_choice(root, lv, s08):
     import navkit
     pr = navkit.Project(root)
     st = navkit.ensure_settings(pr, lv)
-    chosen, why = detailed.choose(pr.level_work(lv), common_bases(root)[::-1], s08, st['xoff'], st['zoff'])
+    chosen, why = detailed.choose(pr.level_work(lv), common_bases(root, lv), s08, st['xoff'], st['zoff'])
     return [tuple(c) for c in chosen], why
 
 

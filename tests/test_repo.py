@@ -18,7 +18,8 @@ import tempfile
 SUITE = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 GAME_TYPES = re.compile(r'\.(dbx|res|fbrb|hpd|sb|raw|bik|fsb|fev|dds|tga|hkx)$', re.I)
 MAX_BLOB = 1_000_000
-LARGE_ALLOWED = {'moh-dbx-tools/tests/fingerprints_795745.txt'}       # SHA-1 hashes only
+LARGE_ALLOWED = {'moh-dbx-tools/tests/fingerprints_795745.txt',     # SHA-1 hashes only (the BFBC2 corpus)
+                 'bfbc2-dbx-tools/tests/fingerprints_795745.txt'}   # the same file before the suite was renamed
 ATTRIBUTION = re.compile(r'co-authored-by|generated with \[?claude|noreply@anthropic', re.I)
 TRACKED_NEVER = re.compile(r'(\.exe|\.pyc|\.dll|\.pdb)$|(^|/)__pycache__/', re.I)
 
