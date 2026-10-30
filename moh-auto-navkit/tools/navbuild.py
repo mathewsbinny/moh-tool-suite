@@ -131,6 +131,12 @@ DETOUR_LINK_ALL = False         # also link new waypoints to all walkable neighb
 DETOUR_PASSES = 2               # pass A, then pass B on the repaired graph
 REPAIR_STATS = {}               # nodes added per pass (summed over sectors; for reports)
 LADDER_STATS = {}               # ladder links made, and ladders whose ends lie in two sectors (not linked yet)
+AREA_CELLS = {}                 # sector id -> per area (in the file's order): its cells' global indices i, j at its
+                                # pitch (cell centre = index x pitch) and their ground heights - the kept surfaces the
+                                # area was made of, exactly. Written beside the build as <name>.cells.npz (write_file)
+                                # for the RSNV exporter (navexport.py): the outlines alone do not give a cell's height
+                                # (BF1943's NavKit, 2026-10-25: estimated from the nearest outline point, 0.3 m or more
+                                # off on 11 % of Coral Sea's 0.8 m cells)
 BORDER_NODE_SPACING = 10.0
 BRIDGE_UNION = True             # 45-degree bridges: outline from the exact union (bridge_union) - False: clip_bridges
 MAX_WATER_DEPTH = mohsoldier.WATER_DEPTH   # ground deeper under water is not walkable: MOH's WaterDepthLimit 1.4 m
@@ -775,6 +781,7 @@ def build(samples_path, tris_path, xoff, zoff, out_path, step=mohsoldier.STEP, l
     ORDER_IDS.clear()
     navislands.TERRAIN_IDS.clear()
     LADDER_STATS.clear()
+    AREA_CELLS.clear()
     DETAIL_STATS.clear()
     a = stage(samples_path, high_path, xoff, zoff, seeds=seeds, **common)
     if detailed:
@@ -1042,6 +1049,11 @@ def stage(samples_path, high_path, xoff, zoff, tris_path=None, step=mohsoldier.S
         ys = [a.min_y for a in mesh_areas] + [a.max_y for a in mesh_areas]
         bounds_ = (rect[0], rect[1], min(ys), max(ys), rect[2], rect[3])
         graphs.append((sid, bounds_, mesh, pts, pairs, (ox, oz)))
+        # the areas' own cells for the sidecar file (write_file): global cell indices at this pitch, ground heights
+        base_i, base_j = int(round(ox / PITCH)), int(round(oz / PITCH))
+        AREA_CELLS[sid] = [(np.array([base_i + c[0] for c in a['cells']], np.int32),
+                            np.array([base_j + c[1] for c in a['cells']], np.int32),
+                            np.array([level.y[c[2]] for c in a['cells']], np.float32), PITCH) for a in areas]
     return {'level': level, 'info': info, 'graphs': graphs, 'border_nodes': border_nodes, 'next_id': next_id[0],
             'dropped': dropped, 'pitch': PITCH, 'meshes': meshes, 'sectors': set(info)}
 
@@ -1206,6 +1218,59 @@ def write_file(graphs, out_path, log, t0):
     open(out_path, 'wb').write(data)
     log(f'wrote {out_path}: {len(hpd_sectors)} sectors, {sum(len(x.nodes) for x in hpd_sectors)} nodes, '
         f'{sum(len(x.edges) for x in hpd_sectors)} edges, {len(data)} bytes ({time.time() - t0:.0f} s)')
+    try:
+        write_cells(graphs, out_path, data, log)
+    except Exception as e:                 # the sidecar is optional: the exporter rasterises outlines without it
+        log(f'cells: not written ({type(e).__name__}: {e})')
+
+
+def cells_path(hpd_path):
+    """The sidecar file of a build: <name>.cells.npz beside <name>.hpd."""
+    return os.path.splitext(hpd_path)[0] + '.cells.npz'
+
+
+def write_cells(graphs, out_path, data, log):
+    """The sidecar of the build just written (AREA_CELLS, in the file's sector and area order): per area its sector id,
+    pitch and cell count; the cells' global indices and ground heights; the build's SHA-256, so a reader can tell it
+    belongs to this file. Nothing is written when a sector's areas were not recorded."""
+    import hashlib
+    sids, pitch, count, ii, jj, yy = [], [], [], [], [], []
+    for sid, _b, mesh, _p, _q, _o in graphs:
+        rec = AREA_CELLS.get(sid)
+        if rec is None or len(rec) != len(mesh.areas):
+            log(f'cells: sector {sid:04x} not recorded; no {os.path.basename(cells_path(out_path))} written')
+            return
+        for i_, j_, y_, p_ in rec:
+            sids.append(sid)
+            pitch.append(p_)
+            count.append(len(i_))
+            ii.append(i_)
+            jj.append(j_)
+            yy.append(y_)
+    cat = lambda v, t: np.concatenate(v).astype(t) if v else np.zeros(0, t)
+    np.savez_compressed(cells_path(out_path), sector=np.array(sids, np.int32), pitch=np.array(pitch, np.float32),
+                        count=np.array(count, np.int64), i=cat(ii, np.int32), j=cat(jj, np.int32), y=cat(yy, np.float32),
+                        hpd_sha256=np.array(hashlib.sha256(data).hexdigest()))
+    log(f'cells: {len(count)} areas, {sum(count)} cells -> {cells_path(out_path)}')
+
+
+def read_cells(hpd_path):
+    """The sidecar of a build, or None when it is missing or belongs to another file: [(sector id, pitch, i, j, y)] per
+    area in the file's order."""
+    import hashlib
+    p = cells_path(hpd_path)
+    if not os.path.isfile(p):
+        return None
+    z = np.load(p)
+    h = hashlib.sha256(open(hpd_path, 'rb').read()).hexdigest()
+    if str(z['hpd_sha256']) != h:
+        return None
+    count = z['count']
+    ends = np.cumsum(count)
+    starts = ends - count
+    ci, cj, cy = z['i'], z['j'], z['y']                 # read once (each z[...] reads the array from the file again)
+    return [(int(s_), float(p_), ci[a:b], cj[a:b], cy[a:b])
+            for s_, p_, a, b in zip(z['sector'], z['pitch'], starts, ends)]
 
 
 def _crosses_d(level, blocked, k, nk, gi, gj, di, dj, xfirst=None):

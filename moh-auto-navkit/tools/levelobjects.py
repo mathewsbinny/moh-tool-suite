@@ -170,19 +170,19 @@ def main(argv):
         r = xmlinst.field_ref(body, 'ReferencedObject')
         if t and r is not None:
             bp = r.rsplit('/', 1)[0].lower()
-            objs.append({'bp': bp, 'flags': flags.get(bp), 'm': [float(a) for a in t.group(1).split('/')]})
+            objs.append({'bp': bp, 'flags': flags.get(bp), 'm': xmlinst.transform(t.group(1))})
     groups = []
     for f in glob.glob(os.path.join(level_dir, 'dist', 'levels', level, '*_HavokAsset.xml')):
         t = open(f, encoding='utf-8').read()
         tr = re.search(r'<array name="Transforms">([^<]*)<', t)
         if not tr:
             continue
-        tr = tr.group(1).split('/')
+        tr = xmlinst.transform(tr.group(1))          # 16 values per member (denormals' bits read as floats)
         assets = re.findall(r'<item ref="([^"]*)" />', t.split('<array name="Assets">')[1].split('</array>')[0])
         for i, a in enumerate(assets):
             bp = re.sub(r'_havok$', '', a.rsplit('/', 1)[0].lower())
             groups.append({'group': os.path.basename(f), 'bp': bp, 'flags': flags.get(bp),
-                           'm': [float(v) for v in tr[i * 16:(i + 1) * 16]]})
+                           'm': tr[i * 16:(i + 1) * 16]})
     # soldier spawn points (seed points of the path data): MOH places its soldiers at the AlternateSpawnEntityData
     # points (MP_01: 92, 93 % on the terrain); its SoldierSpawnEntityData are the spawn entities (all at one height)
     spawns = positions(x, *SPAWN_TYPES)

@@ -17,8 +17,9 @@ To learn how it works inside, read [README.md](README.md) and the
 The data is built for MOH's own soldier (`tools\mohsoldier.py`, from `DefaultSoldierPhysics`): radius 0.35 m,
 height 1.8 m (crouched 1.15), step 0.3 m, slopes up to 45 degrees, jumps 0.65 m, water up to 1.4 m deep.
 
-What is not there yet: OPFOR's bots, and the exporter that turns NavKit's file into the runtime format they
-will read (RSNV, `project-opfor-moh\BOT_PLAN.md` step 2). Until then the result is checked offline.
+The last step, **export**, turns the build into the file OPFOR's bots will read: RSNV, the format of the navigation
+runtime rsnav. When rsnav's host build is on the PC (Project OPFOR BF1943), export also loads the file in rsnav and
+routes between the level's spawn points. What is not there yet: the bots themselves (`project-opfor-moh\BOT_PLAN.md`).
 
 ## Before you start
 
@@ -69,8 +70,9 @@ python navkit.py prepare mp_05_tdm
 python navkit.py sample  mp_05_tdm
 python navkit.py build   mp_05_tdm
 python navkit.py check   mp_05_tdm
+python navkit.py export  mp_05_tdm  the RSNV file for the bots' navigation runtime, checked (in rsnav when found)
 python navkit.py status  mp_05_tdm  what has been done for a level
-python navkit.py all     mp_05_tdm  prepare, sample, build and check in one go
+python navkit.py all     mp_05_tdm  prepare, sample, build, check and export in one go
 python tools\navsample_offline.py stockmp            all 26 levels, one after another (a report in
                                                      work\navkit_offline\stockmp.json)
 python tools\mohsoldier.py <OPFOR folder>            NavKit's soldier against the game's DefaultSoldierPhysics
@@ -98,7 +100,8 @@ All of these are inside the Project OPFOR folder:
 | `work\navsample\<level>_navkit.bin`, `..._navkit_hi.bin` | the two measurements at 0.8 m |
 | `work\navsample\<level>_navkit_p02.bin`, `..._navkit_hi_p02.bin` | the two fine (0.2 m) measurements of the level's detailed zones |
 | `work\navkit\<level>\detailed.json` | which 100 m squares are detailed zones, and why |
-| `work\navkit\<level>\pathdata.hpd` | **the result** |
+| `work\navkit\<level>\pathdata.hpd`, `pathdata.cells.npz` | **the build**, and every walkable cell of it with its height |
+| `work\navkit\<level>\<level>.rsnv` | **the result for the bots**: the build in rsnav's format (export) |
 | `work\navkit\<level>\check.txt` | the full check report |
 | `work\levels\<level>\` | the unpacked level and the objects NavKit read from it |
 

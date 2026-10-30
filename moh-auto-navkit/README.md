@@ -59,18 +59,19 @@ Per level (combat areas, terrain in the box, slopes, spawns, objectives; `prepar
 The steep maps (mp_02, mp_02_koth, mp_03_elimination: 19-30 % of their ground over 45 deg) are where the slope limit
 matters most; the flat urban ones (mp_05, mp_09, mp_10) are mostly buildings and detailed zones.
 
-Built and checked offline (2026-10-30; `navkit.py sample / build / check`; the check's points are the level's spawn
-points and objectives, pairs counted between those on walkable areas):
+All 26 levels built, checked and exported (2026-10-30; table in "RSNV export"). Two findings along the way:
+- **Denormal transforms.** DbxEdit writes a denormal float (the game reads it as 0) as its integer bits, and NavKit read
+  MP_09's invisible walls and MP_04's / MP_05's group members as scaled 30,000-180,000-fold: walls across the whole
+  map cut MP_09_TDM's route network in two (spawn pairs connected 36.5 %). `xmlinst.transform` reads such a token in a
+  rotation slot as the float its bits are (60 placements and 6 group members on 9 levels); MP_09_TDM 36.5 -> 87.9 %
+  (self-check), 100 % in rsnav.
+- **Island anchors.** `navislands.ANCHOR_SERVED`: a spawn keeps a small island only when its floor is nearer the
+  spawn's height than a large island's (mp_02_koth: three spawns beside a wrecked humvee kept the wreck's 6-node island,
+  their nearest node; 71.9 -> 100 %).
 
-| Level | Sample / build (s) | Detailed sectors | Nodes / edges | Ladders linked | Spawn / objective pairs route-connected |
-|---|---|---|---|---|---|
-| mp_05_tdm (Kandahar Marketplace) | 46 / 241 | 5 | 4,170 / 12,966 | - | 85.0 % - 3 spawns in doorway recesses of the town's outer wall, beside 1 m bush collision boxes, join the ground outside it |
-| mp_03_elimination (DLC) | 31 / 77 | 2 | 2,001 / 4,720 | - | 100 % |
-| mp_08_tdm (Kunar Base) | 36 / 70 | | 3,378 / 7,400 | 3 of 3 | 100 % |
-| mp_01_elimination (DLC partition) | 44 / 123 | | 3,997 / 11,716 | 2 of 2 | 100 % |
-| mp_02_koth (Hot Zone, 28 % of ground over 45 deg) | 30 / 101 | | 2,768 / 7,052 | - | 100 % (71.9 % before `navislands.ANCHOR_SERVED`: three spawns beside a wrecked humvee kept the wreck's 6-node island, their nearest node) |
-
-The other 21 levels are prepared (boxes, spawns, objectives, ladders) but not yet built.
+Open: mp_02 (83 % of spawn pairs routed in rsnav) and mp_09_overrun (83 %: its spawns and an objective on upper
+floors 5 m over the street stand on islands of 13-33 nodes - the stairs up are not joined), and mp_05's spawns in the
+doorway recesses of the town's outer wall (96 %), beside 1 m bush collision boxes.
 
 Not done for MOH: no in-game check exists (MOH's OPFOR core has no sampler, and no bots yet), so the capsule and the
 `e`-layer rule are the physics' and the data's word, not measured against the game; the RSNV exporter.
@@ -130,10 +131,76 @@ tools\               NavKit tools (Python 3.13 + numpy / matplotlib)
   navlinks.py        a side file's links and route edges written into a path-data file's route graph
   navtraversal.py    a side file's traversal annotations (ladders, jumps ...) as <level>.traversal.json
   navsample_offline.py  the in-game sampler's output computed from the level's Havok collision and height field, no
-                     game launch; the stock MP batch (see "Standalone sampling")
+                     game launch - what navkit.py sample runs; the stock MP batch (see "Standalone sampling")
+  mohsoldier.py      MOH's soldier (DefaultSoldierPhysics): the sizes every tool uses; checks them against the game
+  navexport.py       a build as an RSNV file, the navigation runtime's (rsnav) per-level file (see "RSNV export")
+  rsnavcheck.py      an RSNV file in rsnav itself (its host build): loaded, spawn points placed, routes between them
 tests\               NavKit's tests (run by the suite's run_tests.py; the suite README lists them)
 src\                 (reserved, empty)
 ```
+
+## RSNV export (2026-10-30)
+
+`pathdata.hpd` is Kynapse's format, which nothing in MOH reads. OPFOR's bots will use **rsnav**, the navigation
+runtime written for Project OPFOR BF1943 (portable C99; point location, time-sliced A*, string pulling, a path
+follower with ladders, jumps and stuck handling - `project-opfor-bf1943\TnT\Code\Engine\AI\PathFinding\rsnav`), which
+reads its own per-level file, **RSNV**. `tools\navexport.py` (run by `navkit.py export` and `all`) writes it:
+`work\navkit\<level>\<level>.rsnv`, little-endian for the PC client.
+
+- **A port** of BF1943's exporter (`bf1943-auto-navkit-big-endian\tools\navexport1943.py`, version 1.4), the same layout and
+  rules: the route graph (ground heights, costs in 1/16 m raised to an admissible heuristic, walk / ladder up / ladder
+  down edges, tight walk edges flagged by the runtime's own line-of-sight rule), area bitmaps at their pitch with height
+  grids, 4 m buckets, portals, ladder records, islands, provenance. Its format module is the same: `core\mohcore\rsnv.py`
+  is a copy of BF1943's `core\bfbc2core\rsnv.py` (they must stay identical).
+- **For MOH:** MOH's soldier (`mohsoldier.py`); water depth over a node from the level's water mesh (MOH has no sea; the
+  header's sea level, used only by rsnav's flight code, is 0); no vehicle entries; no jump links (MOH's builds make none).
+- **The build's cells:** `navbuild` now writes `pathdata.cells.npz` beside the build - every area's own cells and ground
+  heights - as BF1943's does; the exporter takes them, else rasterises the outlines. On mp_03_elimination the outline
+  estimate was more than 0.3 m off on 65,765 of 395,504 cells (17 %); on mp_08_tdm without the cells file 1,106 of 7,394 walk
+  edges came out tight and 57 nodes on no area. Builds before 2026-10-30 09:42 have no cells file: rebuild them.
+- **Checked:** `navexport.py --check` reads the file back (`rsnv.World.validate`) and compares its graph with the build's;
+  `tools\rsnavcheck.py` loads it in **rsnav itself** (its host build `rsnav.dll`, through rsnav's ctypes bindings; found at
+  `RSNAV_ROOT` or `project-opfor-bf1943` beside the suite), places the level's spawn points and objectives on the walkable
+  cells, routes every pair with the soldier's filter, smooths the paths, and checks the C search's cost against the
+  Python reference (`rsnv.search`) on 20 pairs.
+
+All 26 MOH MP levels (2026-10-30): every file reads back with 0 problems and every node on an area; in rsnav the
+C search's cost equals the Python reference's on all 520 sampled pairs, and no smoothing failed. "Points placed": the
+spawn points and objectives rsn_locate puts on a walkable cell within 1.5 m (not placed: Combat Mission's base markers
+and the spawn entities, metres up). The rsnav routing counts pairs between placed points; the self-check (NavKit's
+`check`) joins each point to its nearest node, which can be a pocket's - rsnav starts from the nearest node in sight
+(`rsn_start_node`), so it routes more.
+
+| Level | Nodes / edges | Areas | RSNV (MB) | rsnav load (ms) | Points placed | Pairs routed in rsnav | % | Self-check % (nearest node) | Search (ms) | Ladders |
+|---|---|---|---|---|---|---|---|---|---|---|
+| mp_01 | 5,783 / 18,200 | 4,208 | 2.99 | 4.7 | 93 / 118 | 4278 / 4278 | 100.0 | 93.8 | 0.183 | 0 |
+| mp_01_elimination | 3,854 / 11,716 | 1,736 | 1.44 | 0.7 | 24 / 26 | 276 / 276 | 100.0 | 100.0 | 0.023 | 2 |
+| mp_02 | 6,778 / 18,216 | 4,432 | 3.45 | 1.9 | 64 / 90 | 1668 / 2016 | 82.7 | 83.4 | 0.216 | 0 |
+| mp_02_koth | 2,668 / 7,042 | 1,738 | 1.35 | 0.6 | 19 / 22 | 171 / 171 | 100.0 | 100.0 | 0.03 | 0 |
+| mp_02_koth2 | 2,308 / 6,108 | 1,839 | 1.26 | 0.5 | 17 / 19 | 136 / 136 | 100.0 | 100.0 | 0.055 | 0 |
+| mp_03_elimination | 1,927 / 4,712 | 1,438 | 1.06 | 0.6 | 24 / 26 | 276 / 276 | 100.0 | 100.0 | 0.025 | 0 |
+| mp_04 | 7,466 / 23,612 | 5,088 | 4.44 | 2.7 | 98 / 124 | 4753 / 4753 | 100.0 | 96.1 | 0.126 | 0 |
+| mp_04_koth | 3,529 / 11,100 | 2,220 | 2.04 | 0.8 | 23 / 25 | 253 / 253 | 100.0 | 100.0 | 0.041 | 0 |
+| mp_05_domination | 4,045 / 12,986 | 1,964 | 1.63 | 0.7 | 50 / 65 | 1176 / 1225 | 96.0 | 85.9 | 0.063 | 0 |
+| mp_05_overrun | 3,979 / 12,882 | 1,875 | 1.6 | 0.7 | 28 / 35 | 378 / 378 | 100.0 | 100.0 | 0.056 | 0 |
+| mp_05_tdm | 4,023 / 12,974 | 1,961 | 1.66 | 1.0 | 49 / 62 | 1128 / 1176 | 95.9 | 85.0 | 0.044 | 0 |
+| mp_06_domination | 3,300 / 9,926 | 2,480 | 1.77 | 0.6 | 38 / 46 | 703 / 703 | 100.0 | 95.0 | 0.044 | 0 |
+| mp_06_elimination | 3,304 / 9,934 | 2,476 | 1.77 | 0.7 | 25 / 27 | 300 / 300 | 100.0 | 92.0 | 0.037 | 0 |
+| mp_06_overrun | 3,264 / 9,878 | 2,484 | 1.77 | 0.6 | 27 / 31 | 351 / 351 | 100.0 | 92.6 | 0.049 | 0 |
+| mp_06_tdm | 3,300 / 9,926 | 2,480 | 1.77 | 0.9 | 37 / 43 | 666 / 666 | 100.0 | 94.6 | 0.038 | 0 |
+| mp_07_koth | 1,626 / 5,478 | 816 | 0.75 | 0.5 | 28 / 30 | 378 / 378 | 100.0 | 100.0 | 0.03 | 0 |
+| mp_08_domination | 3,255 / 7,400 | 2,065 | 1.47 | 0.9 | 34 / 44 | 561 / 561 | 100.0 | 100.0 | 0.065 | 3 |
+| mp_08_overrun | 3,268 / 7,460 | 2,067 | 1.47 | 0.6 | 27 / 31 | 351 / 351 | 100.0 | 100.0 | 0.054 | 3 |
+| mp_08_tdm | 3,255 / 7,400 | 2,065 | 1.47 | 0.6 | 34 / 41 | 561 / 561 | 100.0 | 100.0 | 0.075 | 3 |
+| mp_09_domination | 3,169 / 9,544 | 1,767 | 1.35 | 0.9 | 45 / 58 | 990 / 990 | 100.0 | 88.5 | 0.046 | 0 |
+| mp_09_elimination | 3,130 / 9,438 | 1,743 | 1.34 | 0.7 | 29 / 32 | 406 / 406 | 100.0 | 100.0 | 0.049 | 0 |
+| mp_09_overrun | 3,135 / 9,440 | 1,770 | 1.34 | 0.5 | 23 / 29 | 210 / 253 | 83.0 | 53.2 | 0.034 | 0 |
+| mp_09_tdm | 3,169 / 9,544 | 1,767 | 1.35 | 0.8 | 45 / 55 | 990 / 990 | 100.0 | 87.9 | 0.039 | 0 |
+| mp_10_domination | 2,462 / 7,636 | 1,405 | 1.14 | 0.5 | 32 / 44 | 496 / 496 | 100.0 | 80.7 | 0.037 | 0 |
+| mp_10_overrun | 2,459 / 7,624 | 1,406 | 1.14 | 0.7 | 22 / 26 | 231 / 231 | 100.0 | 91.3 | 0.037 | 0 |
+| mp_10_tdm | 2,462 / 7,636 | 1,405 | 1.14 | 0.4 | 32 / 41 | 496 / 496 | 100.0 | 79.2 | 0.022 | 0 |
+
+Not yet: rsnav's 32-bit x86 build for the OPFOR core (BOT_PLAN step 3), and a bot following a path in game.
 
 ## Standalone sampling (2026-10-26)
 

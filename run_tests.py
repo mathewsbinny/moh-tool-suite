@@ -99,6 +99,7 @@ def tests():
         ('test harness, built data', 'quick', [PY, os.path.join(SUITE, 'moh-automated-map-and-bot-test-harness', 'tests', 'test_harness.py')]),
         ('stock-MP AI layer, synthetic levels', 'quick', [PY, os.path.join(SUITE, 'moh-stockmp-ai', 'tests', 'test_stockmp.py')]),
         ('LevelDiff on mp_01', 'game', [PY, os.path.join(SUITE, 'moh-diff-workbench', 'level-diff', 'tests', 'test_leveldiff.py'), '--game']),
+        ('NavKit RSNV export of mp_03_elimination, read back (needs its build)', 'game', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tools', 'navexport.py'), 'mp_03_elimination', '--check']),
         ('crash reader code view (mohmpgame.exe)', 'game', [PY, os.path.join(SUITE, 'moh-automated-map-and-bot-test-harness', 'crash-reader', 'tests', 'test_crashreader.py'), '--game']),
         ('console readers on your Xbox files', 'game', [PY, os.path.join(SUITE, 'moh-console-readers', 'tests', 'test_console_readers.py'), '--game']),
         ('menu tools on the game copy and OPFOR\'s patches', 'game', [PY, os.path.join(SUITE, 'moh-menu-tools', 'tests', 'test_menu_tools.py'), '--game']),

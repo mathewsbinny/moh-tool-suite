@@ -1,12 +1,17 @@
-"""NavKit driver: one command per step, from a level name to an installed pathdata.hpd.
+"""NavKit driver: one command per step, from a level name to its navigation data (pathdata.hpd, and the RSNV file
+OPFOR's bots read).
 
-  python navkit.py levels                     list the game's levels (and which can be sampled)
-  python navkit.py prepare SP_01              unpack + convert the level, extract its objects,
-                                              choose the sampling box and sector offsets
-  python navkit.py sample  SP_01 [--yes]      in-game collision sampling (launches the game): two runs at 0.8 m,
-                                              then two at 0.2 m over the level's detailed zones (if it has any)
-  python navkit.py build   SP_01              generate pathdata.hpd
-  python navkit.py check   SP_01              score it (against DICE's file if the level has one)
+  python navkit.py levels                     list the game's levels
+  python navkit.py prepare MP_05_TDM          unpack + convert the level, extract its objects,
+                                              choose the sampling box (its combat areas) and sector offsets
+  python navkit.py sample  MP_05_TDM          collision sampling from the level's files (no game launch): two runs at
+                                              0.8 m, then two at 0.2 m over the level's detailed zones (if it has any);
+                                              --ingame: BFBC2's in-game sampler (not in MOH's OPFOR core)
+  python navkit.py build   MP_05_TDM          generate pathdata.hpd (and its cells, pathdata.cells.npz)
+  python navkit.py check   MP_05_TDM          score it (self-check: routes between the spawn points and objectives)
+  python navkit.py export  MP_05_TDM          write work\\navkit\\<level>\\<level>.rsnv for the navigation runtime
+                                              (tools\\navexport.py) and check it (tools\\rsnavcheck.py, when rsnav's
+                                              host build is found)
   python navkit.py apply   SP_01 [--navtune file] [--out file] [--install]
                                               build with the edits of the level's navigation side file
                                               (work\\navkit\\<level>\\<level>.navtune.json, made in the
@@ -16,7 +21,7 @@
   python navkit.py install SP_01 [--from file]  copy it (or another built file) into the game, with its
                                               traversal annotations (DICE's file is backed up once)
   python navkit.py restore SP_01              put the original file back
-  python navkit.py all     SP_01 [--yes]      prepare, sample, build, check
+  python navkit.py all     SP_01 [--yes]      prepare, sample, build, check, export
   python navkit.py status  SP_01              what has been done for a level
   python navkit.py compare SP_01 [--reference a.hpd] [--candidate b.hpd]
                                               two path-data files on the level's AI positions
@@ -28,12 +33,12 @@ Options: --box minX,minZ,maxX,maxZ and --y bottom,top (prepare / sample: overrid
          --opfor <Project OPFOR folder> (default: OPFOR_ROOT, else "Project OPFOR" next to the toolkit),
          --no-detail (build / apply / all: no D lines or F cells - navbuild.DETAIL_FEATURES off).
 
-NavKit works on Project OPFOR's game copy and uses its in-game sampler. FbrbTool / DbxEdit come from the
-toolkit (..\\moh-fbrb-tool, ..\\moh-dbx-tools, built with their build.bat) or from OPFOR's tools\\ folder.
+NavKit works on Project OPFOR's game copy, reading each level's collision and terrain. FbrbTool / DbxEdit come from
+the toolkit (..\\moh-fbrb-tool, ..\\moh-dbx-tools, built with their build.bat) or from OPFOR's tools\\ folder.
 
 Files (in the OPFOR folder): work\\levels\\<level>\\ (unpacked level, objects), work\\navkit\\<level>\\
-(settings, pathdata.hpd, check report), work\\navsample\\<level>_navkit*.bin (samples, written by OPFOR's
-[dev] navsample). See QUICKSTART.md.
+(settings, pathdata.hpd and its cells, check report, <level>.rsnv), work\\navsample\\<level>_navkit*.bin (samples).
+See QUICKSTART.md.
 """
 import glob
 import hashlib
@@ -695,6 +700,29 @@ def check(pr, lv, log=print):
     log(f'  full report: {os.path.relpath(report, pr.root)}')
 
 
+def export(pr, lv, log=print):
+    """The build as the navigation runtime's file (tools\\navexport.py: work\\navkit\\<lv>\\<lv>.rsnv), read back and
+    checked against the build; then, when rsnav's host build is found (tools\\rsnavcheck.py), loaded in rsnav and
+    routed between the level's spawn points and objectives."""
+    import navexport
+    import rsnavcheck
+    log(f'== export {lv}')
+    path, nav = navexport.export(pr.root, lv, log=lambda m: log('  ' + m))
+    problems, _ = navexport.check(path, nav, log=lambda m: log('  ' + m))
+    if problems:
+        raise NavKitError(f'{lv}: the RSNV file does not match the build ({len(problems)} problem(s))')
+    d = rsnavcheck.find_rsnav()
+    if d is None:
+        log('  rsnav not found (RSNAV_ROOT): the file was not tried in the runtime')
+        return
+    try:
+        rb = rsnavcheck.bindings(d)
+    except FileNotFoundError as e:
+        log(f'  {e}')
+        return
+    rsnavcheck.check_level(pr.root, lv, rb, log=lambda m: log('  ' + m))
+
+
 def compare(pr, lv, log=print, reference=None, candidate=None):
     """Two path-data files of a level on its AI positions (default: the original against NavKit's build)."""
     import navcompare
@@ -918,6 +946,8 @@ def main(argv):
             compare(pr, lv, reference=opts.get('--reference'), candidate=opts.get('--candidate'))
         elif cmd == 'check':
             check(pr, lv)
+        elif cmd == 'export':
+            export(pr, lv)
         elif cmd == 'apply':
             apply(pr, lv, opts.get('--navtune'), opts.get('--out'), install_after=install_flag)
         elif cmd == 'install':
@@ -931,6 +961,7 @@ def main(argv):
             if sample_level(pr, lv, confirm=confirm):
                 build(pr, lv)
                 check(pr, lv)
+                export(pr, lv)
         else:
             raise NavKitError(f'unknown command {cmd!r}')
     except NavKitError as e:

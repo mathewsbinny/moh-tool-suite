@@ -81,6 +81,15 @@ def main(argv):
         check(kinds == ['AlternateSpawn', 'CapturePoint', 'ObjectiveTrigger', 'SoldierSpawn'],
               f'the check takes objectives and spawns on a level without AI orders {kinds}')
 
+    # DbxEdit writes a denormal float as its bits (MP_09_TDM's invisible walls): read back as about 0, not 98304
+    from mohcore import xmlinst
+    m = xmlinst.transform('3.42285418E-08/-1.39582864E-33/0.9999999/-431602080/98304/1/1.39582864E-33/-431602080/'
+                          '-0.9999999/181005/3.42285418E-08/-431602080/27.7396584/69.45882/-6.44292927/-431602080')
+    check(abs(m[4]) < 1e-30 and abs(m[9]) < 1e-30 and m[5] == 1.0 and abs(m[12] - 27.7396584) < 1e-6,
+          'transform: a denormal written as its bits reads as ~0; rotation and position kept')
+    m2 = xmlinst.transform('2/0/0/0/0/2/0/0/0/0/2/0/1500/20/3000/0')
+    check(m2[0] == 2.0 and m2[12] == 1500.0 and m2[14] == 3000.0, 'transform: a small scale and large positions kept')
+
     root = argv[1] if len(argv) > 1 else None
     if root is None:
         import navkit
