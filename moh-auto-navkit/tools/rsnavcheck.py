@@ -1,5 +1,5 @@
 r"""NavKit: a level's RSNV file in the navigation runtime itself (rsnav, through its ctypes bindings in
-project-opfor-bf1943 - TnT/Code/Engine/AI/PathFinding/rsnav/bindings/rsnav.py and its host build rsnav.dll).
+project-opfor-moh - src/rsnav/bindings/rsnav.py and its host build build/rsnav/rsnav.dll).
 
   rsnavcheck.py <level> [<level> ...] [--rsnav <rsnav folder>] [--opfor <root>] [--reference N] [--json out.json]
 
@@ -11,7 +11,7 @@ drop link goes one way) with the soldier's filter (rsn_filter_soldier: water cos
 routed at least one way and both ways, search time, and - on N random pairs (--reference, default 20) - that the C search's
 cost equals the Python reference's (core rsnv.search) on the same file.
 
-Finds rsnav at --rsnav, else RSNAV_ROOT, else project-opfor-bf1943 next to the suite's folder.
+Finds rsnav at --rsnav, else RSNAV_ROOT, else project-opfor-moh's src/rsnav next to the suite's folder.
 """
 import argparse
 import json
@@ -31,8 +31,7 @@ START = 6.0           # m: its start node in sight this close (rsn_start_node)
 
 def find_rsnav(given=None):
     for c in (given, os.environ.get('RSNAV_ROOT'),
-              os.path.join(os.path.dirname(SUITE), 'project-opfor-bf1943', 'TnT', 'Code', 'Engine', 'AI', 'PathFinding',
-                           'rsnav')):
+              os.path.join(os.path.dirname(SUITE), 'project-opfor-moh', 'src', 'rsnav')):
         if c and os.path.isfile(os.path.join(c, 'bindings', 'rsnav.py')):
             return c
     return None

@@ -1,5 +1,5 @@
 """RSNV: our own per-level navigation file (operation-rising-sun research/NAVIGATION_RUNTIME_DESIGN.md, section 1.3),
-the input of the navigation runtime (project-opfor-bf1943 `rsnav`). Written by NavKit's exporter (navexport1943.py)
+the input of the navigation runtime (`rsnav`; MOH's copy: project-opfor-moh src/rsnav). Written by NavKit's exporter (navexport1943.py)
 from a checked build; read here for tests, tools and the Python reference search.
 
 Medal of Honor (2026-10-30): a copy of bf1943-tool-suite's core/bfbc2core/rsnv.py, unchanged below this paragraph - the

@@ -1,7 +1,8 @@
 """In-game tests: how they plug in. The harness never starts the game; these read what a run the user made left behind.
 
 Now (offline reading of a finished run):
-  sessions(text)        the sessions of an opfor.log (one per "---- opfor.dll loaded" line): level, session states,
+  sessions(text)        the sessions of an opfor.log (one per "---- OPFOR core loaded" / "---- opfor.dll loaded"
+                        line; MOH's is game\\logs\\opfor_mp.log): level, session states,
                         AI events, SectorOffsets loads and override, unit-counter pathfinder counts, crash, exit
   evaluate(s, asset)    the three in-game criteria of an AI level (STOCK_MP_AI_PLAN.md 6.3 / 8) as checks.Results:
                         loads-ai-init, offsets-read, pathfinders
@@ -23,7 +24,9 @@ from typing import List, Optional
 
 from .checks import Result
 
-START = re.compile(r'---- opfor\.dll loaded into PID (\d+) ----')
+# a session starts at the core's load line: MOH's OPFOR core ('---- OPFOR core loaded into <exe> (PID n) ----', in
+# game\logs\opfor_mp.log) or the older opfor.dll ('---- opfor.dll loaded into PID n ----')
+START = re.compile(r'---- (?:OPFOR core loaded into .* \(PID (\d+)\)|opfor\.dll loaded into PID (\d+)) ----')
 STAMP = re.compile(r'^\[(\d\d:\d\d:\d\d)\.\d+\]')
 LEVEL = re.compile(r"(?:queued hostMultiplayerLocal request|dev trigger): level='([^']+)'")
 STATE = re.compile(r'Session::updateState.*arg1=([0-9A-F]{8})')
@@ -64,7 +67,7 @@ def sessions(text):
     for line in text.splitlines():
         m = START.search(line)
         if m:
-            cur = Session(m.group(1))
+            cur = Session(m.group(1) or m.group(2))
             t = STAMP.match(line)
             cur.start = t.group(1) if t else ''
             out.append(cur)

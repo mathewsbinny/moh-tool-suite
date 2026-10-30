@@ -26,6 +26,12 @@ level bundle has 4,334 of its 6,692 entries as markers; all bundles together 286
 broken; `pack` restores them from the manifest, and the rebuilt bundle's header and payload are identical
 to the original's. Folders unpacked by older versions, which hold the markers as empty files, pack the same.
 
+Two MOH layouts are kept (2026-10-30): an uncompressed bundle whose header ends and entries start on 4 KiB
+boundaries (the async `ondemand_*` bundles) gets `align=4096` on the manifest's first line - `pack` pads the header
+and fills the gaps with 0xBF again; and where 0xBF fill bytes follow an entry (64 after each `.dbx` in the
+`build_overlay` bundles) the manifest's optional 6th column holds their count. All 358 of MOH's bundles come back
+identical (`core\tests\test_fbrb.py --game 0`).
+
 ## Errors and logs
 
 FbrbTool keeps a log in `%LOCALAPPDATA%\moh-tool-suite\logs\` like the suite's other tools. When it cannot do

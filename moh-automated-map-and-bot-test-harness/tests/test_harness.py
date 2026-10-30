@@ -20,10 +20,13 @@ Quick (no game data; navigation data, levels, bundles and logs built in the test
     1.0, a test now failing and one fixed, counts, missing and new, battery pairs lost; the report;
   - the command line: compare (exit 1 on a regression, 0 without), show, list, import-log, ingame (on hold, starts
     nothing), an error explained with its log.
-Game (--game, Project OPFOR's game copy; outputs to a temporary folder): the reader against FbrbTool on a level bundle;
-a run on sp_009 and sp_004_b (DICE's files pass the structure and offset checks; the level checks pass; points, pair
-data and parity are there); the same run again compares with no regression; a damaged copy of sp_009's path data
-(half its sectors without route edges) is flagged as a regression; the user's opfor.log is read (read only).
+Game (--game, Project OPFOR's game copy; outputs to a temporary folder): MOH's bundle layout (mp_01's load set: the
+patch's copy, its own bundle, common_mp_01, common_mp) and the reader against FbrbTool on each of those bundles; a run
+on mp_01 and mp_03_elimination (a DLC mode whose partition is only in common_mp_03) with NavKit's builds, MOH having
+no path data of its own (the builds pass structure; reachability and the battery's pair data are there; the sector
+ids are measured and no SectorOffsets asset is found; the level checks find no AI layer; the partition is found in
+the load set); mp_01's point classes; the same run again compares with no regression; a damaged copy of mp_01's
+build (half its sectors without route edges) is flagged as a regression; the user's opfor_mp.log is read (read only).
 
   python test_harness.py [--game]
 """
@@ -463,78 +466,77 @@ def game(check, tmp):
     import hpdtool
     import navkit
     root = navkit.find_opfor(None)
-    bundle = os.path.join(root, 'game', 'Dist', 'win32', 'levels', 'sp_009', 'level-00.fbrb')
+    # MOH's bundle layout: a level loads the patch's copy, its own bundle, its map's common_mp_<nn>, then common_mp
+    # (package.mft); a DLC mode without a bundle of its own (mp_03_elimination) loads its map's common bundles only
+    ls = levelinfo.load_set(root, 'mp_01')
+    check([t for t, _p, _ok in ls] == ['game:patch/levels/mp_01/level-00.fbrb', 'game:levels/mp_01/level-00.fbrb',
+                                       'game:patch/levels/common_mp_01/level-00.fbrb', 'game:levels/common_mp_01/level-00.fbrb',
+                                       'game:patch/levels/common_mp/level-00.fbrb', 'game:levels/common_mp/level-00.fbrb']
+          and all(ok for *_x, ok in ls), 'mp_01\'s load set: the patch\'s copy, its own bundle, common_mp_01, common_mp - all on disk')
     tool = os.path.join(SUITE, 'moh-fbrb-tool', 'FbrbTool.exe')
     if os.path.isfile(tool):
-        out = subprocess.run([tool, 'list', bundle], capture_output=True, text=True).stdout.splitlines()[:-1]
-        theirs = sorted(l.split(None, 2)[2].lower() for l in out if '*deleted*' not in l)      # names may hold spaces
-        check(theirs == sorted(fbrb.names(bundle)), f'the fbrb reader lists the same {len(theirs)} entries as FbrbTool (sp_009)')
+        same = []
+        for _t, bundle, _ok in ls:
+            out = subprocess.run([tool, 'list', bundle], capture_output=True, text=True).stdout.splitlines()[:-1]
+            theirs = sorted(l.split(None, 2)[2].lower() for l in out if '*deleted*' not in l)      # names may hold spaces
+            same.append(len(theirs) > 0 and theirs == sorted(fbrb.names(bundle)))
+        check(all(same), f'the fbrb reader lists the same entries as FbrbTool in each of mp_01\'s {len(ls)} load-set bundles')
     runs_dir = os.path.join(tmp, 'runs')
     env = {**os.environ, 'LOCALAPPDATA': tmp}
 
     def harness(*a):
         return subprocess.run([PY, HARNESS, *a, '--runs', runs_dir], capture_output=True, text=True, env=env, timeout=3600)
-    r = harness('run', 'g1', '--levels', 'sp_009,sp_004_b', '--pairs', '100', '--level-pairs', '50')
+    # MOH ships no path data (MoHMPGame.exe has no AI): NavKit's build is each level's only file, its own reference
+    levels = ['mp_01', 'mp_03_elimination']
+    run_args = ['--levels', ','.join(levels), '--files', 'navkit', '--pairs', '100', '--level-pairs', '50']
+    r = harness('run', 'g1', *run_args)
     path = os.path.join(runs_dir, 'g1.json')
-    check(os.path.isfile(path), f'a run on sp_009 and sp_004_b is saved (exit {r.returncode}: '
-          + (r.stdout.strip().splitlines() or [''])[-2].strip() + ')')
+    check(os.path.isfile(path), f'a run on mp_01 and mp_03_elimination is saved (exit {r.returncode}: '
+          + (r.stdout.strip().splitlines() or ['', ''])[-2].strip() + ')')
     if not os.path.isfile(path):
         print(r.stdout[-3000:], r.stderr[-3000:])
         return
     g1 = runs.load(path)
-    for lv in ('sp_009', 'sp_004_b'):
+    for lv in levels:
         L = g1['levels'][lv]
-        d = L['files'].get('dice', {}).get('tests', {})
-        check(d.get('structure', {}).get('status') == 'pass' and d.get('offsets', {}).get('status') == 'pass',
-              f'{lv}: DICE\'s file passes structure and its sector ids match the SectorOffsets asset')
-        lvl = L['level']
-        check(all(lvl[k]['status'] == 'pass' for k in ('has-ai', 'ai-spawners', 'templates-loaded', 'orders', 'offsets-asset', 'path-data')),
-              f'{lv}: level checks pass (' + ', '.join(f'{k} {v["status"]}' for k, v in lvl.items()) + ')')
-        check(L['points']['sources'] > 0 and L['points']['targets'] > 0 and 'random' in d.get('battery', {}).get('data', {}),
-              f'{lv}: points ({L["points"]}) and the battery\'s pair data')
         nk = L['files'].get('navkit', {}).get('tests', {})
-        check('parity' in nk and 'ground' in nk['parity']['metrics'] and 'found_of_ref_pct' in ''.join(nk['battery']['metrics']),
-              f'{lv}: NavKit\'s build has parity measures and battery results against DICE\'s routes')
-    r2 = harness('run', 'g2', '--levels', 'sp_009,sp_004_b', '--pairs', '100', '--level-pairs', '50', '--reference', 'g1')
+        check(nk.get('structure', {}).get('status') == 'pass' and nk.get('reachability', {}).get('status') in ('pass', 'warn')
+              and 'random' in nk.get('battery', {}).get('data', {}) and 'parity' not in nk,
+              f'{lv}: NavKit\'s build passes structure; reachability and the battery\'s pair data are there (no DICE file: no parity)')
+        off = nk.get('offsets', {})
+        check(off.get('status') == 'fail' and 'no Infantry SectorOffsets asset' in off.get('summary', ''),
+              f'{lv}: the build\'s sector ids are measured, and MOH\'s level loads no SectorOffsets asset ({off.get("summary", "")[:40]})')
+        lvl = L['level']
+        check(all(lvl.get(k, {}).get('status') == 'fail' for k in ('ai-spawners', 'orders', 'offsets-asset'))
+              and lvl.get('has-ai', {}).get('status') != 'pass',
+              f'{lv}: the level checks find no AI layer (' + ', '.join(f'{k} {v["status"]}' for k, v in lvl.items()) + ')')
+        check(L['points']['sources'] > 0 and L['points']['orders'] > 0 and not any('partition' in n for n in L['notes']),
+              f'{lv}: points ({L["points"]}); the level partition found in its load set')
+    ex = g1['levels']['mp_01'].get('excluded', {})
+    check(ex.get('sources', {}).get('spawner marker', 0) > 0 and ex.get('targets', {}).get('airborne', 0) > 0,
+          f'mp_01: spawner markers and the bases\' markers above the ground counted, not tested ({ex.get("sources")}, {ex.get("targets")})')
+    r2 = harness('run', 'g2', *run_args, '--reference', 'g1')
     check('no regressions' in r2.stdout, 'the same run again: no regressions (the measures are deterministic)')
-    # a damaged copy of DICE's sp_009 file: half its sectors without route edges
-    src = os.path.join(root, 'game', 'Output', 'win32', 'ai', 'levels', 'sp_009', 'infantry', 'pathdata.hpd')
+    # a damaged copy of NavKit's mp_01 build: half its sectors without route edges
+    src = g1['levels']['mp_01']['files']['navkit']['path']
     f = hpdtool.parse(open(src, 'rb').read())
     xs = sorted((s.bounds[0] + s.bounds[1]) / 2 for s in f.sectors)
     for s in f.sectors:
         if (s.bounds[0] + s.bounds[1]) / 2 < xs[len(xs) // 2]:
             s.edges = []
-    bad = os.path.join(tmp, 'broken', 'sp_009.hpd')
+    bad = os.path.join(tmp, 'broken', 'mp_01.hpd')
     os.makedirs(os.path.dirname(bad))
     open(bad, 'wb').write(hpdtool.write(f))
-    r3 = harness('run', 'g3', '--levels', 'sp_009', '--navkit', bad.replace('sp_009.hpd', '{lv}.hpd'),
-                 '--tests', 'structure,reachability,battery,orders,offsets')
+    harness('run', 'g3', '--levels', 'mp_01', '--files', 'navkit', '--navkit', bad.replace('mp_01.hpd', '{lv}.hpd'),
+            '--pairs', '100', '--level-pairs', '50', '--tests', 'structure,reachability,battery,orders,offsets')
     r4 = harness('compare', 'g1', 'g3')
-    check(r4.returncode == 1 and 'worse' in r4.stdout and 'sp_009 navkit' in r4.stdout,
+    check(r4.returncode == 1 and 'worse' in r4.stdout and 'mp_01 navkit' in r4.stdout,
           f'a damaged file in place of NavKit\'s build is flagged (exit {r4.returncode}): '
           + '; '.join(l.strip() for l in r4.stdout.splitlines() if 'worse' in l)[:300])
-    # point classes on the Onslaught maps: infantry points only, the others counted; ONS_MP_005GR's partition (in its
-    # Package bundle only) read
-    r5 = harness('run', 'g5', '--levels', 'ons_mp_004,ons_mp_005gr', '--files', 'dice', '--tests', 'reachability,orders')
-    p5 = os.path.join(runs_dir, 'g5.json')
-    if os.path.isfile(p5):
-        g5 = runs.load(p5)['levels']
-        a, b = g5['ons_mp_004'], g5['ons_mp_005gr']
-        ex = a.get('excluded', {})
-        check(ex.get('sources', {}).get('vehicle: air', 0) > 0 and ex.get('sources', {}).get('other map', 0) > 0
-              and ex.get('orders', {}).get('water', 0) > 0 and ex.get('targets', {}).get('base', 0) > 0,
-              f'ONS_MP_004: vehicle, other-map, base and water points counted, not tested ({ex.get("sources")}, {ex.get("targets")}, {ex.get("orders")})')
-        rr = a['files']['dice']['tests']['reachability']
-        check(rr['status'] == 'pass' and rr['metrics']['targets_reached_pct'] == 100.0,
-              f'ONS_MP_004: DICE\'s file reaches every infantry target ({rr["summary"][:90]})')
-        check(b['points'].get('infantry_sources', 0) > 0 and not any('level not read' in n for n in b['notes']),
-              f'ONS_MP_005GR: its level partition read from the Package bundle ({b["points"]})')
-    else:
-        check(False, f'a run on ONS_MP_004 and ONS_MP_005GR (exit {r5.returncode}): {r5.stdout[-500:]}')
-    log = os.path.join(root, 'game', 'logs', 'opfor.log')
+    log = os.path.join(root, 'game', 'logs', 'opfor_mp.log')
     if os.path.isfile(log):
         ss = ingame.sessions(open(log, encoding='utf-8', errors='replace').read())
-        check(len(ss) > 0, f'the user\'s opfor.log reads: {len(ss)} session(s), {sum(1 for s in ss if s.in_game)} in game (read only)')
+        check(len(ss) > 0, f'the user\'s opfor_mp.log reads: {len(ss)} session(s), {sum(1 for s in ss if s.in_game)} in game (read only)')
 
 
 def main(argv):

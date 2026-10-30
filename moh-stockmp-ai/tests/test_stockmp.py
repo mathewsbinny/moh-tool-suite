@@ -4,9 +4,11 @@ r"""Tests of the stock-MP AI authoring tool.
                                          number kinds, authoring a Conquest and a Rush layer, the configuration
                                          checks, the SectorOffsets asset, install / revert on a fake game folder,
                                          and DbxEdit's check and round trip on the written files
-  python tests\test_stockmp.py --game    + Project OPFOR's game copy: the DBX writer on every file of Atacama's
-                                         level bundles, then generate / build / validate Atacama Conquest (MP_005)
-                                         in a temporary work folder, twice (the builds must be identical)
+  python tests\test_stockmp.py --game    + Project OPFOR's game copy: the DBX writer on every file of mp_01's level
+                                         bundles (work\levels\mp_01) byte for byte, and that MoHMPGame.exe has no AI
+                                         types (AreaOrderEntityData, HasAI, PathfindingTypes, PathdataSectorOffsets):
+                                         MOH's MP exe has no AI runtime, so no MOH level is generated, built or
+                                         validated here (the layer's BFBC2 game test built Atacama Conquest)
 """
 import hashlib
 import json
@@ -350,12 +352,12 @@ def quick(tmp):
 # ------------------------------------------------------------------------------------------ game tests
 
 def game(tmp):
+    """MOH's half: the DBX writer on a MOH level's files. The layer itself has no MOH counterpart - MoHMPGame.exe
+    (build 592256) has no AI runtime, so there is no level to author, build and validate."""
     import navkit
-    import stockmp
-    import validate
     opfor = navkit.find_opfor(None)
     n = bad = 0
-    for top in (os.path.join(opfor, 'work', 'levels', 'mp_005'),):
+    for top in (os.path.join(opfor, 'work', 'levels', 'mp_01'),):
         for dp, _ds, fs in os.walk(top):
             for fn in fs:
                 if fn.lower().endswith('.dbx'):
@@ -363,26 +365,11 @@ def game(tmp):
                     if dbxbin.is_binary(data):
                         n += 1
                         bad += dbxbin.write(dbxbin.parse(data)) != data
-    check(n > 1000 and bad == 0, f'DBX writer: {n} files of Atacama\'s bundles come back byte for byte ({bad} differ)')
-    work = os.path.join(tmp, 'work')
-    hashes = []
-    for run in range(2):
-        paths = pipeline.Paths('mp_005', opfor=opfor, work=os.path.join(work, str(run)))
-        c = pipeline.generate(paths, pathdata=stockmp.pathdata_for(paths), bots_per_team=8)
-        check(cfgmod.check(c) == [] and len(c['spawners']) == 16 and len(c['orders']) == 6,
-              f'Atacama Conquest: generated {len(c["spawners"])} spawners and {len(c["orders"])} orders')
-        rep = pipeline.build(paths, c, log=lambda *_a: None)
-        hashes.append({k: v for k, v in rep['outputs'].items()})
-        if run == 0:
-            res = validate.validate(paths, c, log=lambda *_a: None)
-            for r in res['results']:
-                check(r['ok'], f'Atacama validation: {r["check"]}: {r["detail"][:110]}')
-            check(rep['sector_offsets']['Infantry']['x'] == -9 and rep['sector_offsets']['Infantry']['z'] == -4
-                  and rep['sector_offsets']['Vehicle']['z'] == -3,
-                  'Atacama SectorOffsets from the path data: infantry -9,-4, vehicle -9,-3 (DICE\'s console asset)')
-        shutil.rmtree(os.path.join(work, str(run), 'mp_005', 'build'), ignore_errors=True)
-        shutil.rmtree(os.path.join(work, str(run), 'mp_005', 'src'), ignore_errors=True)
-    check(hashes[0] == hashes[1], 'two builds give identical bundles and staged path data')
+    check(n > 2000 and bad == 0, f'DBX writer: {n} files of mp_01\'s bundles come back byte for byte ({bad} differ)')
+    exe = open(os.path.join(navkit.Project().game, 'MoHMPGame.exe'), 'rb').read()
+    missing = [t for t in ('AreaOrderEntityData', 'HasAI', 'PathfindingTypes', 'PathdataSectorOffsets') if t.encode() not in exe]
+    check(len(missing) == 4, 'MoHMPGame.exe has no AI order, HasAI, path finding or SectorOffsets type: no stock-MP AI '
+          f'layer to build for MOH (not in the exe: {", ".join(missing)})')
 
 
 def main(argv):

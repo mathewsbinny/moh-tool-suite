@@ -1,7 +1,7 @@
 r"""MOH map and bot test harness: offline tests of levels and their path data, saved per named run and compared
 between runs (DESIGN.md section 4.5, milestone M5; this folder's README).
 
-  harness.py run [<name>] [--levels sp_004_b,sp_009] [--files dice,navkit,installed] [--navkit auto|regress|build|<path {lv}>]
+  harness.py run [<name>] [--levels mp_01,mp_03_elimination] [--files dice,navkit,installed] [--navkit auto|regress|build|<path {lv}>]
                  [--tests structure,reachability,battery,orders,offsets,parity,level] [--pairs 200] [--level-pairs 100]
                  [--seed 1] [--reference <run>] [--scale 1] [--opfor <folder>] [--runs <folder>]
   harness.py show <run> [--details 3]          a saved run as text (a name in the runs folder, or a .json path)
@@ -25,8 +25,10 @@ work\navkit\regress\<lv>.hpd, else work\navkit\<lv>\pathdata.hpd; installed: wha
                 when there is one, else measured and cached; against navregress's reference run "regression"
 and per level the AI-readiness checks from files (HasAI, AI spawners, templates and their partitions in the load set,
 kits, AreaOrders, the SectorOffsets asset, installed path data); the in-game checks stay on hold.
-Default levels: every level with DICE path data (NavKit's 13 campaign levels and ONS_MP_002 / 004) - over an hour on
-the first run (DICE-parity of NavKit's builds, about 1-15 minutes per level, is cached); --levels for a subset.
+Default levels: every level with DICE path data; MOH ships none, so there every level NavKit has built
+(work\navkit\<lv>\pathdata.hpd: the 26 MP levels), and --files defaults to navkit; --levels for a subset. MOH's
+levels have no AI layer (no HasAI, AI spawners or SectorOffsets asset: MoHMPGame.exe has none of those types), so the
+AI-readiness checks fail there by design.
 Saved as <OPFOR>\work\harness\runs\<name>.json (default name "last"); with --reference, compared with that run.
 Exit code: 0 nothing failed (and no regression), 1 a test failed or something got worse, 2 a run not found.
 """
@@ -257,11 +259,17 @@ def cmd_run(args):
     levels = opt(args, '--levels')
     levels = [x.strip().lower() for x in levels.split(',')] if levels else [
         lv for lv in navparity.LEVELS + navparity.ONSLAUGHT if os.path.isfile(navparity.reference_of(root, lv))]
+    dice = bool(levels)
+    if not levels:          # MOH: no DICE path data - the levels NavKit has built
+        nk = os.path.join(root, 'work', 'navkit')
+        levels = sorted(lv for lv in (os.listdir(nk) if os.path.isdir(nk) else [])
+                        if os.path.isfile(os.path.join(nk, lv, 'pathdata.hpd')))
     tests = [t.strip() for t in opt(args, '--tests', ','.join(TESTS)).split(',')]
     unknown = [t for t in tests if t not in TESTS]
     if unknown:
         raise ValueError(f'unknown test kind(s) {", ".join(unknown)} (known: {", ".join(TESTS)})')
-    options = {'levels': levels, 'files': [f.strip() for f in opt(args, '--files', 'dice,navkit').split(',')],
+    options = {'levels': levels, 'files': [f.strip() for f in opt(args, '--files', 'dice,navkit' if dice or opt(args, '--levels')
+                                                                      else 'navkit').split(',')],
                'navkit': opt(args, '--navkit', 'auto'), 'tests': tests, 'pairs': int(opt(args, '--pairs', 200)),
                'level_pairs': int(opt(args, '--level-pairs', 100)), 'seed': int(opt(args, '--seed', 1))}
     reference = opt(args, '--reference')

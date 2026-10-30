@@ -4,13 +4,15 @@ level's terrain-00.fbrb.
     w = read(folder_or_mesh_path, name)    # Water: vertices, triangles, per-triangle shader (or None)
     w.vertices (n, 3) float32, w.triangles (m, 3) uint32, w.shader[k] -> shader path of triangle k
 
-WaterMesh (little-endian; read on all 36 levels with a terrain bundle, each file consumed exactly):
+WaterMesh (little-endian; read on all 26 MOH MP levels, the patch's terrain layer first, each file consumed exactly -
+core\tests\test_water.py):
 
     u32           bodies (1 in every level)
     per body:     u32 vertex count, vertex count x (f32 x, y, z)
-                  u32 index count, index count x u32 (triangles; 0 vertices = no water: SP_006, SP_009)
+                  u32 index count, index count x u32 (triangles; 0 vertices = no water: 12 of the 26, a 12-byte file -
+                  mp_01_elimination, mp_02, mp_02_koth2, mp_06_*, mp_07_koth, mp_09_*, mp_10_*)
 
-Heights are per vertex: rivers slope (SP_02: 17.9-156.8 m), seas are flat (SP_01: 4.4 m).
+Heights are per vertex (the format allows sloping rivers; BFBC2's SP_02 had one).
 
 VisualWater (the drawing copy; only the parts used here):
 
@@ -18,7 +20,8 @@ VisualWater (the drawing copy; only the parts used here):
     coordinates), u32 index bytes, u32 indices (identical to the mesh's on 33 of 34 levels with water),
     u32 slot count (4) and the slots' shader paths (0-terminated, each followed by one 0 byte, then
     Systems/Water/WaterOceanFragment), u32 range count and per range (u32 slot, u32 triangle count,
-    u32 first index, u32 index count), then u32 0 and the byte 0x46.
+    u32 first index, u32 index count), then u32 0 and the byte 0x46. Where the mesh has no water its header has 0 vertex
+    and 0 index bytes.
 """
 import os
 import struct

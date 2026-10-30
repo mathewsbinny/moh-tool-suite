@@ -1,8 +1,10 @@
-r"""navlinks.py and navkit apply's graph edits, on a level's NavKit build and DICE's file (sp_004_b by default; no
-rebuild, so quick): a link joins two islands (the path test finds a route that had none), a one-way route
-edge goes one way only, removing an edge removes it (both ways by default), costs are the generator's, every
-node's first-edge index still follows the format's rule, an unchanged file stays byte-identical, a link no
-sector can hold is reported and not applied, and a DICE base gets its links on a copy.
+r"""navlinks.py and navkit apply's graph edits, on NavKit's build of a MOH level (work\navkit\<level>\pathdata.hpd,
+the current export, read only; mp_07_koth by default; no rebuild, so quick): a link joins two islands (the path
+test finds a route that had none), a one-way route edge goes one way only, removing an edge removes it (both
+ways by default), costs are the generator's (the rule every edge of the build follows), every node's first-edge
+index still follows the format's rule, an unchanged file stays byte-identical, a link no sector can hold is
+reported and not applied, and a graph-only base gets its links on a copy (navkit apply's DICE-base path: MOH
+ships no path data, so a copy of NavKit's build stands in for DICE's file).
 
   python test_links.py [level]
 """
@@ -41,7 +43,7 @@ def first_edge_rule(f):
 
 
 def main(argv):
-    lv = argv[1] if len(argv) > 1 else 'sp_004_b'
+    lv = argv[1] if len(argv) > 1 else 'mp_07_koth'
     failed = 0
 
     def check(ok, what):
@@ -50,9 +52,9 @@ def main(argv):
         print(f'{"ok  " if ok else "FAIL"} {what}', flush=True)
 
     pr = navkit.Project(None)
-    base = os.path.join(pr.root, 'work', 'navkit', 'regress', f'{lv}.hpd')
+    base = os.path.join(pr.root, 'work', 'navkit', lv, 'pathdata.hpd')
     if not os.path.isfile(base):
-        print(f'FAIL no regression build of {lv}: run navregress.py --levels {lv}')
+        print(f'FAIL no NavKit build of {lv} ({base}): run navkit.py build {lv}')
         return 1
     tmp = tempfile.mkdtemp(prefix='links_test_')
     try:
@@ -96,7 +98,8 @@ def main(argv):
         r1 = navpath.route(nav2, a, b)
         check(r1.found, f'after the link: a route ({r1.cost:.1f} m over {len(r1.nodes)} nodes)')
         check(len(nav2.islands) == len(nav.islands) - 1, f'one island fewer ({len(nav.islands)} -> {len(nav2.islands)})')
-        # costs: the rule every DICE edge follows (from the stored positions), for the new edges and DICE's file
+        # costs: the rule every edge follows (from the stored positions; DICE's files and NavKit's builds alike), for
+        # the new edges and the whole build
         def costs_ok(ff, only=None):
             for sec in ff.sectors:
                 for e in sec.edges:
@@ -109,9 +112,7 @@ def main(argv):
         old = {(s.id, e.src, e.dst) for s in f.sectors for e in s.edges}
         new_edges = {(s.id, e.src, e.dst) for s in f2.sectors for e in s.edges} - old
         check(len(new_edges) == 2 and costs_ok(f2, new_edges), 'the 2 new edges cost 0x80000000 | floor(stored distance * 16)')
-        dice_file = pr.dice_pathdata(lv)
-        if dice_file:
-            check(costs_ok(hpdtool.parse(open(dice_file, 'rb').read())), 'the same rule as every edge of DICE\'s file')
+        check(costs_ok(f), 'the same rule as every edge of NavKit\'s build')
 
         # one-way, then removal
         f3 = hpdtool.parse(data)
@@ -126,26 +127,21 @@ def main(argv):
         nav4 = navdata.load(p4)
         check(navpath.route(nav4, a, b).found and not navpath.route(nav4, b, a).found, 'a one-way route edge goes one way only')
 
-        # a DICE base: the link goes into a copy of DICE's file (no rebuild)
-        dice = pr.dice_pathdata(lv)
-        if dice:
-            nd = navdata.load(dice)
-            gd = navpath.ground_nodes(nd)
-            gap = None
-            for k in range(1, min(len(nd.islands), 40)):
-                c = navpath.closest_between(nd, 0, k)
-                if c and 1.0 < c[2] < 12.0 and nd.node_sector[c[0]] == nd.node_sector[c[1]]:
-                    gap = c if gap is None or c[2] < gap[2] else gap
-            if gap:
-                td = nt.NavTune.new(f'Levels/{lv}', dice, kind='dice')
-                td.add(nt.op('link-areas', a=gd[gap[0]], b=gd[gap[1]]))
-                pd = os.path.join(tmp, 'dice.navtune.json')
-                td.save(pd)
-                outd = navkit.apply(pr, lv, pd, os.path.join(tmp, 'dice_linked.hpd'), log=lambda *x: None)
-                ndl = navdata.load(outd)
-                check(navpath.route(ndl, gd[gap[0]], gd[gap[1]]).found and len(ndl.islands) == len(nd.islands) - 1,
-                      'a DICE base: the link goes into a copy of DICE\'s file, joining two of its islands')
-                check(open(dice, 'rb').read() != open(outd, 'rb').read() and os.path.isfile(dice), 'DICE\'s own file is untouched')
+        # a graph-only base (side file kind "dice"): the link goes into a copy of the base file, no rebuild. MOH has
+        # no DICE file: a copy of NavKit's build stands in for it (pr.dice_pathdata, where apply reads it from)
+        dice = os.path.join(tmp, 'base', 'pathdata.hpd')
+        os.makedirs(os.path.dirname(dice))
+        shutil.copyfile(base, dice)
+        pr.dice_pathdata = lambda level: dice
+        td = nt.NavTune.new(f'Levels/{lv}', dice, kind='dice')
+        td.add(nt.op('link-areas', a=a, b=b))                              # the same gap as above
+        pd = os.path.join(tmp, 'dice.navtune.json')
+        td.save(pd)
+        outd = navkit.apply(pr, lv, pd, os.path.join(tmp, 'dice_linked.hpd'), log=lambda *x: None)
+        ndl = navdata.load(outd)
+        check(navpath.route(ndl, a, b).found and len(ndl.islands) == len(nav.islands) - 1,
+              'a graph-only base: the link goes into a copy of the base file, joining two of its islands')
+        check(open(dice, 'rb').read() == raw and open(outd, 'rb').read() != raw, 'the base file itself is untouched')
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print('all passed' if not failed else f'{failed} check(s) failed')

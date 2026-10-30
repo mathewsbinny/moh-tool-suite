@@ -192,7 +192,10 @@ def game_level(root, lv, info, cache_dir, log):
             info.notes.append(f'load-set bundle not on disk: {_t}')
     own = [p for t, p, ok in info.load_set if ok and f'levels/{lv}/level-00.fbrb' in t.lower()]
     part = f'levels/{lv}.dbx'
-    for p in own:                                       # Package first, as package.mft lists it: it overrides Dist
+    # the level's own bundles first (the patch's copy before the base one, as package.mft lists them), then the rest
+    # of the load set: five MOH DLC modes (mp_01_elimination, mp_02_koth2, mp_03_elimination, mp_04_koth,
+    # mp_07_koth) have their partition only in their map's common_mp_<nn>
+    for p in own + [p for _t, p, ok in info.load_set if ok and p not in own]:
         names = info.entries[p]
         if part in names:
             real = next(n for n in _real_names(p, cache_dir) if n.lower() == part)
@@ -203,7 +206,7 @@ def game_level(root, lv, info, cache_dir, log):
             info.level_partition_sha1 = hashlib.sha1(data).hexdigest()
             break
     else:
-        info.notes.append('the level partition was not found in its own bundles')
+        info.notes.append('the level partition was not found in its load set')
     for kind in KINDS:
         name = f'levels/{lv}/precomputed/{kind.lower()}/sectoroffsets.dbx'
         holder = next((p for p in own if name in info.entries[p]), None)

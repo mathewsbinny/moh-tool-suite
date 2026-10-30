@@ -1,7 +1,10 @@
 r"""The suite's window (MOH Tool Suite.pyw) driven as clicks would drive it: it opens with its 7 tabs and the
 game copy's levels; FbrbTool lists a bundle, LevelDiff compares a level with itself, the crash reader reads a
 report built here, the test runner lists a tier - each through its tab's button, its output in the pane; and
-the 3D tools' level picker lists the levels. Needs a display and Project OPFOR's game copy.
+the 3D tools' level picker lists the levels. On MOH: the 26 MP levels, each prepared, none with DICE path data
+(MoHMPGame.exe ships none), mp_01 with its NavKit build; mp_01's terrain bundle, its level partition, and a crash
+report of build 592256 at a known MoHMPGame.exe function. Needs a display and Project OPFOR's game copy, its
+levels prepared and mp_01 built by NavKit.
 
   python tests\test_hub.py [--shots <folder>]       --shots: a screenshot of every tab (for a look)
 """
@@ -55,8 +58,11 @@ def main(argv):
     tabs = [hub.tabs.tab(t, 'text') for t in hub.tabs.tabs()]
     check(tabs == ['Levels', 'Bundles', 'Level diff', 'Crash reader', 'Xbox files', 'Tests', 'More tools'], f'7 tabs: {", ".join(tabs)}')
     levels = hub.tree.get_children()
-    check(len(levels) > 30 and 'sp_01' in levels and 'mp_005' in levels, f'the Levels tab lists the game copy\'s levels ({len(levels)})')
-    check(hub.tree.set('sp_01', 'dice') == 'yes' and hub.tree.set('sp_01', 'prepared') == 'yes', 'with what each has (sp_01: prepared, DICE path data)')
+    check(len(levels) == 26 and 'mp_01' in levels and 'mp_03_elimination' in levels and 'mp_10_tdm' in levels,
+          f'the Levels tab lists the game copy\'s levels ({len(levels)}: the 26 MP levels, base and DLC)')
+    check(all(hub.tree.set(lv, 'prepared') == 'yes' and hub.tree.set(lv, 'dice') == '-' for lv in levels)
+          and 'mp_01' in levels and hub.tree.set('mp_01', 'navkit') == 'yes',
+          'with what each has (every level prepared, no DICE path data; mp_01: a NavKit build)')
 
     if '--shots' in argv:
         from PIL import ImageGrab
@@ -70,14 +76,14 @@ def main(argv):
             x, y = root.winfo_rootx(), root.winfo_rooty()
             ImageGrab.grab((x, y, x + root.winfo_width(), y + root.winfo_height())).save(os.path.join(folder, f'hub_{k}.png'))
 
-    bundle = os.path.join(hub.pr.game, 'Dist', 'win32', 'levels', 'sp_009', 'terrain-00.fbrb')
+    bundle = os.path.join(hub.pr.game, 'dist', 'win32', 'levels', 'mp_01', 'terrain-00.fbrb')
     hub.fb_file.set(bundle)
     hub.tabs.select(1)
     hub.run([hubmod.tool('fbrb'), 'list', hub.fb_file.get()], 'FbrbTool list')
     wait()
     check('entries, payload' in output() and 'Heightfield' in output(), 'Bundles: FbrbTool lists a terrain bundle')
 
-    lvl = os.path.join(hub.pr.work, 'levels', 'mp_005', 'dist', 'levels', 'MP_005.dbx')
+    lvl = os.path.join(hub.pr.work, 'levels', 'mp_01', 'dist', 'levels', 'MP_01.dbx')
     hub.ld_a.set(lvl)
     hub.ld_b.set(lvl)
     hub.ld_summary.set(True)
@@ -87,22 +93,23 @@ def main(argv):
 
     tmp = tempfile.mkdtemp(prefix='hub_test_')
     rep = os.path.join(tmp, 'crashreport.xml')
-    open(rep, 'w').write('<?xml version="1.0"?><report><type>crash</type><buildsignature>795745</buildsignature>'
-                         '<categoryid> 0x6EFF8A</categoryid><stack> 0x6EFF8A 0x570330</stack>'
-                         '<contextdata>registers: Eax 00000000, Eip 006eff8a, Esp 001ae65c</contextdata></report>')
+    open(rep, 'w').write('<?xml version="1.0"?><report><type>crash</type><buildsignature>592256</buildsignature>'
+                         '<categoryid> 0x407910</categoryid><stack> 0x407910 0x9349F0</stack>'
+                         '<contextdata>registers: Eax 00000000, Eip 00407910, Esp 001ae65c</contextdata></report>')
     hub.cr_file.set(rep)
     hub.cr_nocode.set(True)
     hub.crash()
     wait()
-    check('Md5Buffer' in output() and 'DbxEdit check' in output(), 'Crash reader: names the crash site and gives the hint')
+    check('registry read' in output() and 'the OPFOR core sends this key' in output(),
+          'Crash reader: names the crash site and gives the hint')
 
     hub.t_tier.set('quick')
     hub.run([hubmod.PYTHON, hubmod.SCRIPTS['tests'], 'quick', '--list'], 'Tests: list')
     wait()
     check('repository rules' in output(), 'Tests: lists what the quick tier runs')
 
-    hub.tree.selection_set('sp_009')
-    check(hub.chosen_level() == 'sp_009', 'a level chosen in the list is the one the 3D buttons open')
+    hub.tree.selection_set('mp_09_overrun')
+    check(hub.chosen_level() == 'mp_09_overrun', 'a level chosen in the list is the one the 3D buttons open')
 
     # a tool that fails: the user is told, with what it said last; a stopped one is not a failure
     told = []
@@ -130,7 +137,8 @@ def main(argv):
 
     from mohcore import pick
     items = pick.levels()
-    check(len(items) == len(levels) and any(lv == 'sp_01' and 'prepared' in s for lv, s in items),
+    check(len(items) == len(levels) and any(lv == 'mp_01' and s == 'prepared' for lv, s in items)
+          and not any('DICE' in s for _, s in items),
           'the 3D tools\' level picker lists the same levels')
     print('all passed' if not failed else f'{failed} check(s) failed')
     return 1 if failed else 0

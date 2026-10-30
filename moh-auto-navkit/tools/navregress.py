@@ -1,12 +1,24 @@
-r"""NavKit regression test: rebuilds levels with the current code and checks that no DICE-parity measure got
-worse than a saved reference run.
+r"""NavKit regression test: rebuilds levels with the current code and checks that no measure got worse than a
+saved reference run - on a level with DICE path data its DICE-parity measures, on a level without (every Medal of
+Honor MP level: MOH ships none) NavKit's own self-check figures.
 
-  navregress.py [--levels sp_004_b,sp_009] [--reference <run>] [--save <run>] [--tolerance 0.05] [--opfor <folder>]
+  navregress.py [--levels mp_07_koth,mp_03_elimination] [--reference <run>] [--save <run>] [--tolerance 0.05]
+                [--opfor <folder>]
 
-Per level: build with the same inputs as `navkit.py build` (in-game samples, ForbidPathfinding, dynamic-object
-and stair triangles, the high-capsule samples, soldier spawns as seeds; the level's SectorOffsets), into
-OPFOR's work\navkit\regress\<level>.hpd; its structure (hpdcheck.py: closed boundaries, node order, edges - a
-problem fails the level); then navparity's measures (navparity.py) against DICE's file.
+Per level: build with the same inputs as `navkit.py build` (navkit.build_inputs: the level's samples,
+ForbidPathfinding, dynamic-object and stair triangles, the high-capsule samples, soldier spawns as seeds, water,
+detailed zones, ladders; the level's sector offsets), into OPFOR's work\navkit\regress\<level>.hpd (never the
+level's own work\navkit\<level>\ export); its structure (hpdcheck.py: closed boundaries, node order, edges - a
+problem fails the level); then its measures:
+  - with DICE path data: navparity's measures (navparity.py) against DICE's file;
+  - without (self_check): of the level's AI positions (spawn points and objectives, ordercheck.order_points) the
+    share on an area, with a route node within 15 m, in a large route group; of the pairs on areas, the share the
+    route network joins (ordercheck's self-check) and, of the ordered pairs, the share routed along the edges'
+    directions (a drop link goes one way); and of the main island's route nodes inside the combat areas, the share
+    in its largest strongly connected part (each of its nodes reaches every other). Counts: points, sectors, areas,
+    detailed areas, nodes, edges, one-way edges, islands, large islands, walkable cells, and a digest of the sector
+    meshes and route graphs (the file without its build timestamps: the same digest is the reference's build byte
+    for byte; a change is listed, not failed).
 
 Each measure is compared with the reference run (default "regression"; navparity.py's work\navkit\parity\
 <run>.json). Measures where higher is better must not drop, measures where lower is better must not rise, by
@@ -20,8 +32,9 @@ the build's stages are printed indented as they finish.
 
 The run is saved as "regression_last". After an intended improvement, make it the reference:
   navregress.py --save regression          (or: copy regression_last.json to regression.json)
-Default levels: the 13 campaign levels and the Onslaught maps with DICE path data (ONS_MP_002 / 004, when imported) -
-about 5 hours with detailed zones; --levels for a subset.
+Default levels: the 13 campaign levels and the Onslaught maps with DICE path data (ONS_MP_002 / 004, when imported);
+without any (MOH) every level NavKit has prepared (work\navkit\<level>\navkit.json: the 26 MP levels, about 1 to 2
+hours); --levels for a subset.
 """
 import glob
 import json
@@ -45,6 +58,11 @@ HIGHER = ['ground', 'areas_same', 'portals', 'outline', 'borders', 'costs', 'nod
 LOWER = ['extra_ground', 'over_connection', 'sectors_missing']
 COUNTS = ['sectors_candidate', 'areas_candidate', 'detailed_candidate', 'islands_candidate', 'large_islands_candidate',
           'ai_main_candidate', 'df_d_candidate', 'df_f_candidate']
+# a level without DICE path data (self_check): NavKit's own figures
+SELF_HIGHER = ['self_on_area', 'self_near_node', 'self_large_group', 'self_pairwise', 'self_directed', 'self_strong']
+SELF_COUNTS = ['self_points', 'self_sectors', 'self_areas', 'self_detailed', 'self_nodes', 'self_edges', 'self_one_way',
+               'self_islands', 'self_large_islands', 'self_cells', 'self_digest']
+LARGE = 25                                      # nodes: a large island (navparity's rule)
 
 
 def inputs(root, lv):
@@ -125,35 +143,136 @@ def order_points_of(root, lv):
     return json.load(open(p)) if os.path.isfile(p) else None
 
 
-def detailed_of(root, lv, samples, xoff, zoff):
-    """The detailed-zone pass, as navkit.py build does it: the level's pitch-0.2 samples (navkit.py sample --pitch 0.2,
-    work\\navsample\\<lv>_navkit_p02.bin, with _hi_p02) and its detailed sectors chosen from the level alone
-    (detailed.py); None without pitch-0.2 samples."""
-    import detailed
-    p02 = os.path.join(root, 'work', 'navsample', f'{lv}_navkit_p02.bin')
-    if not os.path.isfile(p02):
-        return None
-    hi = p02[:-4].replace('_p02', '_hi_p02') + '.bin'
-    import navkit
-    common = navkit.common_dirs(root, lv)
-    chosen, _why = detailed.choose(os.path.join(root, 'work', 'levels', lv), common, samples, xoff, zoff)
-    return dict(samples=p02, high=hi if os.path.isfile(hi) else None, sectors=set(chosen))
-
-
-def ladders_of(root, lv):
-    """The level's ladders (ladders.py, written by navkit.py prepare), or None."""
-    p = os.path.join(root, 'work', 'levels', lv, 'ladders.json')
-    return json.load(open(p)) if os.path.isfile(p) else None
-
-
 def build_level(root, lv, out, log=lambda *a: None):
-    samples, xoff, zoff, f = inputs(root, lv)
-    navbuild.build(samples, f['forbid_tris.npy'], xoff, zoff, out, dynamic_path=f['dynamic_tris.npy'],
-                   high_path=samples[:-4] + '_hi.bin', stairs_path=f['stair_tris.npy'],
-                   seeds=json.load(open(f['soldier_spawns.json'])), water=level_water(root, lv),
-                   order_points=order_points_of(root, lv), area_orders=area_orders_of(root, lv),
-                   bounds=reference_bounds(root, lv), log=log,
-                   detailed=detailed_of(root, lv, samples, xoff, zoff), ladders=ladders_of(root, lv))
+    """The level built into out with navkit.py build's own inputs (navkit.build_inputs: detailed zones, ladders and
+    all) - on MOH a rebuild with unchanged code gives the export's sector meshes and route graphs byte for byte."""
+    import navkit
+    samples, forbid, xoff, zoff, kw = navkit.build_inputs(navkit.Project(root), lv, log=lambda *a: None)
+    kw['log'] = log
+    navbuild.build(samples, forbid, xoff, zoff, out, **kw)
+
+
+def strong_parts(n, edges):
+    """A label per node: its strongly connected part of the directed route graph (Kosaraju; no recursion)."""
+    fw, bw = [[] for _ in range(n)], [[] for _ in range(n)]
+    for a, b in edges:
+        fw[a].append(b)
+        bw[b].append(a)
+    order, seen = [], [False] * n
+    for s0 in range(n):                         # finishing order of a depth-first walk along the edges
+        if seen[s0]:
+            continue
+        seen[s0] = True
+        stack = [(s0, iter(fw[s0]))]
+        while stack:
+            u, it = stack[-1]
+            v = next(it, None)
+            if v is None:
+                stack.pop()
+                order.append(u)
+            elif not seen[v]:
+                seen[v] = True
+                stack.append((v, iter(fw[v])))
+    part = [-1] * n
+    for s0 in reversed(order):                  # then against the edges, latest finished first
+        if part[s0] >= 0:
+            continue
+        part[s0] = s0
+        stack = [s0]
+        while stack:
+            for v in bw[stack.pop()]:
+                if part[v] < 0:
+                    part[v] = s0
+                    stack.append(v)
+    return part
+
+
+def reach(fw, start):
+    """Every node reachable from start along the edges' directions."""
+    seen, stack = {start}, [start]
+    while stack:
+        for v in fw[stack.pop()]:
+            if v not in seen:
+                seen.add(v)
+                stack.append(v)
+    return seen
+
+
+def combat_areas(root, lv):
+    """The level's combat-area outlines as (x, z) polygons (CombatAreaTriggerEntityData, every team and stage), or []."""
+    import numpy as np
+    sys.path.insert(0, os.path.join(HERE, '..', '..', 'core'))
+    from mohcore import level as levelmod
+    L = levelmod.load(lv, opfor=root, geometry=False, log=lambda *a: None)
+    return [np.asarray(s.points, float)[:, [0, 2]] for s in L.shapes
+            if L.entities[s.entity].category == 'combat area' and s.kind == 'area']
+
+
+def self_check(root, lv, path):
+    """NavKit's own figures for a build of a level without DICE path data (the module's docstring), as a row."""
+    import hashlib
+    from collections import Counter
+    import numpy as np
+    import hpdtool
+    import ordercheck
+    sys.path.insert(0, os.path.join(HERE, '..', '..', 'core'))
+    from mohcore import navdata
+    f = hpdtool.parse(open(path, 'rb').read())
+    digest = hashlib.sha1()
+    for s in f.sectors:                         # the build without its timestamps: meshes and route graphs
+        digest.update(repr((s.id, s.mesh, s.nodes, s.edges)).encode())
+    nav = navdata.load(path)
+    pd = ordercheck.PathData(path)
+    n = len(nav.node_pos)
+    edges = nav.edges.tolist()
+    fw = [[] for _ in range(n)]
+    for a, b in edges:
+        fw[a].append(b)
+    pairs = set(map(tuple, edges))
+    # the AI positions: on an area, and their route node - the nearest within 15 m and 4 m in height (ordercheck)
+    pts = ordercheck.order_points(navparity.level_xml(root, lv))
+    on, node = [], []
+    for _, _, p in pts:
+        on.append(pd.on_area(p))
+        d = np.hypot(nav.node_pos[:, 0] - p[0], nav.node_pos[:, 2] - p[2])
+        d = np.where(np.abs(nav.node_pos[:, 1] - ordercheck.Y_OFFSET - p[1]) <= 4.0, d, 1e9)
+        k = int(np.argmin(d)) if n else -1
+        node.append(k if k >= 0 and d[k] <= 15.0 else None)
+    biggest = max((i.nodes for i in nav.islands), default=0)
+    size = [nav.islands[nav.node_island[k]].nodes if k is not None else 0 for k in node]
+    idx = [i for i in range(len(pts)) if on[i] and node[i] is not None]
+    joined = sum(1 for a in idx for b in idx if a < b and nav.node_island[node[a]] == nav.node_island[node[b]])
+    reached = {node[a]: reach(fw, node[a]) for a in idx}
+    routed = sum(1 for a in idx for b in idx if a != b and node[b] in reached[node[a]])
+    # the main island's route nodes inside the combat areas (all of them on a level without): the share in the
+    # largest strongly connected part - ground left by a drop link with no way back is outside it
+    part = strong_parts(n, edges)
+    main = np.nonzero(nav.node_island == 0)[0]
+    polys = combat_areas(root, lv)
+    if polys and len(main):
+        from matplotlib.path import Path
+        inside = np.zeros(len(main), bool)
+        for poly in polys:
+            inside |= Path(poly).contains_points(nav.node_pos[main][:, [0, 2]])
+        main = main[inside]
+    parts = Counter(part[k] for k in main.tolist())
+
+    def pct(a, b):
+        return round(100.0 * a / b, 2) if b else 100.0
+    return {
+        'level': lv, 'candidate': path, 'mode': 'self-check (no DICE path data)',
+        'self_points': len(pts), 'self_on_area': pct(sum(on), len(pts)),
+        'self_near_node': pct(sum(k is not None for k in node), len(pts)),
+        'self_large_group': pct(sum(1 for z in size if z and z >= 0.25 * biggest), len(pts)),
+        'self_pairwise': pct(joined, len(idx) * (len(idx) - 1) // 2),
+        'self_directed': pct(routed, len(idx) * (len(idx) - 1)),
+        'self_strong': pct(parts.most_common(1)[0][1] if parts else 0, len(main)),
+        'self_sectors': len(f.sectors), 'self_areas': len(nav.areas),
+        'self_detailed': sum(1 for a in nav.areas if a.pitch < navdata.DETAILED),
+        'self_nodes': n, 'self_edges': len(edges), 'self_one_way': sum(1 for a, b in pairs if (b, a) not in pairs),
+        'self_islands': len(nav.islands), 'self_large_islands': sum(1 for i in nav.islands if i.nodes >= LARGE),
+        'self_cells': int(len(nav.cell_xz)), 'self_digest': digest.hexdigest(),
+    }
 
 
 DEFAULT_SECONDS = 210                           # a level with no earlier timing: 45 minutes / 13 levels
@@ -190,16 +309,16 @@ def estimates(root, levels, *runs):
 def compare(ref, now, tol):
     """(worse, better, count changes) for one level: lists of (measure, reference, now)."""
     worse, better, counts = [], [], []
-    for k in HIGHER + LOWER:
+    for k in HIGHER + LOWER + SELF_HIGHER:
         a, b = ref.get(k), now.get(k)
         if a is None or b is None:
             continue
-        d = (b - a) if k in HIGHER else (a - b)
+        d = (a - b) if k in LOWER else (b - a)
         if d < -tol:
             worse.append((k, a, b))
         elif d > tol:
             better.append((k, a, b))
-    for k in COUNTS:
+    for k in COUNTS + SELF_COUNTS:
         if ref.get(k) != now.get(k):
             counts.append((k, ref.get(k), now.get(k)))
     return worse, better, counts
@@ -211,6 +330,9 @@ def main(argv):
     root = navparity.opfor_root(opt('--opfor'))
     levels = opt('--levels').split(',') if opt('--levels') else [
         lv for lv in navparity.LEVELS + navparity.ONSLAUGHT if os.path.isfile(navparity.reference_of(root, lv))]
+    if not levels:                              # MOH: no DICE path data - every level NavKit has prepared
+        d = os.path.join(root, 'work', 'navkit')
+        levels = sorted(lv for lv in os.listdir(d) if os.path.isfile(os.path.join(d, lv, 'navkit.json')))
     reference = opt('--reference', 'regression')
     tol = float(opt('--tolerance', 0.05))
     ref_path = navparity.save_path(root, reference)
@@ -242,8 +364,12 @@ def main(argv):
             structure = {k: v for k, v in hpdcheck.check(out).items() if v}    # what DICE's files always satisfy
             for k, v in structure.items():
                 print(f'      structure: {k}: {len(v)} - {v[0]}')
-            print(f'      measuring parity against DICE ({duration(time.time() - t0)} in)')
-            row = navparity.run_level(root, lv, out, lambda *a: None)
+            if os.path.isfile(navparity.reference_of(root, lv)):
+                print(f'      measuring parity against DICE ({duration(time.time() - t0)} in)')
+                row = navparity.run_level(root, lv, out, lambda *a: None)
+            else:
+                print(f'      self-check: no DICE path data ({duration(time.time() - t0)} in)')
+                row = self_check(root, lv, out)
         except Exception as e:
             failed += 1
             done_est += est[lv]
@@ -268,9 +394,15 @@ def main(argv):
         if structure:
             worse.append(('structure (hpdcheck)', ref.get('structure_problems', 0), row['structure_problems']))
         failed += bool(worse)
-        print(f'{"FAIL" if worse else "ok  "} {lv:9s} ground {row["ground"]:6.2f}  extra {row["extra_ground"]:6.2f}  '
-              f'nodes {row["nodes_same"]:5.2f}  connect {row["connectivity"]:6.2f}  over {row["over_connection"]:6.2f}  '
-              f'AI {row["ai_coverage"]:5.1f}  ({time.time() - t0:.0f} s)')
+        if 'ground' in row:
+            print(f'{"FAIL" if worse else "ok  "} {lv:9s} ground {row["ground"]:6.2f}  extra {row["extra_ground"]:6.2f}  '
+                  f'nodes {row["nodes_same"]:5.2f}  connect {row["connectivity"]:6.2f}  over {row["over_connection"]:6.2f}  '
+                  f'AI {row["ai_coverage"]:5.1f}  ({time.time() - t0:.0f} s)')
+        else:
+            same = 'the reference build' if row['self_digest'] == ref.get('self_digest') else 'changed from the reference'
+            print(f'{"FAIL" if worse else "ok  "} {lv:9s} AI on areas {row["self_on_area"]:5.1f}  joined {row["self_pairwise"]:5.1f}  '
+                  f'routed {row["self_directed"]:5.1f}  strong {row["self_strong"]:5.1f}  nodes {row["self_nodes"]}  '
+                  f'islands {row["self_islands"]}; sectors: {same}  ({time.time() - t0:.0f} s)')
         for k, a, b in worse:
             print(f'       worse:  {k} {a} -> {b}')
         for k, a, b in better:

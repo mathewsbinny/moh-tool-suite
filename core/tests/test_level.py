@@ -2,7 +2,11 @@ r"""level.load against a saved snapshot: per level, the entity counts by categor
 terrain and water. Any change shows as a difference, so a loader change that moves or loses objects is
 seen at once. After an intended change, review the differences and save a new snapshot with --update.
 
-  python test_level.py [level ...] [--update]     default levels: mp_01
+The snapshot is MOH's (recorded 2026-10-30 on the loader that reads a level's map common_mp_<nn> before common_mp
+and the patch's copies first): one level per MP map, plus the DLC modes whose partition or terrain is only in the
+patch or in their map's common bundle (mp_01_elimination, mp_02_koth, mp_03_elimination, mp_07_koth).
+
+  python test_level.py [level ...] [--update]     default levels: DEFAULT (12 of the 26 MP levels)
 """
 import collections
 import json
@@ -14,7 +18,8 @@ sys.path.insert(0, os.path.join(HERE, '..'))
 from mohcore import level as levelmod  # noqa: E402
 
 SNAPSHOT = os.path.join(HERE, 'level_snapshot.json')
-DEFAULT = ['mp_01']
+DEFAULT = ['mp_01', 'mp_01_elimination', 'mp_02', 'mp_02_koth', 'mp_03_elimination', 'mp_04', 'mp_05_tdm',
+           'mp_06_tdm', 'mp_07_koth', 'mp_08_tdm', 'mp_09_overrun', 'mp_10_tdm']
 
 
 def summary(lvl):

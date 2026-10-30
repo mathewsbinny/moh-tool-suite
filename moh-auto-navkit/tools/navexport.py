@@ -1,5 +1,5 @@
 r"""NavKit: a Medal of Honor build exported to RSNV, the per-level file of OPFOR's navigation runtime (rsnav, shared
-with Project OPFOR BF1943: project-opfor-bf1943 TnT/Code/Engine/AI/PathFinding/rsnav; format in core/mohcore/rsnv.py).
+from Project OPFOR BF1943, MOH's copy in project-opfor-moh src/rsnav; format in core/mohcore/rsnv.py).
 
   navexport.py <level> [--out <file.rsnv>] [--check] [--compare] [--opfor <root>]
 

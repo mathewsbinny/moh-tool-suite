@@ -68,14 +68,17 @@ python aptrefs.py table                      the exe's name -> id table
 ```
 
 - **From the movies:** `extern.<name>` reads (`name$param` when a parameter is added: `unlockWeaponData$<id>`), the
-  FSCommands sent (`"FSCommand:<name>"` strings, `fscommand` / `fscommandProxy` calls with a constant name), and the
+  FSCommands sent (`"FSCommand:<name>"` strings, MOH's `"FSCommand:" + "<name>"`, `fscommand` / `fscommandProxy` calls
+  with a constant name), and the
   engine events handled: `_root.catchEvent(name, handler)` in the HUD, `gameEventListener.<name> = handler` in the
   menus, with the handler's parameter count.
-- **From the exe (data only):** the name -> id table (574 names at `0x0143C898` in build 795745, found from its
-  `presenceRequestOnline` entry, so other builds work too; getter and FSCommand names share one id list, and ids repeat
-  between the two kinds); for build 795745, which getter switch has a case for each id - the main menu getter
-  `0x76EC30` (ids 0x35-0x11A and 0x123-0x15D) and the UI manager's generic getter `0x95A1B0` (ids 1-0x15F). The HUD
-  getter `0x777B30` is not read, so a name only HUD movies read shows "none - HUD getter not read".
+- **From the exe (data only):** the name -> id table (MoHMPGame.exe build 592256: 646 names at `0x0151EAA8`, 260
+  FSCommands then 386 externs, registered by the code at `0x7C0000`; found from its `presenceRequestOnline` entry, so
+  other builds work too; ids repeat between the two kinds); for build 592256, which getter switch has a case for each
+  id - the main menu getter `0x848DE0` (ids 0x35-0x126 and 0x12F-0x186, and 0x12E by a compare) and the UI manager's
+  generic getter `0x7DA420` (ids 1-0x187). The HUD getter `0x84AB80` and the loading screen's `0x836C40` are not read,
+  so a name only HUD movies read shows "none - HUD getter not read". MOH's movies register no `catchEvent` /
+  `gameEventListener` handlers (BFBC2's mechanism); how MOH's engine delivers events to its movies is not known.
 - **"NOT in the exe"** marks a name the exe has no string for: an event the engine probably never sends by that name
   (some are built at run time, so it is a hint).
 

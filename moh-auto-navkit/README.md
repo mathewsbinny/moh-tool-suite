@@ -59,7 +59,7 @@ Per level (combat areas, terrain in the box, slopes, spawns, objectives; `prepar
 The steep maps (mp_02, mp_02_koth, mp_03_elimination: 19-30 % of their ground over 45 deg) are where the slope limit
 matters most; the flat urban ones (mp_05, mp_09, mp_10) are mostly buildings and detailed zones.
 
-All 26 levels built, checked and exported (2026-10-30; table in "RSNV export"). Four findings along the way:
+All 26 levels built, checked and exported (2026-10-30; table in "RSNV export"). Five findings along the way:
 - **Denormal transforms.** DbxEdit writes a denormal float (the game reads it as 0) as its integer bits, and NavKit read
   MP_09's invisible walls and MP_04's / MP_05's group members as scaled 30,000-180,000-fold: walls across the whole
   map cut MP_09_TDM's route network in two (spawn pairs connected 36.5 %). `xmlinst.transform` reads such a token in a
@@ -81,15 +81,23 @@ All 26 levels built, checked and exported (2026-10-30; table in "RSNV export"). 
   before. mp_09_overrun 83 -> 100 % both ways in rsnav (self-check 53 -> 92 %); with the drop links the self-checks of
   mp_09_tdm / mp_09_domination rose 88 -> 100 %, mp_10 79-91 -> 100 %, mp_05 85 -> 96 %.
 
-Open: mp_05's spawns in the doorway recesses of the town's outer wall (96 %), beside 1 m bush collision boxes;
-mp_09_overrun's AlternateSpawn at (18.7, 68.3, 3.1) - on an area with a node 0.7 m away in sight, but rsnav's
-`rsn_start_node` gathers its candidate areas into a 128-entry list without dropping duplicates, and in that
-multi-floor house the 25 buckets give 231 entries: the nearest node's area is cut off (an rsnav fix, in
-project-opfor-bf1943); and the east half of that house's upper floor, behind a 1 m wall from the stairwell, is entered
-from nowhere NavKit finds (it is left by dropping; no spawn on it).
+- **rsnav's start node.** mp_09_overrun's AlternateSpawn at (18.7, 68.3, 3.1) stands on an area with a node 0.7 m
+  away in sight, but `rsn_start_node` gathered its candidate areas into a 128-entry list with the duplicates, and in
+  that multi-floor house the 25 buckets gave 231 entries: the nearest node's area was cut off. Fixed in MOH's copy of
+  rsnav (project-opfor-moh `src\rsnav`): placed 24 -> 25 of 29, 300 / 300 pairs both ways.
+
+Open: mp_05's spawns in the doorway recesses of the town's outer wall (96 %), beside 1 m bush collision boxes; the
+east half of mp_09_overrun's corner house's upper floor, behind a 1 m wall from the stairwell, is entered from nowhere
+NavKit finds (it is left by dropping; no spawn on it); rsnav's follower does not take drop edges yet (project-opfor-moh
+`src\rsnav\README.md`). And the main ground is not one two-way network: walked both ways, mp_03_elimination's falls
+into islands of 690, 577 and 532 nodes (60 of its 71 drop links join two of them, one way), and on the 26 levels only
+53.6-87.5 % of the combat area's nodes lie in the main island's largest strongly connected part (`navregress.py`'s
+`self_strong`); 22 levels have spawns or objectives outside it (mp_03_elimination: one team's SoldierSpawn). The
+"both ways" column below counts only the points rsnav places, and the base markers are not placed, so it misses this.
+The ways up NavKit does not find (jumps up to 0.65 m, steps, ramps) are the next thing to look at.
 
 Not done for MOH: no in-game check exists (MOH's OPFOR core has no sampler, and no bots yet), so the capsule and the
-`e`-layer rule are the physics' and the data's word, not measured against the game; the RSNV exporter.
+`e`-layer rule are the physics' and the data's word, not measured against the game.
 
 ## Rules (clean-room approach)
 
@@ -160,7 +168,7 @@ src\                 (reserved, empty)
 
 `pathdata.hpd` is Kynapse's format, which nothing in MOH reads. OPFOR's bots will use **rsnav**, the navigation
 runtime written for Project OPFOR BF1943 (portable C99; point location, time-sliced A*, string pulling, a path
-follower with ladders, jumps and stuck handling - `project-opfor-bf1943\TnT\Code\Engine\AI\PathFinding\rsnav`), which
+follower with ladders, jumps and stuck handling; MOH's own copy, imported 2026-10-30: project-opfor-moh `src\rsnav`), which
 reads its own per-level file, **RSNV**. `tools\navexport.py` (run by `navkit.py export` and `all`) writes it:
 `work\navkit\<level>\<level>.rsnv`, little-endian for the PC client.
 
@@ -178,7 +186,7 @@ reads its own per-level file, **RSNV**. `tools\navexport.py` (run by `navkit.py 
   edges came out tight and 57 nodes on no area. Builds before 2026-10-30 09:42 have no cells file: rebuild them.
 - **Checked:** `navexport.py --check` reads the file back (`rsnv.World.validate`) and compares its graph with the build's;
   `tools\rsnavcheck.py` loads it in **rsnav itself** (its host build `rsnav.dll`, through rsnav's ctypes bindings; found at
-  `RSNAV_ROOT` or `project-opfor-bf1943` beside the suite), places the level's spawn points and objectives on the walkable
+  `RSNAV_ROOT` or project-opfor-moh's `src\rsnav` beside the suite; build it with `python -B build.py host` there), places the level's spawn points and objectives on the walkable
   cells, routes every pair with the soldier's filter, smooths the paths, and checks the C search's cost against the
   Python reference (`rsnv.search`) on 20 pairs.
 
@@ -193,32 +201,32 @@ way): "one way" counts the pairs routed in at least one direction, "both ways" i
 
 | Level | Nodes / edges | Drop edges | Areas | RSNV (MB) | rsnav load (ms) | Points placed | Pairs routed one way | Both ways | Self-check % (nearest node) | Search (ms) | Ladders |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| mp_01 | 6,708 / 20,158 | 198 | 4,208 | 3.03 | 2.1 | 93 / 118 | 4278 / 4278 | 4278 / 4278 (100.0 %) | 95.9 | 0.15 | 0 |
-| mp_01_elimination | 4,353 / 12,801 | 127 | 1,736 | 1.46 | 0.6 | 24 / 26 | 276 / 276 | 276 / 276 (100.0 %) | 100.0 | 0.021 | 2 |
-| mp_02 | 7,610 / 19,973 | 215 | 4,432 | 3.48 | 1.1 | 64 / 90 | 2016 / 2016 | 1668 / 2016 (82.7 %) | 100.0 | 0.146 | 0 |
-| mp_02_koth | 3,069 / 7,893 | 91 | 1,738 | 1.37 | 0.6 | 19 / 22 | 171 / 171 | 171 / 171 (100.0 %) | 100.0 | 0.036 | 0 |
-| mp_02_koth2 | 2,684 / 6,902 | 98 | 1,839 | 1.28 | 0.5 | 17 / 19 | 136 / 136 | 136 / 136 (100.0 %) | 100.0 | 0.05 | 0 |
-| mp_03_elimination | 2,282 / 5,499 | 71 | 1,438 | 1.08 | 0.5 | 24 / 26 | 276 / 276 | 276 / 276 (100.0 %) | 100.0 | 0.021 | 0 |
-| mp_04 | 8,349 / 25,507 | 221 | 5,089 | 4.48 | 1.2 | 98 / 124 | 4753 / 4753 | 4753 / 4753 (100.0 %) | 100.0 | 0.162 | 0 |
+| mp_01 | 6,708 / 20,158 | 198 | 4,208 | 3.03 | 11.3 | 93 / 118 | 4278 / 4278 | 4278 / 4278 (100.0 %) | 95.9 | 0.161 | 0 |
+| mp_01_elimination | 4,353 / 12,801 | 127 | 1,736 | 1.46 | 0.6 | 24 / 26 | 276 / 276 | 276 / 276 (100.0 %) | 100.0 | 0.022 | 2 |
+| mp_02 | 7,610 / 19,973 | 215 | 4,432 | 3.48 | 1.3 | 64 / 90 | 2016 / 2016 | 1668 / 2016 (82.7 %) | 100.0 | 0.158 | 0 |
+| mp_02_koth | 3,069 / 7,893 | 91 | 1,738 | 1.37 | 0.7 | 19 / 22 | 171 / 171 | 171 / 171 (100.0 %) | 100.0 | 0.046 | 0 |
+| mp_02_koth2 | 2,684 / 6,902 | 98 | 1,839 | 1.28 | 0.5 | 17 / 19 | 136 / 136 | 136 / 136 (100.0 %) | 100.0 | 0.045 | 0 |
+| mp_03_elimination | 2,282 / 5,499 | 71 | 1,438 | 1.08 | 0.6 | 24 / 26 | 276 / 276 | 276 / 276 (100.0 %) | 100.0 | 0.021 | 0 |
+| mp_04 | 8,349 / 25,507 | 221 | 5,089 | 4.48 | 1.2 | 98 / 124 | 4753 / 4753 | 4753 / 4753 (100.0 %) | 100.0 | 0.182 | 0 |
 | mp_04_koth | 3,851 / 11,791 | 77 | 2,221 | 2.05 | 0.7 | 23 / 25 | 253 / 253 | 253 / 253 (100.0 %) | 100.0 | 0.034 | 0 |
-| mp_05_domination | 4,552 / 14,068 | 100 | 1,963 | 1.66 | 0.6 | 50 / 65 | 1176 / 1225 | 1176 / 1225 (96.0 %) | 96.4 | 0.061 | 0 |
-| mp_05_overrun | 4,500 / 14,000 | 104 | 1,875 | 1.62 | 0.6 | 28 / 35 | 378 / 378 | 378 / 378 (100.0 %) | 100.0 | 0.05 | 0 |
-| mp_05_tdm | 4,532 / 14,062 | 100 | 1,961 | 1.68 | 0.6 | 49 / 62 | 1128 / 1176 | 1128 / 1176 (95.9 %) | 96.1 | 0.053 | 0 |
-| mp_06_domination | 3,686 / 10,724 | 76 | 2,476 | 1.79 | 0.7 | 38 / 46 | 703 / 703 | 703 / 703 (100.0 %) | 100.0 | 0.04 | 0 |
-| mp_06_elimination | 3,692 / 10,737 | 77 | 2,472 | 1.79 | 0.7 | 25 / 27 | 300 / 300 | 300 / 300 (100.0 %) | 100.0 | 0.041 | 0 |
-| mp_06_overrun | 3,653 / 10,665 | 77 | 2,480 | 1.79 | 0.7 | 27 / 31 | 351 / 351 | 351 / 351 (100.0 %) | 100.0 | 0.044 | 0 |
-| mp_06_tdm | 3,686 / 10,724 | 76 | 2,476 | 1.79 | 0.7 | 37 / 43 | 666 / 666 | 666 / 666 (100.0 %) | 100.0 | 0.039 | 0 |
-| mp_07_koth | 1,797 / 5,833 | 43 | 816 | 0.76 | 0.4 | 28 / 30 | 378 / 378 | 378 / 378 (100.0 %) | 100.0 | 0.034 | 0 |
-| mp_08_domination | 3,914 / 8,820 | 154 | 2,064 | 1.5 | 0.6 | 34 / 44 | 561 / 561 | 561 / 561 (100.0 %) | 100.0 | 0.067 | 3 |
-| mp_08_overrun | 3,926 / 8,869 | 155 | 2,066 | 1.5 | 0.6 | 27 / 31 | 351 / 351 | 351 / 351 (100.0 %) | 100.0 | 0.054 | 3 |
-| mp_08_tdm | 3,914 / 8,820 | 154 | 2,064 | 1.5 | 0.6 | 34 / 41 | 561 / 561 | 561 / 561 (100.0 %) | 100.0 | 0.067 | 3 |
-| mp_09_domination | 3,516 / 10,355 | 79 | 1,764 | 1.36 | 0.6 | 47 / 58 | 1081 / 1081 | 1081 / 1081 (100.0 %) | 100.0 | 0.034 | 0 |
+| mp_05_domination | 4,552 / 14,068 | 100 | 1,963 | 1.66 | 0.6 | 50 / 65 | 1176 / 1225 | 1176 / 1225 (96.0 %) | 96.4 | 0.067 | 0 |
+| mp_05_overrun | 4,500 / 14,000 | 104 | 1,875 | 1.62 | 0.7 | 28 / 35 | 378 / 378 | 378 / 378 (100.0 %) | 100.0 | 0.051 | 0 |
+| mp_05_tdm | 4,532 / 14,062 | 100 | 1,961 | 1.68 | 0.7 | 49 / 62 | 1128 / 1176 | 1128 / 1176 (95.9 %) | 96.1 | 0.058 | 0 |
+| mp_06_domination | 3,686 / 10,724 | 76 | 2,476 | 1.79 | 0.7 | 38 / 46 | 703 / 703 | 703 / 703 (100.0 %) | 100.0 | 0.043 | 0 |
+| mp_06_elimination | 3,692 / 10,737 | 77 | 2,472 | 1.79 | 0.9 | 25 / 27 | 300 / 300 | 300 / 300 (100.0 %) | 100.0 | 0.046 | 0 |
+| mp_06_overrun | 3,653 / 10,665 | 77 | 2,480 | 1.79 | 0.7 | 27 / 31 | 351 / 351 | 351 / 351 (100.0 %) | 100.0 | 0.051 | 0 |
+| mp_06_tdm | 3,686 / 10,724 | 76 | 2,476 | 1.79 | 0.6 | 37 / 43 | 666 / 666 | 666 / 666 (100.0 %) | 100.0 | 0.046 | 0 |
+| mp_07_koth | 1,797 / 5,833 | 43 | 816 | 0.76 | 0.5 | 28 / 30 | 378 / 378 | 378 / 378 (100.0 %) | 100.0 | 0.045 | 0 |
+| mp_08_domination | 3,914 / 8,820 | 154 | 2,064 | 1.5 | 0.6 | 34 / 44 | 561 / 561 | 561 / 561 (100.0 %) | 100.0 | 0.089 | 3 |
+| mp_08_overrun | 3,926 / 8,869 | 155 | 2,066 | 1.5 | 0.6 | 27 / 31 | 351 / 351 | 351 / 351 (100.0 %) | 100.0 | 0.061 | 3 |
+| mp_08_tdm | 3,914 / 8,820 | 154 | 2,064 | 1.5 | 0.6 | 34 / 41 | 561 / 561 | 561 / 561 (100.0 %) | 100.0 | 0.082 | 3 |
+| mp_09_domination | 3,516 / 10,355 | 79 | 1,764 | 1.36 | 0.7 | 47 / 58 | 1081 / 1081 | 1081 / 1081 (100.0 %) | 100.0 | 0.037 | 0 |
 | mp_09_elimination | 3,479 / 10,253 | 79 | 1,742 | 1.35 | 0.6 | 30 / 32 | 435 / 435 | 435 / 435 (100.0 %) | 100.0 | 0.056 | 0 |
-| mp_09_overrun | 3,456 / 10,183 | 77 | 1,750 | 1.35 | 0.5 | 24 / 29 | 276 / 276 | 276 / 276 (100.0 %) | 92.3 | 0.026 | 0 |
-| mp_09_tdm | 3,516 / 10,355 | 79 | 1,764 | 1.36 | 0.7 | 47 / 55 | 1081 / 1081 | 1081 / 1081 (100.0 %) | 100.0 | 0.035 | 0 |
-| mp_10_domination | 2,666 / 8,070 | 48 | 1,405 | 1.15 | 0.5 | 33 / 44 | 528 / 528 | 528 / 528 (100.0 %) | 100.0 | 0.033 | 0 |
-| mp_10_overrun | 2,665 / 8,056 | 50 | 1,406 | 1.15 | 0.5 | 22 / 26 | 231 / 231 | 231 / 231 (100.0 %) | 100.0 | 0.029 | 0 |
-| mp_10_tdm | 2,666 / 8,070 | 48 | 1,405 | 1.15 | 0.3 | 33 / 41 | 528 / 528 | 528 / 528 (100.0 %) | 100.0 | 0.02 | 0 |
+| mp_09_overrun | 3,456 / 10,183 | 77 | 1,750 | 1.35 | 0.5 | 25 / 29 | 300 / 300 | 300 / 300 (100.0 %) | 92.3 | 0.025 | 0 |
+| mp_09_tdm | 3,516 / 10,355 | 79 | 1,764 | 1.36 | 0.6 | 47 / 55 | 1081 / 1081 | 1081 / 1081 (100.0 %) | 100.0 | 0.037 | 0 |
+| mp_10_domination | 2,666 / 8,070 | 48 | 1,405 | 1.15 | 0.6 | 33 / 44 | 528 / 528 | 528 / 528 (100.0 %) | 100.0 | 0.034 | 0 |
+| mp_10_overrun | 2,665 / 8,056 | 50 | 1,406 | 1.15 | 0.5 | 22 / 26 | 231 / 231 | 231 / 231 (100.0 %) | 100.0 | 0.028 | 0 |
+| mp_10_tdm | 2,666 / 8,070 | 48 | 1,405 | 1.15 | 0.5 | 33 / 41 | 528 / 528 | 528 / 528 (100.0 %) | 100.0 | 0.037 | 0 |
 
 Not yet: rsnav's 32-bit x86 build for the OPFOR core (BOT_PLAN step 3), and a bot following a path in game.
 

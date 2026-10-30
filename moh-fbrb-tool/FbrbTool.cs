@@ -10,7 +10,10 @@
 // unpack writes every entry under <outdir>\ by its archive name and a "fbrb.manifest" listing the
 // entries in archive order (name, type, flags, size2), so pack can rebuild the bundle faithfully.
 // Zero-byte "*deleted*" entries (markers that remove shared data from a level) are listed in the manifest
-// only; pack restores them.
+// only; pack restores them. The layout of MOH's uncompressed bundles is kept too: "align=4096" on the manifest's
+// first line (async ondemand_* bundles: the header's gzip padded with zeros so the payload starts on 4 KiB, each
+// entry with data on 4 KiB, 0xBF between them, the header's payload size ending at the last entry's size2), and
+// a sixth column with the 0xBF fill bytes after an entry (build_overlay: 64 after each .dbx).
 //
 // Usage: FbrbTool unpack <file.fbrb> <outdir>
 //        FbrbTool pack   <dir-with-manifest> <file.fbrb>
@@ -67,9 +70,16 @@ static class FbrbTool
 
     static void Read(string path, out List<Entry> entries, out byte[] payload, out bool zipped)
     {
+        int headerEnd;
+        Read(path, out entries, out payload, out zipped, out headerEnd);
+    }
+
+    static void Read(string path, out List<Entry> entries, out byte[] payload, out bool zipped, out int headerEnd)
+    {
         byte[] file = File.ReadAllBytes(path);
         if (file.Length < 8 || Encoding.ASCII.GetString(file, 0, 4) != "FbRB") throw new InvalidDataException(path + " is not an FbRB bundle");
         int cut = (int)ReadBE(file, 4);
+        headerEnd = 8 + cut;
         byte[] h = Gunzip(file, 8, cut);
 
         int strlen = (int)ReadBE(h, 4);
@@ -114,15 +124,22 @@ static class FbrbTool
 
     static int Unpack(string fbrb, string outDir)
     {
-        List<Entry> entries; byte[] payload; bool zipped;
-        Read(fbrb, out entries, out payload, out zipped);
+        List<Entry> entries; byte[] payload; bool zipped; int headerEnd;
+        Read(fbrb, out entries, out payload, out zipped, out headerEnd);
         Directory.CreateDirectory(outDir);
+        // MOH's uncompressed async bundles (ondemand_*) start the payload and every entry on a 4 KiB boundary;
+        // others (build_overlay) put 64 fill bytes after some entries. Both are kept so pack gives the same layout.
+        bool aligned = !zipped && headerEnd % Align == 0 && entries.All(e => e.Offset % Align == 0);
         var manifest = new StringBuilder();
-        manifest.AppendLine("# fbrb.manifest - entry order matters. name|type|flags(hex)|size2|size  zipped=" + (zipped ? 1 : 0));
+        manifest.AppendLine("# fbrb.manifest - entry order matters. name|type|flags(hex)|size2|size[|fill after]  zipped=" +
+                            (zipped ? 1 : 0) + (aligned ? " align=" + Align : ""));
         int deleted = 0;
-        foreach (var e in entries)
+        for (int i = 0; i < entries.Count; i++)
         {
-            manifest.AppendLine(e.Name + "|" + e.Type + "|" + e.Flags.ToString("X8") + "|" + e.Size2 + "|" + e.Size);
+            var e = entries[i];
+            int gap = aligned ? 0 : FillAfter(entries, i, payload);
+            manifest.AppendLine(e.Name + "|" + e.Type + "|" + e.Flags.ToString("X8") + "|" + e.Size2 + "|" + e.Size +
+                                (gap > 0 ? "|" + gap : ""));
             // A deletion marker has no data: it stays in the manifest (pack restores it) but is not written as an
             // empty file, which other tools would take for a broken one.
             if (IsDeletedMarker(e)) { deleted++; continue; }
@@ -137,6 +154,20 @@ static class FbrbTool
     }
 
     const string DeletedType = "*deleted*";
+    const int Align = 4096;                             // align=: the payload and each entry with data start on it
+    const byte Fill = 0xBF;                             // the bytes between entries in MOH's uncompressed bundles
+
+    // The fill bytes (0xBF) between entry i's data and the next entry's (or the payload's end); 0 if there are none,
+    // or if the bytes there are something else (not reproduced).
+    static int FillAfter(List<Entry> entries, int i, byte[] payload)
+    {
+        long end = (long)entries[i].Offset + entries[i].Size;
+        long next = i + 1 < entries.Count ? (long)entries[i + 1].Offset : payload.Length;
+        if (next <= end || next > payload.Length) return 0;
+        for (long k = end; k < next; k++)
+            if (payload[k] != Fill) return 0;
+        return (int)(next - end);
+    }
 
     static bool IsDeletedMarker(Entry e) { return e.Type == DeletedType && e.Size == 0; }
 
@@ -144,12 +175,15 @@ static class FbrbTool
     {
         string[] lines = File.ReadAllLines(Path.Combine(dir, "fbrb.manifest"));
         bool zipped = lines[0].Contains("zipped=1");
+        bool aligned = !zipped && lines[0].Contains("align=" + Align);
         var entries = new List<Entry>();
         var payload = new MemoryStream();
         foreach (string line in lines)
         {
             if (line.Length == 0 || line[0] == '#') continue;
             string[] p = line.Split('|');
+            if (aligned && File.Exists(Safe(dir, p[0])) && new FileInfo(Safe(dir, p[0])).Length > 0)
+                while (payload.Length % Align != 0) payload.WriteByte(Fill);
             string source = Safe(dir, p[0]);
             // *deleted* markers have no file since unpack stopped writing them (an empty one from an older unpack
             // is read as before)
@@ -169,7 +203,17 @@ static class FbrbTool
             // when the file was not modified (its length is still the size it unpacked to, recorded in the manifest).
             e.Size2 = (originalSize2 != e.Size && data.Length == (int)originalSize) ? originalSize2 : e.Size;
             payload.Write(data, 0, data.Length);
+            if (p.Length > 5)                           // fill bytes after the entry, as in the unpacked bundle
+                for (int k = int.Parse(p[5]); k > 0; k--) payload.WriteByte(Fill);
             entries.Add(e);
+        }
+        // An aligned bundle's header gives the payload's size up to the last entry's size2 (its last 64 bytes, in
+        // size but not size2, are left out), as MOH's ondemand bundles do.
+        uint payloadSize = (uint)payload.Length;
+        if (aligned && entries.Count > 0)
+        {
+            var last = entries.OrderBy(x => x.Offset).Last();
+            if (last.Size2 < last.Size && last.Offset + last.Size == payload.Length) payloadSize = last.Offset + last.Size2;
         }
 
         // String table: entry names first (in order), type names deduplicated after each first use.
@@ -201,9 +245,11 @@ static class FbrbTool
             WriteBE(header, e.Size); WriteBE(header, e.Size2); WriteBE(header, typeOffsets[e.Type]);
         }
         header.WriteByte((byte)(zipped ? 1 : 0));
-        WriteBE(header, (uint)payload.Length);
+        WriteBE(header, payloadSize);
 
         byte[] part1 = Gzip(header.ToArray());
+        if (aligned)                                    // zeros after the header's gzip: the payload starts aligned
+            Array.Resize(ref part1, (8 + part1.Length + Align - 1) / Align * Align - 8);
         byte[] part2 = zipped ? Gzip(payload.ToArray()) : payload.ToArray();
         using (var f = File.Create(fbrb))
         {

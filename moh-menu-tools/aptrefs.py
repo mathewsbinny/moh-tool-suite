@@ -2,26 +2,28 @@ r"""aptrefs.py - what the menu and HUD movies ask of the engine and what it send
 engine's name / id table in mohmpgame.exe.
 
   python aptrefs.py movie <movie>... [--json <out.json>]
-        per movie: the extern.<name> values it reads (name$param: with a parameter), the FSCommands it sends, and
-        the engine events it handles (_root.catchEvent(name, handler): HUD; gameEventListener.<name> = handler:
-        menus) with the handler's parameter count
+        per movie: the extern.<name> values it reads (name$param: with a parameter), the FSCommands it sends
+        ("FSCommand:<name>", or "FSCommand:" + "<name>" as MOH's movies build them), and the engine events it
+        handles (_root.catchEvent(name, handler), gameEventListener.<name> = handler: BFBC2's movies; MOH's movies
+        register none this way) with the handler's parameter count
   python aptrefs.py table [--exe <mohmpgame.exe>]
         the exe's extern / FSCommand name -> id table (the main menu's; getter and FSCommand ids are one list, ids
-        repeat between the two kinds), and for build 795745 which getter switch has a case for each id
+        repeat between the two kinds), and for build 592256 which getter switch has a case for each id
   python aptrefs.py xref [--sets menu,mp_hud,...] [--movie <movie>]... [--exe <exe>] [--out <file>] [--json <file>]
         every name across the movies: kind (extern / FSCommand / event), the movies using it, its engine id, the
-        getter case (build 795745), and whether the exe has the name as a string at all. Default: every movie set
-        of the game copy (menu, mp_hud, mp_loader, sp_hud, sp_loader, mp2_hud, nam_hud; Package over Dist);
+        getter case (build 592256), and whether the exe has the name as a string at all. Default: every movie set
+        of the game copy (menu, mp_hud, mp_loader, awards, mycharacter; Package over Dist);
         --out defaults to <OPFOR>\work\tools_out\aptrefs.txt (and .json)
   python aptrefs.py find <name> [same options as xref]
         one name (a part of it, any case) across the movies and the exe's table
 
 <movie>: a menu .res, a .apt (its .const beside it), a name from the main menu bundle (main_nav), pristine:<name> or
 <bundle.fbrb>:<name> (see menucommon.py). Reads the exe's data only (its strings and tables; no code is decoded).
-The engine side (DEVELOPMENT_NOTES "Button prompts", "Weapons & Gadgets"): extern names go through the screen's
-getter (main menu 0x76EC30, HUD 0x777B30, a third 0x76E780) and the name -> id table at 0x0143C898, then the getter's
-own switch, then the UI manager's generic getter 0x95A1B0. Only the main menu getter's and the generic getter's switch
-tables are read here (build 795745); a name only the HUD reads may be answered by the HUD getter, which is not.
+The engine side (build 592256): the name -> id table at 0x0151EAA8 is two runs the exe registers one after the other
+(0x7C0000): 260 FSCommand names, then 386 extern names at 0x0151F2C8. Extern names go through the screen's getter
+(main menu 0x848DE0, HUD 0x84AB80, the loading screen's 0x836C40) and their id, then the getter's own switch, then
+the UI manager's generic getter 0x7DA420. Only the main menu getter's and the generic getter's switch tables are read
+here; a name only the HUD reads may be answered by the HUD getter, which is not.
 """
 import json
 import os
@@ -36,12 +38,15 @@ STRING_PUSH = (0xA1, 0xA2, 0xA3)                 # EA_PushString, EA_PushConstan
 CALLS = {0xB0: 'func', 0xB1: 'func', 0xB2: 'method', 0xB3: 'method'}
 COUNT_PUSH = {0x59: 0, 0x5A: 1}                  # EA_PushZero / EA_PushOne; EA_PushByte (0xB5) carries the count
 
-# Build 795745 (PE time stamp 0x4E55445D): the getters' switch tables (index table of bytes, jump table of
-# addresses); ids outside a switch, or on its default case, fall through to the next getter.
-BUILD_STAMP = 0x4E55445D
+# Build 592256 (PE time stamp 0x4CC17C02): the getters' switch tables (index table of bytes, jump table of
+# addresses; (None, 1, id, target): a single compare before the switch); ids outside a switch, or on its default
+# case, fall through to the next getter. The main menu getter's default calls the generic getter.
+BUILD = '592256'
+BUILD_STAMP = 0x4CC17C02
 GETTERS = [
-    ('menu', 'main menu getter 0x76EC30', 0x76FD20, [(0x76FE2C, 0xE6, 0x35, 0x76FD78), (0x76FF4C, 0x3B, 0x123, 0x76FF14)]),
-    ('generic', 'UI manager getter 0x95A1B0', 0x95D934, [(0x95DB68, 0x15F, 1, 0x95D98C)]),
+    ('menu', 'main menu getter 0x848DE0', 0x84A37D, [(0x84A474, 0xF2, 0x35, 0x84A3D8), (None, 1, 0x12E, 0x849B4F),
+                                                     (0x84A5C8, 0x58, 0x12F, 0x84A568)]),
+    ('generic', 'UI manager getter 0x7DA420', 0x7DD49F, [(0x7DD6F8, 0x187, 1, 0x7DD4F8)]),
 ]
 
 
@@ -76,13 +81,16 @@ def extern_table(img):
 
 
 def getter_cases(img):
-    """{getter key: {id: case address}} for build 795745; {} for another build."""
+    """{getter key: {id: case address}} for build 592256; {} for another build."""
     if img.timestamp != BUILD_STAMP:
         return {}
     out = {}
     for key, _, default, switches in GETTERS:
         cases = {}
         for index, count, first, jumps in switches:
+            if index is None:
+                cases[first] = jumps
+                continue
             io = img.off(index)
             for k in range(count):
                 t = img.b[io + k]
@@ -160,6 +168,11 @@ def movie_refs(code):
             for text in ([s] if s else []) + ([ins.arg.split('"')[1]] if ins.op == 0x83 and ins.arg.startswith('"') else []):
                 if text.startswith('FSCommand:') and len(text) > 10:
                     add('fscommand', text[10:], ins.at)
+            # MOH's movies: "FSCommand:" + "<name>" (StringAdd), the argument pushed after, then GetURL2
+            if s == 'FSCommand:' and nxt is not None and k + 2 < len(L) and L[k + 2].op == 0x21:
+                n = string_arg(nxt)
+                if n:
+                    add('fscommand', n, nxt.at)
             if ins.op in CALLS and ins.arg.strip('"').lower() in ('fscommand', 'fscommandproxy', 'catchevent'):
                 callee = ins.arg.strip('"').lower()
                 back = L[max(0, k - 5):k]
@@ -323,7 +336,7 @@ def main(argv):
     cases = getter_cases(img)
     if cmd == 'table':
         print(f'{img.path}: {len(table)} names, table at {table[0][2]:#x}'
-              + ('' if cases else ' (not build 795745: getter cases not read)'))
+              + ('' if cases else f' (not build {BUILD}: getter cases not read)'))
         for name, i, va in table:
             c = [f'{k} {cases[k][i]:#x}' for k, *_ in GETTERS if i in cases.get(k, {})]
             print(f'  {i:#6x}  {name:40s} {"  ".join(c)}')
@@ -351,7 +364,7 @@ def main(argv):
         js = js or os.path.join(mc.out_dir(root), 'aptrefs.json')
     with open(out, 'w', encoding='utf-8') as f:
         print(f'aptrefs: {len(found)} movies, exe {img.path} ({len(table)} names'
-              + ('' if cases else '; not build 795745: getter cases not read') + ')', file=f)
+              + ('' if cases else f'; not build {BUILD}: getter cases not read') + ')', file=f)
         print_rows(rows, f)
         print('\n\n== per movie', file=f)
         for label, _, refs in found:

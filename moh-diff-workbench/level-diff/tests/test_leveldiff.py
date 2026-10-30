@@ -4,7 +4,9 @@ known differences: a changed field, a placed object re-created under a new GUID 
 removed. Also: --ignore, --type, the exit codes, the JSON output, and bad input.
 
   python test_leveldiff.py            no game data (builds LevelDiff.exe and DbxEdit.exe if missing)
-  python test_leveldiff.py --game     also a level against itself and its Package copy against its Dist copy
+  python test_leveldiff.py --game     also MOH's mp_01 against itself and its Package (patch) copy against its Dist
+                                      copy (MOH ships them the same), and mp_05 Domination against mp_05 TDM (one map,
+                                      two modes: a real difference)
 """
 import json
 import os
@@ -150,17 +152,28 @@ def main(argv):
         if '--game' in argv:
             sys.path.insert(0, os.path.join(SUITE, 'moh-auto-navkit'))
             import navkit
-            lv = os.path.join(navkit.find_opfor(None), 'work', 'levels', 'mp_005')
-            dist, pkg = os.path.join(lv, 'dist', 'levels', 'MP_005.dbx'), os.path.join(lv, 'pkg', 'levels', 'MP_005.dbx')
-            if os.path.isfile(dist) and os.path.isfile(pkg):
+            levels = os.path.join(navkit.find_opfor(None), 'work', 'levels')
+            lv = os.path.join(levels, 'mp_01')
+            dist, pkg = os.path.join(lv, 'dist', 'levels', 'MP_01.dbx'), os.path.join(lv, 'pkg', 'levels', 'MP_01.dbx')
+            dom = os.path.join(levels, 'mp_05_domination', 'dist', 'levels', 'MP_05_Domination.dbx')
+            tdm = os.path.join(levels, 'mp_05_tdm', 'dist', 'levels', 'MP_05_TDM.dbx')
+            if all(os.path.isfile(f) for f in (dist, pkg, dom, tdm)):
                 code, d, _ = leveldiff(dist, dist, work=work)
-                c.check(code == 0 and not d['changed'], 'MP_005 against itself: nothing different')
+                c.check(code == 0 and not d['changed'], 'mp_01 against itself: nothing different')
+                # MOH's patch copy of MP_01.dbx is the same as its Dist copy: exit 0, every instance the same
                 code, d, _ = leveldiff(dist, pkg, '--match-objects', work=work)
-                c.check(code in (0, 1) and d is not None and d['same_instances'] > 1000,
-                        f'MP_005 Dist against Package: runs ({d["same_instances"] if d else 0} same instances, '
-                        f'{len(d["changed"]) if d else 0} changed)')
+                c.check(code == 0 and d is not None and d['same_instances'] > 1000 and not d['changed']
+                        and not d['only_in_a'] and not d['only_in_b'],
+                        f'mp_01 Dist against Package: the same level ({d["same_instances"] if d else 0} same instances)')
+                # one map, two modes: shared scenery, mode-specific spawns and objectives
+                code, d, _ = leveldiff(dom, tdm, '--match-objects', work=work)
+                c.check(code == 1 and d is not None and d['same_instances'] > 1000 and d['changed']
+                        and d['only_in_a'] and d['only_in_b'],
+                        f'mp_05 Domination against TDM: different ({d["same_instances"] if d else 0} same instances, '
+                        f'{len(d["changed"]) if d else 0} changed, {len(d["only_in_a"]) if d else 0} only in Domination, '
+                        f'{len(d["only_in_b"]) if d else 0} only in TDM)')
             else:
-                c.check(False, 'MP_005 not prepared (run the level loader or navkit.py prepare mp_005 once)')
+                c.check(False, 'mp_01 / mp_05_domination / mp_05_tdm not prepared (run the level loader or navkit.py prepare <level> once)')
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print('all passed' if not c.failed else f'{c.failed} check(s) failed')

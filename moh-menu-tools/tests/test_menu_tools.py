@@ -6,13 +6,19 @@ r"""The menu tools on data built here (quick), and with --game on Project OPFOR'
   shared, an End inside a function, a branch into an instruction, a constant index past the table, a decode shift, a
   member made shorter, bytes the patch file does not name); patch files: applied as AptTool does (appends and
   @labels), expected bytes checked, overlapping lines, size changes, lines without a comment; the command line;
-- aptrefs.py: extern reads (plain and name$param), FSCommands (strings and fscommandProxy calls), catchEvent and
-  gameEventListener handlers with their parameter counts; the exe's name / id table found in a built exe;
+- aptrefs.py: extern reads (plain and name$param), FSCommands (strings, "FSCommand:" + name as MOH's movies send
+  them, and fscommandProxy calls), catchEvent and gameEventListener handlers with their parameter counts; the exe's
+  name / id table found in a built exe;
 - mohloc.py: a language file and histogram built here - keys, WIN32_ PC texts, hashes, single- and two-byte
   characters; the command line.
-With --game: every OPFOR menu patch file lints with no error; every movie of the game copy's movie sets passes the
-rules by itself; the exe's table (574 names at 0x0143C898, known getter cases); known events with their parameter
-counts; English, Russian and Japanese texts.
+With --game (MoHMPGame.exe build 592256): every OPFOR menu patch file lints with no error; every movie of the game
+copy's movie sets passes the rules by itself; the exe's table (646 names at 0x0151EAA8: 260 FSCommands, then 386
+externs, the addresses its registering code at 0x7C00F4 reads; platform 0xBF, isLive 0x8C); the getter cases
+(generic getter: platform -> 0x7DB69E, editableInputList -> 0x7DAD41; main menu getter: vehicleGrid -> 0x849B4F,
+mainMenuBtnUp -> 0x84A326), cross-checked against the switch bytes; the FSCommands MainmenuRoot sends, each with an
+id in the table but the three the engine handles by name; English (M_MAIN_SERVER_BROWSER, the PC text
+WIN32_M_MAIN_PLAY_NOW, the pad key IDK_A), Russian and Japanese texts. MOH's movies register no gameEventListener /
+_root.catchEvent handlers (BFBC2's event mechanism), so no event is checked.
 
   python test_menu_tools.py [--game]
 """
@@ -45,7 +51,7 @@ class Checks:
 # ------------------------------------------------------------------------------------------------ a movie built here
 
 STRINGS = ['extern', 'isLive', 'gameEventListener', 'onThing', 'catchEvent', '_root', 'hit', 'fscommandProxy',
-           'presenceRequestOnline', 'unlockWeaponData$', 'FSCommand:quitgame', 'value']
+           'presenceRequestOnline', 'unlockWeaponData$', 'FSCommand:quitgame', 'value', 'FSCommand:', 'enterMenu']
 
 
 class Asm:
@@ -76,7 +82,8 @@ def build_movie():
     """(.apt, .const, marks): one frame whose action defines gameEventListener.onThing = function(2 params) with a
     PushData, GotoFrame2 and GetURL2 in its body; reads extern.isLive with Not Not / BranchIfTrue; registers
     _root.catchEvent("hit", function(1 param)); calls fscommandProxy("presenceRequestOnline"); reads
-    extern["unlockWeaponData$" + 7]; sends "FSCommand:quitgame" through GetURL2; a second PushData; End."""
+    extern["unlockWeaponData$" + 7]; sends "FSCommand:quitgame" and "FSCommand:" + "enterMenu" through GetURL2; a
+    second PushData; End."""
     a = bytearray(b'Apt Data:74\x1a\0\0\0\0\0')
     K = {s: i for i, s in enumerate(STRINGS)}
     # lists first (data), then code
@@ -137,6 +144,8 @@ def build_movie():
     s.b(0xAE, K['extern'], 0xA2, K['unlockWeaponData$'], 0xB5, 7, 0x47, 0x4E, 0x17)
     # getURL2("FSCommand:quitgame", 0)
     s.b(0xA2, K['FSCommand:quitgame'], 0x59, 0x9A)
+    # getURL2("FSCommand:" + "enterMenu", 0) - MOH's movies build the command so
+    s.b(0xA2, K['FSCommand:'], 0xA2, K['enterMenu'], 0x21, 0x59, 0x9A)
     s.mark('push2')
     s.aligned(0x96, 1, list2)                                     # PushData "isLive"
     s.b(0x17, 0x00)                                               # Pop, End
@@ -293,7 +302,8 @@ def quick(c, work):
     refs = aptrefs.movie_refs(code)
     c.check(set(refs['extern']) == {'isLive'} and set(refs['extern_param']) == {'unlockWeaponData'},
             'aptrefs: extern reads, plain and name$param', str(refs['extern']) + str(refs['extern_param']))
-    c.check(set(refs['fscommand']) == {'presenceRequestOnline', 'quitgame'}, 'aptrefs: FSCommands (proxy call and string)',
+    c.check(set(refs['fscommand']) == {'presenceRequestOnline', 'quitgame', 'enterMenu'},
+            'aptrefs: FSCommands (proxy call, string, "FSCommand:" + name)',
             str(refs['fscommand']))
     ev = {n: [u[1] for u in v] for n, v in refs['events'].items()}
     c.check(ev == {'onThing': [2], 'hit': [1]}, 'aptrefs: gameEventListener and catchEvent handlers with parameter counts', str(ev))
@@ -310,7 +320,7 @@ def quick(c, work):
     c.check(r['isLive']['id'] == 0x87 and r['onThing']['in_exe'] is False and r['quitgame']['movies'] == {'menu:t': 1},
             'aptrefs: cross reference (ids, in the exe or not, movies)', str(rows)[:300])
     code_, out = run('aptrefs.py', 'table', '--exe', exe)
-    c.check(code_ == 0 and '61 names' in out and 'not build 795745' in out, 'aptrefs table command', out[-300:])
+    c.check(code_ == 0 and '61 names' in out and 'not build 592256' in out, 'aptrefs table command', out[-300:])
     code_, out = run('aptrefs.py', 'movie', res)
     c.check(code_ == 0 and 'presenceRequestOnline' in out and 'onThing' in out, 'aptrefs movie command', out[-300:])
 
@@ -448,25 +458,50 @@ def game(c):
     table = aptrefs.extern_table(img)
     names = {n: i for n, i, _ in table}
     cases = aptrefs.getter_cases(img)
-    c.check(len(table) == 574 and table[0][2] == 0x143C898 and names['platform'] == 0xB9 and names['isLive'] == 0x87,
-            'aptrefs: the exe\'s table (574 names at 0x0143C898, platform 0xB9, isLive 0x87)')
-    c.check(cases.get('generic', {}).get(0xB9) == 0x95B7D3 and cases['generic'].get(0x13C) == 0x95AF2E,
-            'aptrefs: getter cases (platform -> 0x95B7D3, editableInputList -> 0x95AF2E)')
-    found = aptrefs.scan_movies(['main_root'], None, root) + aptrefs.scan_movies(None, {'mp_hud'}, root)
-    ev = {}
-    for label, name, refs in found:
-        for n, uses in refs['events'].items():
-            ev.setdefault(n, set()).update(u[1] for u in uses)
-    c.check(ev.get('presenceLoginAccount') == {2} and ev.get('serverSystemMessage') == {3} and ev.get('uInt') == {1},
-            'aptrefs: presenceLoginAccount (2), serverSystemMessage (3), uInt (1) handlers', str({k: ev.get(k) for k in
-                                                                                                ('presenceLoginAccount', 'serverSystemMessage', 'uInt')}))
+    # the bytes: the code registering the names reads the table's first pair (mov ecx, [eax+0x151EAAC];
+    # mov edi, [eax+0x151EAA8]), and the pair there is ("setInputState", 0xF)
+    reg = img.b[img.off(0x7C00F4):img.off(0x7C00F4) + 12]
+    first = struct.unpack_from('<II', img.b, img.off(0x151EAA8))
+    c.check(len(table) == 646 and table[0][2] == 0x151EAA8 and names['platform'] == 0xBF and names['isLive'] == 0x8C
+            and reg == bytes.fromhex('8B88ACEA51018BB8A8EA5101') and img.cstr(first[0]) == 'setInputState' and first[1] == 0xF,
+            "aptrefs: the exe's table (646 names at 0x0151EAA8, platform 0xBF, isLive 0x8C), as its registering code reads it",
+            f'{len(table)} names at {table[0][2]:#x}; code {reg.hex()}')
+
+    def case(index, first, jumps, i):                 # a switch's case read from its bytes, not from aptrefs
+        return struct.unpack_from('<I', img.b, img.off(jumps + 4 * img.b[img.off(index) + i - first]))[0]
+    gen, menu = cases.get('generic', {}), cases.get('menu', {})
+    c.check(gen.get(0xBF) == 0x7DB69E == case(0x7DD6F8, 1, 0x7DD4F8, 0xBF)
+            and gen.get(0x14C) == 0x7DAD41 == case(0x7DD6F8, 1, 0x7DD4F8, 0x14C)
+            and menu.get(0x12E) == 0x849B4F and menu.get(0x181) == 0x84A326 == case(0x84A5C8, 0x12F, 0x84A568, 0x181)
+            and names['vehicleGrid'] == 0x12E and names['mainMenuBtnUp'] == 0x181 and len(gen) == 139 and len(menu) == 70,
+            'aptrefs: getter cases (platform -> 0x7DB69E, editableInputList -> 0x7DAD41, vehicleGrid -> 0x849B4F, '
+            'mainMenuBtnUp -> 0x84A326), as the switch bytes say', f'{len(gen)} generic, {len(menu)} menu cases')
+    found = aptrefs.scan_movies(['MainmenuRoot'], None, root)
+    rows = aptrefs.cross_reference(found, table, cases, img.strings())
+    fs = {r['name']: r for r in rows if r['kind'] == 'fscommand'}
+    no_id = sorted(n for n, r in fs.items() if r['id'] is None)
+    c.check(len(fs) > 140 and fs.get('enterMenu', {}).get('id') == 0xA9 and fs.get('presenceRequestOnline', {}).get('id') == 0x21
+            and no_id == ['loadTexture', 'playSound', 'unloadTexture'] and all(fs[n]['in_exe'] for n in no_id),
+            f"aptrefs: MainmenuRoot's {len(fs)} FSCommands (\"FSCommand:\" + name), each with an id in the table but "
+            'loadTexture, playSound, unloadTexture', f'no id: {no_id[:10]}')
+    ext = [r for r in rows if r['kind'] == 'extern']
+    answered = sum(r['getter_case'] not in (None, 'none') for r in ext)
+    c.check(len(ext) > 150 and answered >= 148 and not any(r['getter_case'] == 'none' for r in ext)
+            and not any(r['kind'] == 'event' for r in rows),
+            f'aptrefs: MainmenuRoot reads {len(ext)} extern names, {answered} answered by the menu or generic getter, none '
+            "unanswered; no gameEventListener / catchEvent handler (not MOH's mechanism)")
     loc = mohloc.load('english', root)
-    c.check(loc.lookup('MENU_PLAY_NOW')[2] == 'PLAY NOW' and loc.lookup('PC_SERVER_BROWSER')[2] == 'SERVER BROWSER'
-            and loc.lookup('IDK_A')[2] == 'A' and len(loc.raw) > 7000, 'mohloc: English keys, PC texts, the pad key names')
+    play, browser, pad = (loc.lookup(k) or (None,) * 3 for k in ('M_MAIN_PLAY_NOW', 'M_MAIN_SERVER_BROWSER', 'IDK_A'))
+    c.check(browser[1:] == ('M_MAIN_SERVER_BROWSER', 'SERVER BROWSER') and play[1:] == ('WIN32_M_MAIN_PLAY_NOW', 'MATCHMAKE')
+            and pad[1:] == ('WIN32_IDK_A', 'A') and len(loc.raw) > 2800,
+            f'mohloc: English keys, PC texts (WIN32_M_MAIN_PLAY_NOW), the pad key names ({len(loc.raw)} texts)',
+            repr((play, browser, pad)))
     ru, jp = mohloc.load('russian', root), mohloc.load('japanese', root)
     cyr = sum(any('Ѐ' <= ch <= 'ӿ' for ch in ru.text(h)) for h in ru.order)
+    cjk = sum(any('぀' <= ch <= '鿿' for ch in jp.text(h)) for h in jp.order)
     bad_jp = sum('?' in jp.text(h) or '\\x' in jp.text(h) for h in jp.order)
-    c.check(cyr > 5000 and bad_jp < 20, f'mohloc: Russian ({cyr} Cyrillic texts) and Japanese ({bad_jp} with an undecoded byte)')
+    c.check(cyr > 2500 and cjk > 2000 and bad_jp < 20,
+            f'mohloc: Russian ({cyr} Cyrillic texts) and Japanese ({cjk} kana / kanji texts, {bad_jp} with an undecoded byte)')
 
 
 def main(argv):

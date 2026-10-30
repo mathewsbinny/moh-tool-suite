@@ -1,7 +1,10 @@
-r"""The Navigation Studio's edit mode without a window: the studio is built for a level (sp_004_b) and the editor
-is driven as clicks would drive it - every tool, an outline finished with Enter, a box, two-point tools, a
-note without text refused, undo / redo, save and reload, the click mode (clicks stop selecting while a tool
-is on), and a DICE base refusing region edits. Needs Project OPFOR's game copy and a NavKit build of the level.
+r"""The Navigation Studio's edit mode without a window: the studio is built for a MOH level (mp_07_koth by default)
+on NavKit's build of it, and the editor is driven as clicks would drive it - every tool, an outline finished
+with Enter, a box, two-point tools, a note without text refused, undo / redo, save and reload, the click mode
+(clicks stop selecting while a tool is on), the apply button (into a temporary file, never the level's export),
+and a graph-only base (side file kind "dice") refusing region edits and taking links - MOH ships no path data,
+so that base is NavKit's build standing in for DICE's file. Needs Project OPFOR's game copy and a NavKit build of
+the level.
 
   python test_editing.py [level]
 """
@@ -32,7 +35,7 @@ class FakeViewer:
 
 
 def main(argv):
-    lv = argv[1] if len(argv) > 1 else 'sp_004_b'
+    lv = argv[1] if len(argv) > 1 else 'mp_07_koth'
     failed = 0
 
     def check(ok, what):
@@ -105,6 +108,8 @@ def main(argv):
         again = nt.load(ed.path)
         check(again.operations == ed.tune.operations, 'saved and loaded back unchanged')
         # the apply button: navkit apply in the background, on a copy of the side file, into a temporary file
+        export = os.path.join(lvl.opfor, 'work', 'navkit', lv, 'pathdata.hpd')
+        export_stamp = os.path.getmtime(export) if os.path.isfile(export) else None
         ed.job_out = os.path.join(tmp, 'edited.hpd')
         ed.start_apply()
         import time
@@ -115,19 +120,20 @@ def main(argv):
         check(state == 'done' and os.path.isfile(ed.job_out) and any('read back' in l for l in ed.job_log),
               f'the apply button builds with the edits in the background ({time.time() - t0:.0f} s): {state}')
         check(any('link / route-edge edit(s) applied' in l for l in ed.job_log), 'its log reports the links and route edges')
+        check(export_stamp is None or os.path.getmtime(export) == export_stamp, 'the level\'s export is untouched')
         ed.set_open(v, False)
         check(v.select_on_click and ed.tool is None, 'closing the panel gives clicks back to selecting')
 
         dice = editing.Editor(st, lvl.opfor, lvl.lv, f'Levels/{lvl.name}')
         dice.target = 'DICE'
-        dice.tune = nt.NavTune.new(f'Levels/{lvl.name}', files['DICE'].path, kind='dice') if 'DICE' in files else None
-        if dice.tune is not None:
-            dice.open, dice.tool = True, 'seed'
-            dice.click(v, pts[0])
-            check(not dice.tune.operations and 'DICE base' in dice.message, 'on a DICE base, region edits are refused')
-            dice.tool = 'link-areas'
-            dice.click(v, pts[0]); dice.click(v, pts[3])
-            check(len(dice.tune.operations) == 1, 'and links are taken')
+        # a graph-only base: DICE's file where a level has one; on MOH (none) NavKit's build stands in for it
+        dice.tune = nt.NavTune.new(f'Levels/{lvl.name}', files.get('DICE', files['NavKit']).path, kind='dice')
+        dice.open, dice.tool = True, 'seed'
+        dice.click(v, pts[0])
+        check(not dice.tune.operations and 'DICE base' in dice.message, 'on a graph-only (DICE) base, region edits are refused')
+        dice.tool = 'link-areas'
+        dice.click(v, pts[0]); dice.click(v, pts[3])
+        check(len(dice.tune.operations) == 1, 'and links are taken')
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print('all passed' if not failed else f'{failed} check(s) failed')

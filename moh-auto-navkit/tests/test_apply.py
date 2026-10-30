@@ -1,13 +1,15 @@
-r"""navkit apply with walkability edits, on a level's NavKit build (sp_004_b by default; about 3 minutes):
+r"""navkit apply with walkability edits, on NavKit's build of a MOH level (mp_07_koth by default; about 2 minutes):
+the base is the level's regression build (work\navkit\regress\<level>.hpd, navregress.py: the current code's
+build), else its export (work\navkit\<level>\pathdata.hpd, read only); apply writes only into a temporary folder.
 
-- no edits: the build is the regression build's (the same sector meshes and route graphs; only the build
-  timestamps differ), so the edit plumbing changes nothing by itself;
+- no edits: the build is the base's (the same sector meshes and route graphs; only the build timestamps
+  differ), so the edit plumbing changes nothing by itself;
 - an unwalkable square on the main network: no walkable ground is left inside it;
 - an unseed on another island: that island is gone;
 - a walkable box: no walkable ground is lost inside it;
 - the output reads back exactly, and the link edit is applied after the build (or reported with its reason).
 
-  python test_apply.py [level]          needs the level's samples and work\navkit\regress\<level>.hpd
+  python test_apply.py [level]          needs the level's samples and a NavKit build of it
 """
 import os
 import shutil
@@ -67,7 +69,7 @@ def walkable_box(root, lv, nav, g, main_nodes, half=5.0):
 
 
 def main(argv):
-    lv = argv[1] if len(argv) > 1 else 'sp_004_b'
+    lv = argv[1] if len(argv) > 1 else 'mp_07_koth'
     failed = 0
 
     def check(ok, what):
@@ -76,10 +78,12 @@ def main(argv):
         print(f'{"ok  " if ok else "FAIL"} {what}', flush=True)
 
     pr = navkit.Project(None)
-    base = os.path.join(pr.root, 'work', 'navkit', 'regress', f'{lv}.hpd')
-    if not os.path.isfile(base):
-        print(f'FAIL no regression build of {lv} ({base}): run navregress.py --levels {lv}')
+    base = next((p for p in (os.path.join(pr.root, 'work', 'navkit', 'regress', f'{lv}.hpd'),
+                             os.path.join(pr.root, 'work', 'navkit', lv, 'pathdata.hpd')) if os.path.isfile(p)), None)
+    if base is None:
+        print(f'FAIL no NavKit build of {lv}: run navkit.py build {lv} or navregress.py --levels {lv}')
         return 1
+    print(f'base: {os.path.relpath(base, pr.root)}')
     tmp = tempfile.mkdtemp(prefix='apply_test_')
     try:
         nav0 = navdata.load(base)
@@ -102,7 +106,7 @@ def main(argv):
         same = len(a.sectors) == len(b.sectors) and all(
             sa.id == sb.id and sa.mesh == sb.mesh and sa.nodes == sb.nodes and sa.edges == sb.edges
             for sa, sb in zip(a.sectors, b.sectors))
-        check(same, 'no edits: the same sectors, meshes and route graphs as the regression build')
+        check(same, 'no edits: the same sectors, meshes and route graphs as the base build')
 
         # 2. edits
         t = nt.NavTune.new(f'Levels/{lv}', base)

@@ -5,16 +5,16 @@ r"""Runs the suite's tests: one line per test, the failures' output at the end, 
   quick   no game data, about a minute: repository rules, DbxEdit unit tests, and on files built by the
           tests: FbrbTool, LevelDiff, the crash reader and exeref, the console readers, the menu tools, the test
           harness (needs Windows for the C# tools)
-  game    + Project OPFOR's game copy, about 10 minutes: FbrbTool on 12 game bundles, water on every level,
+  game    + Project OPFOR's game copy, about 11 minutes: FbrbTool on 12 game bundles, water on every level,
           the level loader against its snapshot, terrain against the in-game samples, path-data and mesh
-          round trips, LevelDiff on MP_005, the crash reader's code view and exeref on mohmpgame.exe, the menu
+          round trips, LevelDiff on mp_01, the crash reader's code view and exeref on mohmpgame.exe, the menu
           tools on the game's movies and OPFOR's menu patches, the console
           readers on your own Xbox 360 files (skipped when they are not on the PC), the 3D tools opening a
-          level (needs a display), the structure of DICE's path data (hpdcheck), the test harness on two small
+          level (needs a display), the structure of NavKit's builds (hpdcheck), the test harness on two small
           levels, NavKit's regression test on two small levels
   full    + the corpus runs, about 90 minutes: DbxEdit and the Python DBX reader on every unpacked .dbx,
-          FbrbTool on all 1,055 bundles, NavKit's regression test on the 13 campaign levels and the imported
-          Onslaught maps (about 5 hours)
+          FbrbTool on all 1,055 bundles, NavKit's regression test on the 26 MP levels, NavKit's self-check (about
+          1-2 hours)
 
 Run `quick` before every commit and `game` before every push; `full` after changes to a format reader.
 """
@@ -34,16 +34,10 @@ def opfor():
     return navkit.find_opfor(None)
 
 
-def dice_pathdata_files(root):
-    """DICE's path-data files in the game copy: pathdata.hpd, or its kept original where NavKit's is installed."""
-    sys.path.insert(0, os.path.join(SUITE, 'core'))
-    from mohcore import gamecopy
-    out = []
-    for dp, _, fs in os.walk(gamecopy.GameCopy(root).ai_dir()):
-        if 'pathdata.hpd' in [f.lower() for f in fs]:
-            orig = [f for f in fs if f.lower().startswith('pathdata.hpd.')]
-            out.append(os.path.join(dp, orig[0] if orig else 'pathdata.hpd'))
-    return sorted(out)
+def navkit_pathdata_files(root):
+    """NavKit's build of every level (work\\navkit\\<level>\\pathdata.hpd, the current exports): MOH ships no path data."""
+    d = os.path.join(root, 'work', 'navkit')
+    return sorted(p for p in (os.path.join(d, lv, 'pathdata.hpd') for lv in os.listdir(d)) if os.path.isfile(p))
 
 
 def pathdata_files(root):
@@ -71,6 +65,7 @@ def tests():
         ('review fixes 2: harness missing files, navkit no-original reinstall, old fbrb manifests', 'quick',
          [PY, os.path.join(SUITE, 'tests', 'test_review_fixes2.py')]),
         ('navigation side files (navtune)', 'quick', [PY, os.path.join(SUITE, 'core', 'tests', 'test_navtune.py')]),
+        ('RSNV format and the Python reference (rsnv)', 'quick', [PY, os.path.join(SUITE, 'core', 'tests', 'test_rsnv.py')]),
         ('NavKit water rule (ground too deep under water)', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_water_rule.py')]),
         ('NavKit walkability edits (navedits)', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_navedits.py')]),
         ('NavKit area link rule', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_area_link.py')]),
@@ -114,19 +109,19 @@ def tests():
         ('navigation mesh round trip (kymesh)', 'game', lambda root: [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tools', 'hpdtool.py'),
                                                                     'meshtrip', *pathdata_files(root)]),
         ('navigation data and the path test', 'game', [PY, os.path.join(SUITE, 'core', 'tests', 'test_navdata.py')]),
-        ("path data structure, DICE's files (hpdcheck)", 'game', lambda root: [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tools', 'hpdcheck.py'),
-                                                                             *dice_pathdata_files(root)]),
+        ("path data structure, NavKit's builds (hpdcheck)", 'game', lambda root: [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tools', 'hpdcheck.py'),
+                                                                               *navkit_pathdata_files(root)]),
         ('NavKit links and route edges', 'game', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_links.py')]),
         ('traversals, the apply report, installing', 'game', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_traversal.py')]),
         ('navkit apply with walkability edits', 'game', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_apply.py')]),
         ('Navigation Studio edit mode', 'game', [PY, os.path.join(SUITE, 'moh-navigation-studio', 'tests', 'test_editing.py')]),
         ('the suite window (hub) and the level picker', 'game', [PY, os.path.join(SUITE, 'tests', 'test_hub.py')]),
         ('3D tools open and draw (Map Inspector, Navigation Studio)', 'game', [PY, os.path.join(SUITE, 'tests', 'test_viewers.py')]),
-        ('test harness on sp_009 and sp_004_b', 'game', [PY, os.path.join(SUITE, 'moh-automated-map-and-bot-test-harness', 'tests', 'test_harness.py'), '--game']),
-        ('stock-MP AI layer, Atacama Conquest built', 'game', [PY, os.path.join(SUITE, 'moh-stockmp-ai', 'tests', 'test_stockmp.py'), '--game']),
+        ('test harness on mp_01 and mp_03_elimination', 'game', [PY, os.path.join(SUITE, 'moh-automated-map-and-bot-test-harness', 'tests', 'test_harness.py'), '--game']),
+        ('stock-MP AI layer, DBX writer on mp_01, no MOH AI types', 'game', [PY, os.path.join(SUITE, 'moh-stockmp-ai', 'tests', 'test_stockmp.py'), '--game']),
         ('NavKit regression, 2 small levels', 'game', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tools', 'navregress.py'),
-                                                       '--levels', 'sp_004_b,sp_009']),
-        ('NavKit regression, all levels with DICE path data', 'full', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tools', 'navregress.py')]),
+                                                       '--levels', 'mp_07_koth,mp_03_elimination']),
+        ('NavKit regression, every MOH level (self-check)', 'full', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tools', 'navregress.py')]),
         ('DbxEdit corpus and fingerprints', 'full', lambda root: ['cmd', '/c', os.path.join(SUITE, 'moh-dbx-tools', 'tests', 'run_tests.bat'),
                                                                  os.path.join(root, 'work', 'levels'), os.path.join(root, 'work', 'navkit', 'common')]),
         ('Python DBX reader against DbxEdit', 'full', lambda root: [PY, os.path.join(SUITE, 'core', 'tests', 'test_dbx.py'),
