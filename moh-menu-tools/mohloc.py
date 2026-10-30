@@ -1,4 +1,4 @@
-r"""mohloc.py - the game's localized texts (Localization/bin/language_<lang>_normal.bin): look up a key, search the
+r"""mohloc.py - the game's localized texts (Localization/bin/language_<lang>_global.bin): look up a key, search the
 texts, list the keys a menu movie uses.
 
   python mohloc.py get <key | 0xHASH>... [--lang english]   the text of a key (its PC text "WIN32_<key>" first)
@@ -29,7 +29,7 @@ import sys
 
 import menucommon as mc
 
-OVERLAY = 'overlay-00.fbrb'
+OVERLAYS = ('build_overlay-00.fbrb', 'overlay-00.fbrb')   # MOH's texts, then the BFBC2 layout
 PC_PREFIX = 'WIN32_'
 
 
@@ -94,13 +94,20 @@ class LocFile:
 
 
 def languages(root):
+    """{language: (bundle, text entry, histogram entry)}. MOH keeps its texts in build_overlay-00.fbrb as
+    Output/Win32/Localization/bin/language_<lang>_global.bin (overlay-00.fbrb holds only histograms); the BFBC2
+    layout, language_<lang>_normal.bin in overlay-00.fbrb, is still read where present."""
     from mohcore import fbrb
     out = {}
-    for bundle in mc.bundle_layers(root, OVERLAY):
-        for e in fbrb.entries(bundle):
-            m = re.fullmatch(r'Localization/bin/language_(\w+?)_normal\.bin', e.name, re.I)
-            if m and not e.deleted:
-                out[m.group(1).lower()] = bundle
+    for name in OVERLAYS:
+        for bundle in mc.bundle_layers(root, name):
+            entries = [e for e in fbrb.entries(bundle) if not e.deleted]
+            for e in entries:
+                m = re.fullmatch(r'((?:output/win32/)?localization/bin/language_(\w+?))_(global|normal)\.bin', e.name, re.I)
+                if not m:
+                    continue
+                hist = next((x.name for x in entries if x.name.lower() == m.group(1).lower() + '_histogram.bin'), None)
+                out.setdefault(m.group(2).lower(), (bundle, e.name, hist))
     return out
 
 
@@ -115,11 +122,9 @@ def load(lang, root=None, path=None):
     if lang.lower() not in langs:
         raise mc.MenuToolError(f'no language "{lang}" in the game copy (have: {", ".join(sorted(langs)) or "none"})')
     from mohcore import fbrb
-    names = [f'Localization/bin/language_{lang.lower()}_normal.bin', f'Localization/bin/language_{lang.lower()}_histogram.bin']
-    entries = {e.name.lower(): e.name for e in fbrb.entries(langs[lang.lower()])}
-    got = fbrb.read(langs[lang.lower()], [entries[n.lower()] for n in names if n.lower() in entries])
-    got = {k.lower(): v for k, v in got.items()}
-    return LocFile(got[names[0].lower()], got.get(names[1].lower()), names[0])
+    bundle, text, hist = langs[lang.lower()]
+    got = fbrb.read(bundle, [n for n in (text, hist) if n])
+    return LocFile(got[text], got.get(hist) if hist else None, text)
 
 
 def key_names(loc, root=None, exe=None, movies=True):
@@ -191,8 +196,8 @@ def main(argv):
     no_keys = '--no-keys' in args
     args = [a for a in args if a != '--no-keys']
     if cmd == 'langs':
-        for k, b in sorted(languages(root or mc.find_opfor()).items()):
-            print(f'{k:10s} {b}')
+        for k, (bundle, text, _hist) in sorted(languages(root or mc.find_opfor()).items()):
+            print(f'{k:12s} {text}  ({os.path.basename(bundle)})')
         return 0
     loc = load(lang, root, path)
     if cmd == 'get':

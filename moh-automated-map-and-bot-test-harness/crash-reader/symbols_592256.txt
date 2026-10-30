@@ -14,3 +14,4 @@
 00C8D970  BlazeHub::initialize (BlazeSDK 2.11.5.2)  | an online start-up: the client tries EA's Blaze redirector - OPFOR's offline plan replaces this path (project-opfor-moh\OFFLINE_PLAN.md)
 00C8DAC0  Blaze redirector connect failure
 01010900  NetConnStartup
+007CE0F0  menus' online events (thiscall: this, event; type at +0x28: 1 connecting, 3 connected, 9 connection failed, 10 login failed, 14 connection lost)  | the OPFOR core quiets types 1, 9 and 14 while offline ([offline] quiet=1, offline.cpp)
