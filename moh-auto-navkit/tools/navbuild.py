@@ -44,6 +44,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hpdtool  # noqa: E402
 import kymesh  # noqa: E402
 import mohsoldier  # noqa: E402
+import navdrops  # noqa: E402
 import navislands  # noqa: E402
 import navsample  # noqa: E402
 import navwalk  # noqa: E402
@@ -116,6 +117,11 @@ ORDER_NODES = True              # a route node at AI order positions far from an
 ORDER_NODE_MIN = 3.0            # ... when the nearest node on the same floor is farther than this (m)
 ORDER_STATS = {}                # nodes added, and those removed by prune_order_nodes (for reports)
 ORDER_IDS = set()               # ids of the order nodes of the current build
+DROP_LINKS = True               # one-way route edges off ledges onto ground below, between regions no walk joins
+                                # (navdrops.py; mp_02's spawn basin, 2026-10-30)
+DROP_IDS = set()                # (upper node id, lower node id) of the drop links of the current build: finalize_graph
+                                # writes only the edge down; the RSNV exporter reads a one-way edge as a drop
+DROP_STATS = {}
 ORDER_MIN_ISLAND = 25           # an order node in a route island with fewer nodes is dropped (prune_order_nodes): such
                                 # pockets took the nearest-node matches next to the main networks (sp_009: connectivity
                                 # 66.99 without order nodes, 62.58 with all, 67.45 with this rule; sp_004_b keeps its
@@ -779,6 +785,8 @@ def build(samples_path, tris_path, xoff, zoff, out_path, step=mohsoldier.STEP, l
                   order_points=order_points, t0=t0, ladders=ladders, area_orders=area_orders)
     set_pitch(0.8)
     ORDER_IDS.clear()
+    DROP_IDS.clear()
+    DROP_STATS.clear()
     navislands.TERRAIN_IDS.clear()
     LADDER_STATS.clear()
     AREA_CELLS.clear()
@@ -789,6 +797,8 @@ def build(samples_path, tris_path, xoff, zoff, out_path, step=mohsoldier.STEP, l
         set_pitch(0.8)
     else:
         graphs = a['graphs']
+    if DROP_LINKS:
+        log(f'drop links made {DROP_STATS.get("linked", 0)} (counted per stage)')
     if ladders:
         log(f'ladders: {len(ladders)}; links made {LADDER_STATS.get("linked", 0)} (counted per stage), ends in two '
             f'sectors {LADDER_STATS.get("split", 0)}')
@@ -873,6 +883,10 @@ def stage(samples_path, high_path, xoff, zoff, tris_path=None, step=mohsoldier.S
         f_, t_ = navwalk.ladder_ends(s, keep, keep, lad)
         if f_ is not None and t_ is not None:
             ladder_pairs.append((int(f_), int(t_)))
+    drop_pairs = navdrops.find(s, keep, LINK_STEP, PITCH) if DROP_LINKS else []
+    if DROP_LINKS:
+        log(f'drop links: {len(drop_pairs)} ({navdrops.STATS.get("regions", 0)} regions, '
+            f'{navdrops.STATS.get("candidates", 0)} candidate ledges)')
 
     # Sectors that contain kept surfaces.
     sectors = set()
@@ -1041,10 +1055,12 @@ def stage(samples_path, high_path, xoff, zoff, tris_path=None, step=mohsoldier.S
         meshes[(X, Y)] = mesh
         orders = [p for p in (order_points or ()) if ox <= p[0] < ox + 100 and oz <= p[2] < oz + 100]
         lads = [(f_, t_) for f_, t_ in ladder_pairs if f_ in area_of and t_ in area_of]
+        drops = [(f_, t_) for f_, t_ in drop_pairs if f_ in area_of and t_ in area_of]
+        DROP_STATS['linked'] = DROP_STATS.get('linked', 0) + len(drops)
         LADDER_STATS['linked'] = LADDER_STATS.get('linked', 0) + len(lads)
         LADDER_STATS['split'] = LADDER_STATS.get('split', 0) + sum(1 for f_, t_ in ladder_pairs if (f_ in area_of) != (t_ in area_of))
         pts, pairs = build_graph(level, areas, area_of, traced, border_nodes[(X, Y)], gi0, gj0, ox, oz, new_id, orders,
-                                 lads)
+                                 lads, drops)
         navislands.note_nodes(level, pts)        # which nodes stand on terrain (SHADOW_OBJECTS_ONLY)
         ys = [a.min_y for a in mesh_areas] + [a.max_y for a in mesh_areas]
         bounds_ = (rect[0], rect[1], min(ys), max(ys), rect[2], rect[3])
@@ -1315,7 +1331,7 @@ def line_walkable(level, k0, a, b, gi0, gj0, k1):
     return k == k1 or abs(level.y[k] - level.y[k1]) <= 0.6
 
 
-def build_graph(level, areas, area_of, traced, borders, gi0, gj0, ox, oz, new_id, orders=(), ladders=()):
+def build_graph(level, areas, area_of, traced, borders, gi0, gj0, ox, oz, new_id, orders=(), ladders=(), drops=()):
     pts = []    # (id, pos, k, local i, local j)
     # one node per surface: an area-centre or portal node whose surface already holds a node (another area's or
     # portal's, or a border node) is not added - DICE's route graphs have no two nodes at one position except a
@@ -1390,6 +1406,21 @@ def build_graph(level, areas, area_of, traced, borders, gi0, gj0, ox, oz, new_id
                 idx = len(pts) - 1
             ends.append(idx)
         pairs.append((ends[0], ends[1], math.dist(pts[ends[0]][1], pts[ends[1]][1])))
+    drop_ends = []
+    for ku, kl in drops:
+        # a drop link: a node on the ledge and one on the ground below, joined one way (DROP_IDS). The nodes now, so the
+        # group joining below walks them into their own floors; the link after it, so it does not count the two
+        # floors joined (it would leave out the walk back up where there is one)
+        ends = []
+        for k in (ku, kl):
+            idx = next((q for q, p in enumerate(pts) if p[2] == k), None)
+            if idx is None:
+                i, j = cell_of[k]
+                pts.append((new_id(), (ox + i * PITCH, float(level.y[k]) + Y_OFFSET, oz + j * PITCH), k, i, j))
+                idx = len(pts) - 1
+            ends.append(idx)
+        if ends[0] != ends[1]:
+            drop_ends.append(tuple(ends))
     # Connect remaining groups: grid search (8-connected, step rule) from one group to the nearest node
     # of another, then string-pull the path into straight walkable legs with waypoint nodes.
     parent = list(range(len(pts)))
@@ -1476,6 +1507,9 @@ def build_graph(level, areas, area_of, traced, borders, gi0, gj0, ox, oz, new_id
     if ORDER_NODES and orders:
         ORDER_STATS['added'] = ORDER_STATS.get('added', 0) + add_order_nodes(level, pts, pairs, node_at, area_of, orders,
                                                                              gi0, gj0, ox, oz, new_id)
+    for u, l_ in drop_ends:
+        DROP_IDS.add((pts[u][0], pts[l_][0]))
+        pairs.append((u, l_, math.dist(pts[u][1], pts[l_][1])))
     return pts, pairs
 
 
@@ -1730,8 +1764,11 @@ def finalize_graph(pts, pairs, linked_ids, origin=None):
             # positions, 138 of sp_004_b's 60,142 costs came out one unit off
             d = math.dist(*(tuple(float(np.float32(v)) for v in pts[i][1]) for i in (a_, b_)))
             cost = 0x80000000 | int(math.floor(d * 16))
-            out_edges[new[a_]].append((cost, new[b_]))
-            out_edges[new[b_]].append((cost, new[a_]))
+            ia, ib = pts[a_][0], pts[b_][0]
+            if (ib, ia) not in DROP_IDS:          # a drop link has no edge back up
+                out_edges[new[a_]].append((cost, new[b_]))
+            if (ia, ib) not in DROP_IDS:
+                out_edges[new[b_]].append((cost, new[a_]))
     nodes, edges = [], []
     for q, idx in enumerate(keep):
         nid, pos = pts[idx][0], pts[idx][1]

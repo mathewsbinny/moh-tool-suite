@@ -5,9 +5,10 @@ project-opfor-bf1943 - TnT/Code/Engine/AI/PathFinding/rsnav/bindings/rsnav.py an
 
 Per level: the file loads (rsn_load checks every offset, index and coordinate), the level's spawn points and
 objectives (ordercheck.order_points) are placed on the walkable cells (rsn_locate within 1.5 m) and given a start
-node in sight (rsn_start_node), and a route is searched between every pair of placed points with the soldier's
-filter (rsn_filter_soldier: water costs, tight edges priced) and smoothed (rsn_smooth). Reported: points placed,
-pairs routed (done / partial), search time, and - on N random pairs (--reference, default 20) - that the C search's
+node in sight (rsn_start_node), and a route is searched from every placed point to every other (both directions: a
+drop link goes one way) with the soldier's filter (rsn_filter_soldier: water costs, tight edges priced) and smoothed
+(rsn_smooth). Reported: points placed, routes found (done / partial, over the ordered pairs), the unordered pairs
+routed at least one way and both ways, search time, and - on N random pairs (--reference, default 20) - that the C search's
 cost equals the Python reference's (core rsnv.search) on the same file.
 
 Finds rsnav at --rsnav, else RSNAV_ROOT, else project-opfor-bf1943 next to the suite's folder.
@@ -71,7 +72,7 @@ def check_level(root, lv, rb, reference=20, log=print):
     t_search = 0.0
     smooth_fail = 0
     fails = []
-    pairs = [(a, b) for a in range(len(placed)) for b in range(a + 1, len(placed))]
+    pairs = [(a, b) for a in range(len(placed)) for b in range(len(placed)) if a != b]
     costs = {}
     for a, b in pairs:
         t1 = time.perf_counter()
@@ -94,14 +95,18 @@ def check_level(root, lv, rb, reference=20, log=print):
             r = rsnv.search(pw, placed[a][2], placed[b][2], water_scale=(256, 384, 768), tight_extra=50 * 16)
             ref_n += 1
             ref_ok += r is not None and r[1] == costs[(a, b)]       # (status, cost, nodes, expansions)
+    either = sum(1 for a in range(len(placed)) for b in range(a + 1, len(placed)) if (a, b) in costs or (b, a) in costs)
+    both = sum(1 for a in range(len(placed)) for b in range(a + 1, len(placed)) if (a, b) in costs and (b, a) in costs)
+    unordered = len(placed) * (len(placed) - 1) // 2
     res = {'level': lv, 'file_mb': round(len(data) / 1e6, 2), 'load_ms': round(load_ms, 1), 'nodes': w.nodes,
            'edges': w.edges, 'areas': w.areas, 'points': len(pts), 'placed': len(placed), 'pairs': len(pairs),
            'done': done, 'partial': partial, 'smooth_failed': smooth_fail,
            'search_ms_mean': round(t_search / max(len(pairs), 1) * 1000, 3), 'reference_equal': [ref_ok, ref_n],
-           'not_routed': fails[:10]}
+           'not_routed': fails[:10], 'unordered': unordered, 'either_way': either, 'both_ways': both}
     log(f'{lv}: loaded in {load_ms:.1f} ms ({res["file_mb"]} MB, {w.nodes} nodes, {w.edges} edges, {w.areas} areas); '
-        f'points placed {len(placed)}/{len(pts)}; pairs routed {done}/{len(pairs)}'
-        + (f' ({partial} partial)' if partial else '') + f'; {res["search_ms_mean"]} ms per search; '
+        f'points placed {len(placed)}/{len(pts)}; routes {done}/{len(pairs)}'
+        + (f' ({partial} partial)' if partial else '') + f'; pairs routed one way {either}/{unordered}, both ways '
+        f'{both}/{unordered}; {res["search_ms_mean"]} ms per search; '
         f'smoothing failed {smooth_fail}; C = Python reference cost on {ref_ok}/{ref_n}')
     return res
 
@@ -124,8 +129,10 @@ def main(argv):
     out = [check_level(root, navkit.Project(root).level(lv), rb, a.reference) for lv in a.levels]
     if a.json:
         json.dump(out, open(a.json, 'w'), indent=1)
-    return 0 if all(r['partial'] == 0 and r['smooth_failed'] == 0 and r['reference_equal'][0] == r['reference_equal'][1]
-                    for r in out) else 1
+    # every pair routed at least one way (a drop link's ground is left one way only), no smoothing failure, the C search
+    # equal to the reference
+    return 0 if all(r['either_way'] == r['unordered'] and r['smooth_failed'] == 0 and
+                    r['reference_equal'][0] == r['reference_equal'][1] for r in out) else 1
 
 
 if __name__ == '__main__':

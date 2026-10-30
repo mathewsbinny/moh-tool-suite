@@ -286,6 +286,10 @@ def export(root, lv, out=None, log=print, compare=False):
         up = gpos[E[:, 1], 1] > gpos[E[:, 0], 1]
         kind[lad & up] = rsnv.EDGE_LADDER_UP
         kind[lad & ~up] = rsnv.EDGE_LADDER_DOWN
+    # drop links (navbuild.DROP_LINKS): the build's only one-way edges - off a ledge, no edge back up
+    both = set(zip(E[:, 0].tolist(), E[:, 1].tolist()))
+    one_way = np.array([(b_, a_) not in both for a_, b_ in zip(E[:, 0].tolist(), E[:, 1].tolist())], bool)
+    kind[one_way] = rsnv.EDGE_DROP
     lp = os.path.join(pr.level_work(lv), 'ladders.json')
     ladders = json.load(open(lp, encoding='utf-8')) if os.path.isfile(lp) else []
 

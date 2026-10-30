@@ -90,6 +90,7 @@ def tests():
         ('NavKit collision index (Havok packfile names)', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_havok_index.py')]),
         ('NavKit shadow islands (navislands)', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_navislands.py')]),
         ('NavKit offline sampler (navsample_offline)', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_navsample_offline.py')]),
+        ('NavKit drop links (navdrops)', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_navdrops.py')]),
         ('LevelDiff build', 'quick', ['cmd', '/c', os.path.join(SUITE, 'moh-diff-workbench', 'level-diff', 'build.bat')]),
         ('LevelDiff, built levels', 'quick', [PY, os.path.join(SUITE, 'moh-diff-workbench', 'level-diff', 'tests', 'test_leveldiff.py')]),
         ('crash reader, built reports', 'quick', [PY, os.path.join(SUITE, 'moh-automated-map-and-bot-test-harness', 'crash-reader', 'tests', 'test_crashreader.py')]),

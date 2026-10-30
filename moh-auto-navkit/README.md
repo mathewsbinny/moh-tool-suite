@@ -59,7 +59,7 @@ Per level (combat areas, terrain in the box, slopes, spawns, objectives; `prepar
 The steep maps (mp_02, mp_02_koth, mp_03_elimination: 19-30 % of their ground over 45 deg) are where the slope limit
 matters most; the flat urban ones (mp_05, mp_09, mp_10) are mostly buildings and detailed zones.
 
-All 26 levels built, checked and exported (2026-10-30; table in "RSNV export"). Two findings along the way:
+All 26 levels built, checked and exported (2026-10-30; table in "RSNV export"). Four findings along the way:
 - **Denormal transforms.** DbxEdit writes a denormal float (the game reads it as 0) as its integer bits, and NavKit read
   MP_09's invisible walls and MP_04's / MP_05's group members as scaled 30,000-180,000-fold: walls across the whole
   map cut MP_09_TDM's route network in two (spawn pairs connected 36.5 %). `xmlinst.transform` reads such a token in a
@@ -69,9 +69,24 @@ All 26 levels built, checked and exported (2026-10-30; table in "RSNV export"). 
   spawn's height than a large island's (mp_02_koth: three spawns beside a wrecked humvee kept the wreck's 6-node island,
   their nearest node; 71.9 -> 100 %).
 
-Open: mp_02 (83 % of spawn pairs routed in rsnav) and mp_09_overrun (83 %: its spawns and an objective on upper
-floors 5 m over the street stand on islands of 13-33 nodes - the stairs up are not joined), and mp_05's spawns in the
-doorway recesses of the town's outer wall (96 %), beside 1 m bush collision boxes.
+- **Drop links.** MOH's soldier steps 0.3 m and jumps 0.65 m but walks off any ledge. `navdrops.py` links a ledge to
+  the ground 0.5-3 m below it, up to 2 m out, where no walk joins the two (one-way edges, RSNV's drop kind; at most 3
+  per pair of floors, 4 m apart, from floors of 4 m2 or more onto larger ones): 43-221 per level. mp_02's western spawn
+  basin (6 spawns at 90-94 m, fenced by invisible walls and rock; its way out a 1.7 m drop) was cut off: spawn pairs
+  routed one way 83 -> 100 % (both ways stays 83 %: the basin is left, not entered - right for a spawn area).
+- **Tall convex pieces.** The sampler replays the in-game cast, which gives up after 10 m inside a solid. mp_09's
+  invisible wall over the corner house's attic is 10.1 m tall: under it the floors, both flights of stairs and the
+  ground were all lost, cutting the house off (its upper-floor spawns and an objective could only be left). Inside a
+  convex piece past 10 m the cast now goes on from the piece's bottom (`cast_columns`); pieces under 10 m sample as
+  before. mp_09_overrun 83 -> 100 % both ways in rsnav (self-check 53 -> 92 %); with the drop links the self-checks of
+  mp_09_tdm / mp_09_domination rose 88 -> 100 %, mp_10 79-91 -> 100 %, mp_05 85 -> 96 %.
+
+Open: mp_05's spawns in the doorway recesses of the town's outer wall (96 %), beside 1 m bush collision boxes;
+mp_09_overrun's AlternateSpawn at (18.7, 68.3, 3.1) - on an area with a node 0.7 m away in sight, but rsnav's
+`rsn_start_node` gathers its candidate areas into a 128-entry list without dropping duplicates, and in that
+multi-floor house the 25 buckets give 231 entries: the nearest node's area is cut off (an rsnav fix, in
+project-opfor-bf1943); and the east half of that house's upper floor, behind a 1 m wall from the stairwell, is entered
+from nowhere NavKit finds (it is left by dropping; no spawn on it).
 
 Not done for MOH: no in-game check exists (MOH's OPFOR core has no sampler, and no bots yet), so the capsule and the
 `e`-layer rule are the physics' and the data's word, not measured against the game; the RSNV exporter.
@@ -119,6 +134,8 @@ tools\               NavKit tools (Python 3.13 + numpy / matplotlib)
   navdetail.py       D lines and F cells of an area (DICE's rule; used by navbuild; tests\test_detail_features.py)
   navislands.py      shadow islands: small route islands beside a larger one lose their nodes (used by navbuild;
                      tests\test_navislands.py; see "Route islands")
+  navdrops.py        drop links: one-way edges off a ledge onto the ground below, between floors no walk joins
+                     (used by navbuild; tests\test_navdrops.py; see "Medal of Honor MP")
   ordercheck.py      scoring: AI order positions on the areas, pairwise route check, self-check
   navcompare.py      two files on a level's AI positions: coverage, main network, pairwise, size
   navdiff.py         two files layer by layer: sectors, walkable cells, areas, boundaries, route graph
@@ -153,7 +170,8 @@ reads its own per-level file, **RSNV**. `tools\navexport.py` (run by `navkit.py 
   grids, 4 m buckets, portals, ladder records, islands, provenance. Its format module is the same: `core\mohcore\rsnv.py`
   is a copy of BF1943's `core\bfbc2core\rsnv.py` (they must stay identical).
 - **For MOH:** MOH's soldier (`mohsoldier.py`); water depth over a node from the level's water mesh (MOH has no sea; the
-  header's sea level, used only by rsnav's flight code, is 0); no vehicle entries; no jump links (MOH's builds make none).
+  header's sea level, used only by rsnav's flight code, is 0); no vehicle entries; no jump links (MOH's builds make none);
+  a one-way edge (a drop link, `navdrops.py`) is written as RSNV's drop kind.
 - **The build's cells:** `navbuild` now writes `pathdata.cells.npz` beside the build - every area's own cells and ground
   heights - as BF1943's does; the exporter takes them, else rasterises the outlines. On mp_03_elimination the outline
   estimate was more than 0.3 m off on 65,765 of 395,504 cells (17 %); on mp_08_tdm without the cells file 1,106 of 7,394 walk
@@ -164,41 +182,43 @@ reads its own per-level file, **RSNV**. `tools\navexport.py` (run by `navkit.py 
   cells, routes every pair with the soldier's filter, smooths the paths, and checks the C search's cost against the
   Python reference (`rsnv.search`) on 20 pairs.
 
-All 26 MOH MP levels (2026-10-30): every file reads back with 0 problems and every node on an area; in rsnav the
-C search's cost equals the Python reference's on all 520 sampled pairs, and no smoothing failed. "Points placed": the
-spawn points and objectives rsn_locate puts on a walkable cell within 1.5 m (not placed: Combat Mission's base markers
-and the spawn entities, metres up). The rsnav routing counts pairs between placed points; the self-check (NavKit's
+All 26 MOH MP levels (2026-10-30, with drop links and the tall-convex sampling): every file reads back with 0 problems
+and every node on an area; in rsnav the C search's cost equals the Python reference's on all 520 sampled pairs, and no
+smoothing failed. "Points placed": the spawn points and objectives rsn_locate puts on a walkable cell within 1.5 m and
+0.8 m of height (not placed: Combat Mission's base markers and the spawn entities, metres up; objective triggers whose
+centre is over 0.8 m above their floor). rsnav routes from every placed point to every other (a drop link goes one
+way): "one way" counts the pairs routed in at least one direction, "both ways" in both. The self-check (NavKit's
 `check`) joins each point to its nearest node, which can be a pocket's - rsnav starts from the nearest node in sight
 (`rsn_start_node`), so it routes more.
 
-| Level | Nodes / edges | Areas | RSNV (MB) | rsnav load (ms) | Points placed | Pairs routed in rsnav | % | Self-check % (nearest node) | Search (ms) | Ladders |
-|---|---|---|---|---|---|---|---|---|---|---|
-| mp_01 | 5,783 / 18,200 | 4,208 | 2.99 | 4.7 | 93 / 118 | 4278 / 4278 | 100.0 | 93.8 | 0.183 | 0 |
-| mp_01_elimination | 3,854 / 11,716 | 1,736 | 1.44 | 0.7 | 24 / 26 | 276 / 276 | 100.0 | 100.0 | 0.023 | 2 |
-| mp_02 | 6,778 / 18,216 | 4,432 | 3.45 | 1.9 | 64 / 90 | 1668 / 2016 | 82.7 | 83.4 | 0.216 | 0 |
-| mp_02_koth | 2,668 / 7,042 | 1,738 | 1.35 | 0.6 | 19 / 22 | 171 / 171 | 100.0 | 100.0 | 0.03 | 0 |
-| mp_02_koth2 | 2,308 / 6,108 | 1,839 | 1.26 | 0.5 | 17 / 19 | 136 / 136 | 100.0 | 100.0 | 0.055 | 0 |
-| mp_03_elimination | 1,927 / 4,712 | 1,438 | 1.06 | 0.6 | 24 / 26 | 276 / 276 | 100.0 | 100.0 | 0.025 | 0 |
-| mp_04 | 7,466 / 23,612 | 5,088 | 4.44 | 2.7 | 98 / 124 | 4753 / 4753 | 100.0 | 96.1 | 0.126 | 0 |
-| mp_04_koth | 3,529 / 11,100 | 2,220 | 2.04 | 0.8 | 23 / 25 | 253 / 253 | 100.0 | 100.0 | 0.041 | 0 |
-| mp_05_domination | 4,045 / 12,986 | 1,964 | 1.63 | 0.7 | 50 / 65 | 1176 / 1225 | 96.0 | 85.9 | 0.063 | 0 |
-| mp_05_overrun | 3,979 / 12,882 | 1,875 | 1.6 | 0.7 | 28 / 35 | 378 / 378 | 100.0 | 100.0 | 0.056 | 0 |
-| mp_05_tdm | 4,023 / 12,974 | 1,961 | 1.66 | 1.0 | 49 / 62 | 1128 / 1176 | 95.9 | 85.0 | 0.044 | 0 |
-| mp_06_domination | 3,300 / 9,926 | 2,480 | 1.77 | 0.6 | 38 / 46 | 703 / 703 | 100.0 | 95.0 | 0.044 | 0 |
-| mp_06_elimination | 3,304 / 9,934 | 2,476 | 1.77 | 0.7 | 25 / 27 | 300 / 300 | 100.0 | 92.0 | 0.037 | 0 |
-| mp_06_overrun | 3,264 / 9,878 | 2,484 | 1.77 | 0.6 | 27 / 31 | 351 / 351 | 100.0 | 92.6 | 0.049 | 0 |
-| mp_06_tdm | 3,300 / 9,926 | 2,480 | 1.77 | 0.9 | 37 / 43 | 666 / 666 | 100.0 | 94.6 | 0.038 | 0 |
-| mp_07_koth | 1,626 / 5,478 | 816 | 0.75 | 0.5 | 28 / 30 | 378 / 378 | 100.0 | 100.0 | 0.03 | 0 |
-| mp_08_domination | 3,255 / 7,400 | 2,065 | 1.47 | 0.9 | 34 / 44 | 561 / 561 | 100.0 | 100.0 | 0.065 | 3 |
-| mp_08_overrun | 3,268 / 7,460 | 2,067 | 1.47 | 0.6 | 27 / 31 | 351 / 351 | 100.0 | 100.0 | 0.054 | 3 |
-| mp_08_tdm | 3,255 / 7,400 | 2,065 | 1.47 | 0.6 | 34 / 41 | 561 / 561 | 100.0 | 100.0 | 0.075 | 3 |
-| mp_09_domination | 3,169 / 9,544 | 1,767 | 1.35 | 0.9 | 45 / 58 | 990 / 990 | 100.0 | 88.5 | 0.046 | 0 |
-| mp_09_elimination | 3,130 / 9,438 | 1,743 | 1.34 | 0.7 | 29 / 32 | 406 / 406 | 100.0 | 100.0 | 0.049 | 0 |
-| mp_09_overrun | 3,135 / 9,440 | 1,770 | 1.34 | 0.5 | 23 / 29 | 210 / 253 | 83.0 | 53.2 | 0.034 | 0 |
-| mp_09_tdm | 3,169 / 9,544 | 1,767 | 1.35 | 0.8 | 45 / 55 | 990 / 990 | 100.0 | 87.9 | 0.039 | 0 |
-| mp_10_domination | 2,462 / 7,636 | 1,405 | 1.14 | 0.5 | 32 / 44 | 496 / 496 | 100.0 | 80.7 | 0.037 | 0 |
-| mp_10_overrun | 2,459 / 7,624 | 1,406 | 1.14 | 0.7 | 22 / 26 | 231 / 231 | 100.0 | 91.3 | 0.037 | 0 |
-| mp_10_tdm | 2,462 / 7,636 | 1,405 | 1.14 | 0.4 | 32 / 41 | 496 / 496 | 100.0 | 79.2 | 0.022 | 0 |
+| Level | Nodes / edges | Drop edges | Areas | RSNV (MB) | rsnav load (ms) | Points placed | Pairs routed one way | Both ways | Self-check % (nearest node) | Search (ms) | Ladders |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| mp_01 | 6,708 / 20,158 | 198 | 4,208 | 3.03 | 2.1 | 93 / 118 | 4278 / 4278 | 4278 / 4278 (100.0 %) | 95.9 | 0.15 | 0 |
+| mp_01_elimination | 4,353 / 12,801 | 127 | 1,736 | 1.46 | 0.6 | 24 / 26 | 276 / 276 | 276 / 276 (100.0 %) | 100.0 | 0.021 | 2 |
+| mp_02 | 7,610 / 19,973 | 215 | 4,432 | 3.48 | 1.1 | 64 / 90 | 2016 / 2016 | 1668 / 2016 (82.7 %) | 100.0 | 0.146 | 0 |
+| mp_02_koth | 3,069 / 7,893 | 91 | 1,738 | 1.37 | 0.6 | 19 / 22 | 171 / 171 | 171 / 171 (100.0 %) | 100.0 | 0.036 | 0 |
+| mp_02_koth2 | 2,684 / 6,902 | 98 | 1,839 | 1.28 | 0.5 | 17 / 19 | 136 / 136 | 136 / 136 (100.0 %) | 100.0 | 0.05 | 0 |
+| mp_03_elimination | 2,282 / 5,499 | 71 | 1,438 | 1.08 | 0.5 | 24 / 26 | 276 / 276 | 276 / 276 (100.0 %) | 100.0 | 0.021 | 0 |
+| mp_04 | 8,349 / 25,507 | 221 | 5,089 | 4.48 | 1.2 | 98 / 124 | 4753 / 4753 | 4753 / 4753 (100.0 %) | 100.0 | 0.162 | 0 |
+| mp_04_koth | 3,851 / 11,791 | 77 | 2,221 | 2.05 | 0.7 | 23 / 25 | 253 / 253 | 253 / 253 (100.0 %) | 100.0 | 0.034 | 0 |
+| mp_05_domination | 4,552 / 14,068 | 100 | 1,963 | 1.66 | 0.6 | 50 / 65 | 1176 / 1225 | 1176 / 1225 (96.0 %) | 96.4 | 0.061 | 0 |
+| mp_05_overrun | 4,500 / 14,000 | 104 | 1,875 | 1.62 | 0.6 | 28 / 35 | 378 / 378 | 378 / 378 (100.0 %) | 100.0 | 0.05 | 0 |
+| mp_05_tdm | 4,532 / 14,062 | 100 | 1,961 | 1.68 | 0.6 | 49 / 62 | 1128 / 1176 | 1128 / 1176 (95.9 %) | 96.1 | 0.053 | 0 |
+| mp_06_domination | 3,686 / 10,724 | 76 | 2,476 | 1.79 | 0.7 | 38 / 46 | 703 / 703 | 703 / 703 (100.0 %) | 100.0 | 0.04 | 0 |
+| mp_06_elimination | 3,692 / 10,737 | 77 | 2,472 | 1.79 | 0.7 | 25 / 27 | 300 / 300 | 300 / 300 (100.0 %) | 100.0 | 0.041 | 0 |
+| mp_06_overrun | 3,653 / 10,665 | 77 | 2,480 | 1.79 | 0.7 | 27 / 31 | 351 / 351 | 351 / 351 (100.0 %) | 100.0 | 0.044 | 0 |
+| mp_06_tdm | 3,686 / 10,724 | 76 | 2,476 | 1.79 | 0.7 | 37 / 43 | 666 / 666 | 666 / 666 (100.0 %) | 100.0 | 0.039 | 0 |
+| mp_07_koth | 1,797 / 5,833 | 43 | 816 | 0.76 | 0.4 | 28 / 30 | 378 / 378 | 378 / 378 (100.0 %) | 100.0 | 0.034 | 0 |
+| mp_08_domination | 3,914 / 8,820 | 154 | 2,064 | 1.5 | 0.6 | 34 / 44 | 561 / 561 | 561 / 561 (100.0 %) | 100.0 | 0.067 | 3 |
+| mp_08_overrun | 3,926 / 8,869 | 155 | 2,066 | 1.5 | 0.6 | 27 / 31 | 351 / 351 | 351 / 351 (100.0 %) | 100.0 | 0.054 | 3 |
+| mp_08_tdm | 3,914 / 8,820 | 154 | 2,064 | 1.5 | 0.6 | 34 / 41 | 561 / 561 | 561 / 561 (100.0 %) | 100.0 | 0.067 | 3 |
+| mp_09_domination | 3,516 / 10,355 | 79 | 1,764 | 1.36 | 0.6 | 47 / 58 | 1081 / 1081 | 1081 / 1081 (100.0 %) | 100.0 | 0.034 | 0 |
+| mp_09_elimination | 3,479 / 10,253 | 79 | 1,742 | 1.35 | 0.6 | 30 / 32 | 435 / 435 | 435 / 435 (100.0 %) | 100.0 | 0.056 | 0 |
+| mp_09_overrun | 3,456 / 10,183 | 77 | 1,750 | 1.35 | 0.5 | 24 / 29 | 276 / 276 | 276 / 276 (100.0 %) | 92.3 | 0.026 | 0 |
+| mp_09_tdm | 3,516 / 10,355 | 79 | 1,764 | 1.36 | 0.7 | 47 / 55 | 1081 / 1081 | 1081 / 1081 (100.0 %) | 100.0 | 0.035 | 0 |
+| mp_10_domination | 2,666 / 8,070 | 48 | 1,405 | 1.15 | 0.5 | 33 / 44 | 528 / 528 | 528 / 528 (100.0 %) | 100.0 | 0.033 | 0 |
+| mp_10_overrun | 2,665 / 8,056 | 50 | 1,406 | 1.15 | 0.5 | 22 / 26 | 231 / 231 | 231 / 231 (100.0 %) | 100.0 | 0.029 | 0 |
+| mp_10_tdm | 2,666 / 8,070 | 48 | 1,405 | 1.15 | 0.3 | 33 / 41 | 528 / 528 | 528 / 528 (100.0 %) | 100.0 | 0.02 | 0 |
 
 Not yet: rsnav's 32-bit x86 build for the OPFOR core (BOT_PLAN step 3), and a bot following a path in game.
 

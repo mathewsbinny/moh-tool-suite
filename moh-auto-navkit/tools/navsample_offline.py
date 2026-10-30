@@ -678,6 +678,11 @@ class Intervals:
         k = np.searchsorted(self.lo, q, 'right') - 1
         return (k >= 0) & (self.hi[np.maximum(k, 0)] >= q)
 
+    def bottom(self, col, y):
+        """The lower end of the interval holding y (heights inside one)."""
+        k = np.maximum(np.searchsorted(self.lo, col * self.K + (y + self.off), 'right') - 1, 0)
+        return self.lo[k] - col * self.K - self.off
+
 
 def cast_columns(grid, hits_col, hits_y, hits_n, hits_kind, terrain_y, solid=None, log=print):
     """Replays navsample.cpp's SampleColumn on every column. hits_*: candidate hits (column, y, normal, kind) of
@@ -734,8 +739,15 @@ def cast_columns(grid, hits_col, hits_y, hits_n, hits_kind, terrain_y, solid=Non
             s = act[skip]
             solid_run[s] += SOLID_STEP
             start[s] -= SOLID_STEP
+        # navsample.cpp gives up after MAX_SOLID inside geometry. Inside a convex piece its bottom is known: past the
+        # limit the cast goes on from there - under a piece taller than MAX_SOLID (mp_09_overrun's 10.1 m invisible
+        # wall over a house, 2026-10-30) the floors, stairs and ground below were all lost, cutting the house off
+        long = skip & inside & (solid_run[act] > MAX_SOLID)
+        if long.any():
+            s = act[long]
+            start[s] = np.minimum(start[s], inside_set.bottom(cols[s], st[long]) - SKIP)
         done = stop.copy()
-        done[skip] = solid_run[act[skip]] > MAX_SOLID
+        done[skip] = (solid_run[act[skip]] > MAX_SOLID) & ~inside[skip]
         done[rec] = count[act[rec]] >= MAX_LAYERS
         act = act[~done]
     if not out_c:

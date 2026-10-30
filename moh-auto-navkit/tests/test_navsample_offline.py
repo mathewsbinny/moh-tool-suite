@@ -1,7 +1,8 @@
 r"""NavKit's offline sampler (tools\navsample_offline.py) on geometry built here (no game data): the cast loop
 (layers top to bottom, the 0.1 m gap, the step through thin solids, nothing under the terrain, convex pieces solid,
-mesh triangles hit from both sides with the normal facing the ray, the sphere touching an edge), the capsule test
-(walls, ceilings, steep terrain; the exact capsule-triangle interval against brute force), the file written in
+the floor under a convex piece taller than the 10 m solid limit, mesh triangles hit from both sides with the normal
+facing the ray, the sphere touching an edge), the capsule test (walls, ceilings, steep terrain; the exact
+capsule-triangle interval against brute force), the file written in
 navsample.cpp's version-3 format and read back by navsample.py, the grid alignment of navsample.cpp, and the
 destroyed-state parts of a blueprint.
 
@@ -113,6 +114,12 @@ def main(argv):
     g = geometry([(slab(-2.1, -2.1, 2.1, 2.1, 0.0, 3.0), no.KIND_MESH)])
     s = no.sample_grid(grid, g, flat, log=lambda *a: None)[B]
     check([c[0] for c in column(s, 0.0, 0.0)] == [3.0, 0.0], f'mesh block: top and bottom {column(s, 0.0, 0.0)}')
+    # a convex piece taller than MAX_SOLID (12 m, from 15 m up) over a floor at 4 m: past the limit the cast goes on
+    # from the piece's bottom - the floor and the terrain under it are recorded (mp_09_overrun's invisible wall)
+    g = geometry([(slab(-2.1, -2.1, 2.1, 2.1, 15.0, 27.0), no.KIND_CONVEX),
+                  (slab(-2.1, -2.1, 2.1, 2.1, 3.9, 4.0), no.KIND_MESH)])
+    s = no.sample_grid(grid, g, flat, log=lambda *a: None)[B]
+    check([c[0] for c in column(s, 0.0, 0.0)] == [27.0, 4.0, 0.0], f'tall convex piece: floor below kept {column(s, 0.0, 0.0)}')
 
     # 5. the sphere touching an edge: a thin vertical sheet (no thickness) 0.03 m beside a column gives a hit at its
     #    top edge with an upward normal; 0.2 m away it does not
