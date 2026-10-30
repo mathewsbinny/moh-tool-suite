@@ -1,7 +1,8 @@
 """NavKit: are a level's AI order positions on the walkable areas / route network of a pathdata.hpd?
 
 Collects AreaOrder / PatrolOrder / InterludeOrder / FireAtArea positions and the patrol waypoints
-(AreaGeometryEntityData chains referenced by PatrolOrders) from the converted level partition, then for
+(AreaGeometryEntityData chains referenced by PatrolOrders) from the converted level partition - and, on a level
+with none (Medal of Honor MP has no AI orders), its objectives and spawn points (MOH_POINT_TYPES) - then for
 each pathdata.hpd given reports per point: inside an area (horizontal, with height tolerance) and the
 route-network group of the nearest node.
 
@@ -25,8 +26,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 import hpdtool  # noqa: E402
 from mohcore import xmlinst  # noqa: E402
 import kymesh  # noqa: E402
+import mohsoldier  # noqa: E402
 
-Y_OFFSET = 0.95
+Y_OFFSET = mohsoldier.Y_OFFSET
+# the places bots go on a MOH MP level: Combat Mission's targets, the capture points of Sector Control, Hot Zone and
+# Objective Raid (Combat Mission's are team-base markers some 18 m up - reported as off the areas), the spawn points
+MOH_POINT_TYPES = ('ObjectiveTriggerEntityData', 'CapturePointEntityData', 'AlternateSpawnEntityData',
+                   'SoldierSpawnEntityData')
 
 
 def order_points(xml_path):
@@ -62,6 +68,14 @@ def order_points(xml_path):
                             pts.append(('PatrolWaypoint', name, q))
                         nxt = xmlinst.field_ref(inst[g][1], 'Next')
                         g = nxt.lower() if nxt and re.fullmatch(r'[0-9a-f-]{36}', nxt) else ''
+    if not pts:
+        for guid, (typ, body) in inst.items():
+            short = typ.split('.')[-1]
+            if short in MOH_POINT_TYPES:
+                p = pos(body)
+                if p:
+                    name = re.search(r'<field name="Name">([^<]*)</field>', body)
+                    pts.append((short.replace('EntityData', ''), name.group(1) if name else '', p))
     # unique
     out, seen = [], set()
     for k, n, p in pts:
@@ -182,6 +196,14 @@ def main(argv):
         total = len(idx) * (len(idx) - 1) // 2
         conn = sum(1 for a, b in itertools.combinations(idx, 2) if g[a] == g[b])
         print(f'self-check: {conn}/{total} point pairs on areas are route-connected ({conn / max(total, 1) * 100:.1f}%)')
+        if idx:
+            main_group = Counter(g[i] for i in idx).most_common(1)[0][0]
+            apart = [i for i in idx if g[i] != main_group]
+            if apart:
+                print(f'\npoints on areas outside the route group holding most of them ({len(apart)}):')
+                for i in apart[:60]:
+                    k, n, p = pts[i]
+                    print(f'  {k:22s} {n[:34]:34s} ({p[0]:8.1f} {p[1]:6.1f} {p[2]:8.1f})')
     if len(argv) == 4:
         gd, go = groups[argv[2]], groups[argv[3]]
         idx = [i for i in range(len(pts)) if gd[i] is not None]

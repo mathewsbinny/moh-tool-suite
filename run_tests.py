@@ -80,6 +80,7 @@ def tests():
         ('NavKit reference extent clip', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_reference_clip.py')]),
         ('NavKit soldiers absent from path data', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_characters.py')]),
         ('NavKit headroom band', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_headroom.py')]),
+        ('NavKit MOH soldier, spawns and objectives', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_mohsoldier.py')]),
         ('NavKit narrow lips and door sills', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_lips.py')]),
         ('NavKit dynamic props (floor under a prop, door leaves)', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_dynamic_props.py')]),
         ('NavKit roof pruning', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_roof_prune.py')]),

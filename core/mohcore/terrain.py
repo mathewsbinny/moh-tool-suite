@@ -5,11 +5,16 @@ level's terrain-00.fbrb).
     hf.height(x, z)            # world height, grid squares split as the game splits them
     vertices, triangles = hf.mesh(stride=2)
 
-Layout (all little-endian; checked against the in-game terrain samples of 13 campaign levels, see DESIGN.md
-"Terrain height field"):
+Layout (all little-endian; first checked against BFBC2's in-game terrain samples of 13 campaign levels, see DESIGN.md
+"Terrain height field"). Medal of Honor's MP terrains (2026-10-30) have the same layout at 1 m per sample: 1024 x
+1024 over -512..512 (MP_01, MP_02, MP_04, MP_08_TDM) or 512 x 512 over -256..256 (the rest), heights 0..500 (MP_02
+0..305, MP_08_TDM 0..600). A level's TerrainHeightfieldData asset names a different editor grid (MP_01: -1024..1024)
+- the .res bounds are the ones that hold: 92 MP_01 AlternateSpawnEntityData points, median 0.00 m above the height
+field, 93 % within 0.3 m (the rest stand on objects). A mode variant reads its map's terrain (MP_05_Domination ->
+MP_05_TDM; level.terrain_name), a DLC mode another map's (MP_01_Elimination -> MP_01_TDM).
 
     0x00  6 x f32      world bounds: min x, min y, min z, max x, max y, max z
-    0x18  u32          size: samples per side (1024 or 2048)
+    0x18  u32          size: samples per side (512, 1024 or 2048)
     0x1C  u32 x 5      log2(size) - 3, log2(size) - 2, about 256 * size, 0, a count - not decoded
     0x30  u8           0 in every level seen
     0x31  u16 x size^2 heights, rows along z, columns along x: height = min y + value / 65535 * (max y - min y),

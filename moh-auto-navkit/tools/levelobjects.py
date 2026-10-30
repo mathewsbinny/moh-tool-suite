@@ -33,47 +33,56 @@ from mohcore import xmlinst  # noqa: E402
 SEP = chr(92)
 
 
-def order_points(level_xml):
-    """AI order positions of a level: the Transform translation of every AreaGeometryEntityData (the points the
-    squad's area / patrol orders send soldiers to; sp_004_b's stairs-top go-to targets are two of them)."""
+def positions(level_xml, *types):
+    """The Transform translations of the level's instances of the given types (type-name suffixes)."""
     pts = []
-    for _typ, _guid, body in xmlinst.instances(level_xml, 'Entity.AreaGeometryEntityData'):
-        t = re.search(r'<complex name="Transform">([^<]*)</complex>', body)
-        if t:
-            v = [float(a) for a in t.group(1).split('/')]
-            if len(v) >= 15 and any(abs(c) > 1e-3 for c in v[12:15]):
-                pts.append(v[12:15])
+    for typ in types:
+        for _typ, _guid, body in xmlinst.instances(level_xml, typ):
+            t = re.search(r'<complex name="Transform">([^<]*)</complex>', body)
+            if t:
+                v = [float(a) for a in t.group(1).split('/')]
+                if len(v) >= 15 and any(abs(c) > 1e-3 for c in v[12:15]):
+                    pts.append(v[12:15])
     return pts
+
+
+# Medal of Honor MP has no AI orders (no AreaOrder / PatrolOrder entities). The places bots are sent to are its
+# objectives: Combat Mission's ObjectiveTriggerEntityData (5 on MP_01 / MP_04), the capture points of Sector Control,
+# Hot Zone and Objective Raid (CapturePointEntityData; Combat Mission's are team-base markers some 18 m up, which the
+# build ignores - an order point attaches only to ground within 1 m), and the soldiers' spawn points.
+OBJECTIVE_TYPES = ('.ObjectiveTriggerEntityData', '.CapturePointEntityData')
+SPAWN_TYPES = ('.SoldierSpawnEntityData', '.AlternateSpawnEntityData')
+
+
+def order_points(level_xml):
+    """Positions route nodes are guaranteed at (navbuild.ORDER_NODES): the level's objectives and spawn points. (BFBC2:
+    every AreaGeometryEntityData - its AI orders' points; on MOH those are combat-area and spawn-area outline
+    vertices, so they are not taken.)"""
+    return positions(level_xml, *(OBJECTIVE_TYPES + SPAWN_TYPES))
 
 
 def area_orders(level_xml):
-    """The positions of the level's AreaOrder entities (where an area order sends soldiers - the M-COM targets in
-    Onslaught / Rush), for navwalk.OBJECTIVE_FLOOR."""
-    pts = []
-    for _typ, _guid, body in xmlinst.instances(level_xml, '.AreaOrderEntityData'):
-        t = re.search(r'<complex name="Transform">([^<]*)</complex>', body)
-        if t:
-            v = [float(a) for a in t.group(1).split('/')]
-            if len(v) >= 15 and any(abs(c) > 1e-3 for c in v[12:15]):
-                pts.append(v[12:15])
-    return pts
+    """Objective positions for navwalk.OBJECTIVE_FLOOR (the floor under and around an objective on a ForbidPathfinding
+    object stays walkable): MOH's objectives (OBJECTIVE_TYPES), and any AreaOrder entity (BFBC2's M-COM targets)."""
+    return positions(level_xml, '.AreaOrderEntityData', *OBJECTIVE_TYPES)
 
 
 def blueprint_flags(bases):
     """lower-case blueprint path -> (ForbidPathfinding, ExcludeFromPathfinding, AllowPathdataSeeds, dynamic,
-    DisablePathfinding value - e.g. PdtNever / PdtWhenAlive)."""
+    DisablePathfinding value - e.g. PdtNever / PdtWhenAlive, NeedsDetailedPathfinding)."""
     flags = {}
     for base in bases:
         for f in glob.glob(os.path.join(base, '**', '*.xml'), recursive=True):
             t = open(f, encoding='utf-8', errors='replace').read()
             dynamic = 'type="GameSharedResources.DynamicModelEntityData"' in t
-            if 'ForbidPathfinding' not in t and not dynamic:
+            if 'ForbidPathfinding' not in t and 'NeedsDetailedPathfinding">true' not in t and not dynamic:
                 continue
             rel = os.path.relpath(f, base).replace(SEP, '/').lower()[:-4]
             dis = re.search(r'<field name="DisablePathfinding">([A-Za-z]*)<', t)
             flags.setdefault(rel, ('<field name="ForbidPathfinding">true' in t,
                                    '<field name="ExcludeFromPathfinding">true' in t,
-                                   '<field name="AllowPathdataSeeds">true' in t, dynamic, dis.group(1) if dis else ''))
+                                   '<field name="AllowPathdataSeeds">true' in t, dynamic, dis.group(1) if dis else '',
+                                   '<field name="NeedsDetailedPathfinding">true' in t))
     return flags
 
 
@@ -174,14 +183,9 @@ def main(argv):
             bp = re.sub(r'_havok$', '', a.rsplit('/', 1)[0].lower())
             groups.append({'group': os.path.basename(f), 'bp': bp, 'flags': flags.get(bp),
                            'm': [float(v) for v in tr[i * 16:(i + 1) * 16]]})
-    # soldier spawn points (seed points of the path data)
-    spawns = []
-    for _typ, _guid, body in xmlinst.instances(x, '.SoldierSpawnEntityData'):
-        t = re.search(r'<complex name="Transform">([^<]*)</complex>', body)
-        if t:
-            v = [float(a) for a in t.group(1).split('/')]
-            if any(abs(c) > 1e-3 for c in v[12:15]):
-                spawns.append(v[12:15])
+    # soldier spawn points (seed points of the path data): MOH places its soldiers at the AlternateSpawnEntityData
+    # points (MP_01: 92, 93 % on the terrain); its SoldierSpawnEntityData are the spawn entities (all at one height)
+    spawns = positions(x, *SPAWN_TYPES)
     json.dump(spawns, open(os.path.join(level_dir, 'soldier_spawns.json'), 'w'))
     json.dump(order_points(x), open(os.path.join(level_dir, 'order_points.json'), 'w'))
     json.dump(area_orders(x), open(os.path.join(level_dir, 'area_orders.json'), 'w'))

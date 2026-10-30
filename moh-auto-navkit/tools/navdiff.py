@@ -26,8 +26,9 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hpdtool  # noqa: E402
 import kymesh  # noqa: E402
+import mohsoldier  # noqa: E402
 
-Y_OFFSET = 0.95      # outline heights are ground + 0.95 m
+Y_OFFSET = mohsoldier.Y_OFFSET      # outline heights are ground + half the soldier's height (MOH 0.9; BFBC2 0.95)
 GRID = 0.8           # cells are compared on this grid whatever an area's pitch (detailed zones use 0.2; 0.8 is a
                      # multiple, so these points are sample points of every area)
 STACK_TOL = 4.0      # where floors are stacked, cells pair by nearest height up to this difference (storeys are 2.5 m+)

@@ -43,6 +43,13 @@ CATEGORIES = [
     ('area point', r'\.AreaGeometryEntityData$'),
     ('placed object', r'\.ReferenceObjectData$'),
 ]
+# objective blueprints (placed objects an attacker arms or a defender guards): MOH's Combat Mission / Objective Raid
+# bombs, crates, radars and generators (2026-10-30, every MP level's partition), and BFBC2's Rush M-COM stations
+OBJECTIVE_BLUEPRINTS = ('objects/weapons/handheld/python/us_bomb/', 'objects/python/props/objectiveprops/',
+                        'objects/python/props/supplycrate_01/objective_crate', 'objects/mp05_overrun_bomb',
+                        'objects/python/props/hangar_01/hangar_gate_01_objective',
+                        'objects/weapons/handheld/python/insurgent_mortar/insurgent_mortar_objective',
+                        'objects/objects/mpobjective')
 # placed objects (ReferenceObjectData), by what their blueprint's object is
 OBJECT_CATEGORIES = {
     'LadderEntityData': 'ladder',
@@ -300,8 +307,8 @@ def resolve_blueprints(lvl, bases):
         if path not in destructible:
             destructible[path] = broken_up(insts)
         e.destructible = e.blueprint_type == 'StaticModelEntityData' and destructible[path]
-        if (e.blueprint or '').startswith('objects/objects/mpobjective'):
-            e.category = 'objective'                     # Rush M-COM stations
+        if (e.blueprint or '').startswith(OBJECTIVE_BLUEPRINTS):
+            e.category = 'objective'                     # what an attacker arms or a defender guards
         elif e.destructible:
             e.category = 'destructible'
         else:

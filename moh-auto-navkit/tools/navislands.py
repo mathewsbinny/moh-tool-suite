@@ -26,6 +26,7 @@ no record counts as an object node.
 """
 import math
 from collections import defaultdict
+import mohsoldier  # noqa: E402
 
 SHADOW_ISLANDS = True
 SHADOW_MIN_NODES = 25           # islands under this many nodes are candidates (as navbuild.ORDER_MIN_ISLAND)
@@ -35,8 +36,13 @@ SHADOW_XZ = 8.0                 # ... when a node of a large island is this clos
 SHADOW_DY = 4.0                 # ... and this close in height (the harness's join, navpath.JOIN_Y)
 ANCHOR_XZ = 2.0                 # an anchor point keeps the island of a node this close across ...
 ANCHOR_DY = 1.0                 # ... whose ground (node height - Y_OFFSET) is this close to the point's height
+ANCHOR_SERVED = True            # an anchor keeps a small island only when the island's floor is nearer its height than
+                                # any large island's floor within SHADOW_XZ (a spawn on a pocket 0.8 m up keeps the
+                                # pocket; one on the ground beside a prop does not keep the prop): mp_02_koth's three
+                                # spawns on open ground beside a wrecked humvee kept the wreck's 6-node island, which
+                                # was then their nearest node - cut off from the network (2026-10-30)
 SHADOW_OBJECTS_ONLY = True
-Y_OFFSET = 0.95
+Y_OFFSET = mohsoldier.Y_OFFSET
 STATS = {}
 TERRAIN_IDS = set()             # ids of route nodes standing on terrain (note_nodes; navbuild.build clears it)
 
@@ -84,6 +90,19 @@ def components(graphs):
     return root, size, pos
 
 
+def _large_dy(grid, a, xz):
+    """The smallest height difference between the anchor and the ground of a large island's node within xz across
+    (inf without one)."""
+    best = math.inf
+    bx, bz = math.floor(a[0] / xz), math.floor(a[2] / xz)
+    for dx in (-1, 0, 1):
+        for dz in (-1, 0, 1):
+            for q in grid.get((bx + dx, bz + dz), ()):
+                if math.hypot(q[0] - a[0], q[2] - a[2]) <= xz:
+                    best = min(best, abs(q[1] - Y_OFFSET - a[1]))
+    return best
+
+
 def shadowing(graphs, anchors=(), min_nodes=None, xz=None, dy=None):
     """The roots of the islands SHADOW_ISLANDS drops, and the components ({id: root}, {root: size}, {id: pos})."""
     min_nodes = SHADOW_MIN_NODES if min_nodes is None else min_nodes
@@ -106,7 +125,8 @@ def shadowing(graphs, anchors=(), min_nodes=None, xz=None, dy=None):
             grid[(math.floor(p[0] / xz), math.floor(p[2] / xz))].append(p)
     abucket = defaultdict(list)                    # anchors in buckets
     for a in anchors or ():
-        abucket[(math.floor(a[0] / ANCHOR_XZ), math.floor(a[2] / ANCHOR_XZ))].append(a)
+        served = _large_dy(grid, a, xz) if ANCHOR_SERVED else math.inf
+        abucket[(math.floor(a[0] / ANCHOR_XZ), math.floor(a[2] / ANCHOR_XZ))].append((a, served))
     anchored, near = set(), set()
     for i, r in root.items():
         if r not in small:
@@ -116,8 +136,9 @@ def shadowing(graphs, anchors=(), min_nodes=None, xz=None, dy=None):
             bx, bz = math.floor(p[0] / ANCHOR_XZ), math.floor(p[2] / ANCHOR_XZ)
             for dx in (-1, 0, 1):
                 for dz in (-1, 0, 1):
-                    for a in abucket.get((bx + dx, bz + dz), ()):
-                        if math.hypot(a[0] - p[0], a[2] - p[2]) <= ANCHOR_XZ and abs(p[1] - Y_OFFSET - a[1]) <= ANCHOR_DY:
+                    for a, served in abucket.get((bx + dx, bz + dz), ()):
+                        own = abs(p[1] - Y_OFFSET - a[1])
+                        if math.hypot(a[0] - p[0], a[2] - p[2]) <= ANCHOR_XZ and own <= ANCHOR_DY and own < served:
                             anchored.add(r)
         if r in near:
             continue

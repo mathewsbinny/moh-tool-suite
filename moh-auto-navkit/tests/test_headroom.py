@@ -1,5 +1,5 @@
 r"""NavKit's headroom band (navwalk.HEADROOM_BAND, headroom, low_headroom) on a sample grid built here (no game data):
-ground with the next surface above it 0.5-2.0 m higher is not walkable; 0.4 m (a step) and 2.5 m (a ceiling) keep
+ground with the next surface above it 0.5 m to the soldier's height + 0.1 (MOH 1.9 m) higher is not walkable; 0.4 m (a step) and 2.5 m (a ceiling) keep
 their ground; a soldier overhead does not count; the deck itself (nothing above) stays; the rule off keeps it all.
 
   python test_headroom.py
@@ -58,7 +58,7 @@ def main(argv):
     finally:
         navwalk.HEADROOM_BAND = old
     check(bool(keep_off[3]), 'rule off: the floor under the deck is kept as before')
-    check(navwalk.HEADROOM_BAND == (0.5, 2.0), 'default band 0.5-2.0 m')
+    check(navwalk.HEADROOM_BAND == (0.5, 1.9), 'default band 0.5-1.9 m (MOH soldier 1.8 m + 0.1)')
     print('all passed' if not failed else f'{failed} check(s) failed')
     return 1 if failed else 0
 

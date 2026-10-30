@@ -20,6 +20,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hpdtool  # noqa: E402
 import kymesh  # noqa: E402
+import mohsoldier  # noqa: E402
 
 HEADER = struct.Struct('<4sI3f2i6fI')
 BLOCKED, FAULT = 1, 2
@@ -181,7 +182,7 @@ def flood(s, ok, seeds, max_dy):
     return reach
 
 
-def compare(s, hpd_path, png=None, slope=40.0, step=0.28, tol=0.6):
+def compare(s, hpd_path, png=None, slope=mohsoldier.SLOPE, step=mohsoldier.STEP, tol=0.6):
     ref = reference_cells(s, hpd_path)
     ok = walkable(s, slope)
     tp = fn = fp_raw = 0

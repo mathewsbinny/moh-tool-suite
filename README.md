@@ -38,9 +38,12 @@ The suite came from the BFBC2 suite and is being moved to Medal of Honor (2010).
   `HasAI`, `PathfindingTypes` or `SectorOffsets`) - only the leftover AI-player spawn path (`SoldierSpawnEntityData`
   with `PlayerType` `SSAiPlayer`), which OPFOR's bots will use as BF1943's do (project-opfor-moh\BOT_PLAN.md);
   Medal of Honor's AI is in the Unreal Engine 3 singleplayer game. No level ships `pathdata.hpd`. So the parts built on the BFBC2 game's own AI - DICE parity
-  scores, the stock-MP AI layer (`moh-stockmp-ai`), the harness's AI-readiness checks, NavKit's in-game sampler and
-  install step - have nothing to run against yet: OPFOR's bots need their own runtime, which will read NavKit's
-  navigation data. Their tests still use BFBC2 fixtures (`sp_*`, `ons_mp_*`, build 795745).
+  scores, the stock-MP AI layer (`moh-stockmp-ai`), the harness's AI-readiness checks, NavKit's in-game sampler -
+  have nothing to run against yet: OPFOR's bots need their own runtime, which will read NavKit's navigation data.
+  Their tests still use BFBC2 fixtures (`sp_*`, `ons_mp_*`, build 795745).
+- **NavKit on MOH (2026-10-30):** builds all 26 MP levels offline from their collision and terrain, for MOH's own
+  soldier (`moh-auto-navkit\tools\mohsoldier.py`: radius 0.35, height 1.8, step 0.3, slope 45 deg), inside each
+  level's combat areas; its README's "Medal of Honor MP" section lists what was checked on the maps.
 - **Build:** the MP client is build 592256. The crash reader and exeref name its functions from
   `symbols_592256.txt` (a start: the window-position registry key, the Documents folder); aptrefs reads its extern
   table but its getter tables are still BFBC2's (build 795745) and are skipped.
@@ -128,14 +131,15 @@ python run_tests.py --list     what each tier runs;   --only <name> runs the tes
 | `tests/test_cli_errors.py` | quick | every command-line tool (C# and Python) given input that must fail: an error exit, the cause and what to do in words, the error in its log |
 | `core/tests/test_errors.py` | quick | error handling: causes explained in words, the log (errors with tracebacks, warnings, other threads), crashes caught with exit code 1, old logs pruned, a failing 3D panel kept to the Problems window |
 | `core/tests/test_navtune.py` | quick | navigation side files: every operation saves and loads unchanged, undo / redo, the PC's name recorded, invalid edits refused, DICE bases refuse region edits, the base file's hash |
-| `moh-auto-navkit/tests/test_water_rule.py` | quick | NavKit's water rule on a sample grid built in the test: ground over 1.5 m deep left out, shallower ground, decks and dry ground kept, overlapping water |
-| `moh-auto-navkit/tests/test_area_link.py` | quick | NavKit's area link rule on a grid built in the test: straight steps up to 0.6 m join an area, diagonals through a side cell, a steep plane cut into single cells, object surfaces and portals on the slope rule |
+| `moh-auto-navkit/tests/test_water_rule.py` | quick | NavKit's water rule on a sample grid built in the test: ground deeper than the soldier's water limit left out, shallower ground, decks and dry ground kept, overlapping water |
+| `moh-auto-navkit/tests/test_area_link.py` | quick | NavKit's area link rule on a grid built in the test: straight steps up to the link step (MOH: the 45 deg slope over a cell, 0.8 m) join an area, diagonals through a side cell, a steeper plane cut into single cells, object surfaces and portals on the slope rule |
 | `moh-auto-navkit/tests/test_regress_progress.py` | quick | `navregress.py`'s progress estimates: durations in words, each level's expected time from earlier runs, its sample file size or the default |
 | `moh-auto-navkit/tests/test_navboundary.py` | quick | `navboundary.py` on path data built in the test: merged and split areas, matching / missing / extra boundary edges, precision and recall with and without tolerance, portal displacement, the CSV and map export |
 | `moh-auto-navkit/tests/test_portal_symmetry.py` | quick | NavKit's portals on grids built in the test: a portal each way between two areas, no edge with two portal pieces, a stacked column's one-way portal turned into outline |
 | `moh-auto-navkit/tests/test_reference_clip.py` | quick | NavKit's bound to the reference extent: surfaces outside the box (every floor), inclusive edges, the extent from outlines and portals of every pitch without border portals, no bound for a new map |
 | `moh-auto-navkit/tests/test_characters.py` | quick | NavKit treats soldiers standing in the level while it was sampled as absent: their surfaces are not floor, the floor under and beside them is not blocked, other floors keep their flags; the rule off blocks as before |
-| `moh-auto-navkit/tests/test_headroom.py` | quick | NavKit's headroom band: ground with the next surface 0.5-2.0 m above it is not walkable; a step-height surface or a ceiling above keeps the ground; soldiers overhead do not count; the rule off keeps it all |
+| `moh-auto-navkit/tests/test_headroom.py` | quick | NavKit's headroom band: ground with the next surface 0.5-1.9 m (the soldier's 1.8 + 0.1) above it is not walkable; a step-height surface or a ceiling above keeps the ground; soldiers overhead do not count; the rule off keeps it all |
+| `moh-auto-navkit/tests/test_mohsoldier.py` | quick | NavKit's MOH soldier (`mohsoldier.py`): its sizes and derived values, the sampler / build / walkability using them, the collision layers; spawn points (soldier and alternate), objectives as order points and objective floors, and the check's points on a level without AI orders; with OPFOR's prepared game copy, the same values in the game's `DefaultSoldierPhysics` |
 | `moh-auto-navkit/tests/test_lips.py` | quick | NavKit's narrow lips and door sills at 0.2 m: a two-sample steep terrain band is crossed, a three-sample one is not; a 5 cm object sill is crossed between flat floors, not between sloped ones or when 0.5 m high; nothing at 0.8 m; the rules off |
 | `moh-auto-navkit/tests/test_dynamic_props.py` | quick | NavKit's dynamic props: a closed door's bottom rail stands for the floor under it, a door leaf's face hit 1 m over a sill is no ceiling, both rows crossed; each rule off cuts its row |
 | `moh-auto-navkit/tests/test_roof_prune.py` | quick | NavKit's roof pruning: an unreached roof is dropped; a roof beside an anchored deck at its height, a roof with an anchor on it, a ground-level patch and the main ground stay; the rule off |

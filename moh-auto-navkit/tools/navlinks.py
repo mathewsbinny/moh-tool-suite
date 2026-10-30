@@ -6,7 +6,7 @@ graph (navkit apply, after the build - or on a copy of DICE's file for a DICE ba
   route-edge a b remove     removes the edge(s) between the nodes nearest a and b
 
 A point joins the route node nearest to it (within 15 m horizontally and 4 m in height, as the path test
-joins points; node heights are ground + 0.95 m). An edge lives in one sector and joins two of its nodes, so
+joins points; node heights are ground + mohsoldier.Y_OFFSET). An edge lives in one sector and joins two of its nodes, so
 the two nodes are looked for in the same sector: every sector with a node near each point is tried and the
 closest pair wins (border nodes, which belong to two sectors, let a link cross a sector edge). Costs are as
 the generator writes them: 0x80000000 | floor(3-D distance * 16). Edges stay sorted by source node and each
@@ -18,8 +18,9 @@ import math
 import numpy as np
 
 import hpdtool
+import mohsoldier  # noqa: E402
 
-JOIN_XZ, JOIN_Y, Y_OFFSET = 15.0, 4.0, 0.95
+JOIN_XZ, JOIN_Y, Y_OFFSET = 15.0, 4.0, mohsoldier.Y_OFFSET
 GRAPH_OPS = ('link-areas', 'route-edge')
 
 

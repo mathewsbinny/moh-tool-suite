@@ -34,6 +34,7 @@ import navcompare  # noqa: E402
 import navdf  # noqa: E402
 import navdiff  # noqa: E402
 import ordercheck  # noqa: E402
+import mohsoldier  # noqa: E402
 
 LEVELS = ['sp_01', 'sp_02', 'sp_03', 'sp_04', 'sp_003_b', 'sp_004_b', 'sp_005', 'sp_005_b', 'sp_006', 'sp_007',
           'sp_008', 'sp_008_b', 'sp_009']
@@ -107,7 +108,7 @@ def stale_nodes(root, lv, reference, clip=None):
             i, j = int(round((x - s.min_x) / s.pitch)), int(round((z - s.min_z) / s.pitch))
             if not (1 <= i < s.nx - 1 and 1 <= j < s.nz - 1):
                 continue
-            g = y - 0.95
+            g = y - mohsoldier.Y_OFFSET
             ok = False
             for dj in (-1, 0, 1):
                 c0 = (j + dj) * s.nx + i

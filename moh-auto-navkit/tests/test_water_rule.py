@@ -1,5 +1,5 @@
 r"""NavKit's water rule (navbuild.water_tops / deep_water) on a sample grid built here (no game data): ground more
-than 1.5 m under the water is left out, shallower ground and ground outside the water are kept, stacked floors
+than the limit (MOH: the soldier's WaterDepthLimit, 1.4 m) under the water is left out, shallower ground and ground outside the water are kept, stacked floors
 are judged by their own height, overlapping water pieces take the higher surface, and no water changes nothing.
 
   python test_water_rule.py

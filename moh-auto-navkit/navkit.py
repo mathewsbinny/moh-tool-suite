@@ -51,11 +51,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, 'tools'))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'core'))
 from mohcore import gamecopy  # noqa: E402  (the game copy's layout)
+import mohsoldier  # noqa: E402  (the MOH soldier path data is built for)
 
 DETAILED_BUDGET_MS = 400   # pitch-0.2 runs: ms of sampling per frame - 10x the columns of a normal run, so it must finish
                            # in less game time than a round or a campaign level allows an idle player (150: ONS_MP_002 at
                            # 95 %, SP_006 and SP_007 back at the menu after ~11 min; 400: all 15 levels, 2026-10-22)
-AGENTS = [('normal', '0.4,0.28,1.9', ''), ('high capsule', '0.4,0.6,1.9', '_hi')]   # radius,stepMax,height
+AGENTS = [('normal', f'{mohsoldier.RADIUS},{mohsoldier.STEP},{mohsoldier.HEIGHT}', ''),          # radius,stepMax,height
+          ('high capsule', f'{mohsoldier.RADIUS},{mohsoldier.HIGH_STEP},{mohsoldier.HEIGHT}', '_hi')]
 SAMPLE_DONE = re.compile(r'navsample: (done|no physics|cannot create|empty box|needs \[debug\])')
 BACKUP_SUFFIX = '.opfor-orig'
 NEW_SUFFIX = '.opfor-new'       # where NavKit installed onto a level that had no path data to back up
@@ -274,13 +276,20 @@ def unpack_level(pr, lv, L, log, common=()):
     os.makedirs(pkg, exist_ok=True)
     if layers:
         pr.unpack(layers[0], dist, log)
-        if len(layers) == 1:
+        sources = []
+        if len(layers) > 1:
+            pr.unpack(layers[-1], pkg, log)
+            sources = [pkg]
+        if not any(_has_partition(d, lv) for d in [dist] + sources):
+            # a DLC mode's level-00 bundle holds only resources (mp_01_elimination, mp_02_koth2, mp_04_koth): its
+            # partition (levels\<lv>.dbx, levels\<lv>\) is in its map's common_mp_<nn> bundle
+            sources += list(common)
+        if not sources:
             return []
-        pr.unpack(layers[-1], pkg, log)
-        sources = [pkg]
     else:
         os.makedirs(dist, exist_ok=True)
         sources = list(common)
+    from_common = [os.path.normcase(c) for c in common]
     copied, seen = [], set()
     for src in sources:
         top = os.path.join(src, 'levels')
@@ -288,7 +297,8 @@ def unpack_level(pr, lv, L, log, common=()):
             for f in fs:
                 rel = os.path.relpath(os.path.join(dp, f), top)
                 first = rel.replace('\\', '/').split('/')[0].lower()
-                if not layers and not (first == lv or first.startswith(lv + '.') or first.startswith(lv + '_description')):
+                if os.path.normcase(src) in from_common and not (first == lv or first.startswith(lv + '.') or
+                                                                  first.startswith(lv + '_description')):
                     continue                                   # from a common bundle: this level's files only
                 if rel.lower() in seen:
                     continue
@@ -298,8 +308,14 @@ def unpack_level(pr, lv, L, log, common=()):
                 shutil.copyfile(os.path.join(dp, f), dst)
                 copied.append(rel)
     open(os.path.join(L, 'pkg_overlay.txt'), 'w', encoding='utf-8').write('\n'.join(sorted(copied)) + '\n')
-    log(f'  {"patch" if layers else "common"} overlay: {len(copied)} level files laid over {os.path.relpath(dist, pr.root)}')
+    log(f'  {"patch / common" if layers else "common"} overlay: {len(copied)} level files laid over '
+        f'{os.path.relpath(dist, pr.root)}')
     return copied
+
+
+def _has_partition(d, lv):
+    return any(os.path.splitext(os.path.basename(f))[0].lower() == lv
+               for f in glob.glob(os.path.join(d, 'levels', '*.*')) if f.lower().endswith(('.dbx', '.xml')))
 
 
 def level_partition_name(L, lv, common=()):
@@ -313,7 +329,9 @@ def level_partition_name(L, lv, common=()):
 
 def sampling_box(pr, lv, L):
     """Box (minX, minZ, maxX, maxZ) and y (bottom, top): the original path data's extent plus 20 m if the
-    level has path data, else the extent of its placed objects and spawn points plus 50 m."""
+    level has path data (none on MOH), else its combat areas plus navsample_offline.COMBAT_MARGIN (every MOH MP level:
+    90-430 m across), else the extent of its placed objects and spawn points plus 50 m. y: the objects and spawns in
+    the box, 30 m below to 150 m above."""
     pts = []
     ref = pr.dice_pathdata(lv)
     if ref:
@@ -325,6 +343,10 @@ def sampling_box(pr, lv, L):
                 for line in a.outline:
                     pts.extend((p[0], p[1], p[2]) for p in line)
         margin, source = 20.0, 'extent of the level\'s path data + 20 m'
+    combat = None
+    if not pts:
+        import navsample_offline
+        combat = navsample_offline.combat_box(pr.root, lv)
     if not pts:
         for name in ('objects.json', 'group_instances.json'):
             for o in json.load(open(os.path.join(L, name))):
@@ -333,6 +355,12 @@ def sampling_box(pr, lv, L):
         margin, source = 50.0, 'extent of the level\'s objects + 50 m'
     if not pts:
         raise NavKitError(f'{lv}: no objects to size the sampling box - pass --box and --y')
+    if combat:
+        inside = [p for p in pts if combat[0] <= p[0] <= combat[2] and combat[1] <= p[2] <= combat[3]] or pts
+        ys = [p[1] for p in inside]
+        yr = [math.floor((min(ys) - 30) / 10) * 10, math.ceil((max(ys) + 150) / 10) * 10]
+        import navsample_offline
+        return combat, yr, f'combat areas + {navsample_offline.COMBAT_MARGIN:g} m'
     xs, ys, zs = zip(*pts)
     box = [math.floor((min(xs) - margin) / 10) * 10, math.floor((min(zs) - margin) / 10) * 10,
            math.ceil((max(xs) + margin) / 10) * 10, math.ceil((max(zs) + margin) / 10) * 10]
@@ -497,9 +525,30 @@ def sample(pr, lv, log=print, confirm=None, box=None, y=None, timeout=3600, pitc
 
 
 def sample_level(pr, lv, log=print, confirm=None, box=None, y=None):
-    """The level's sampling: the normal and high-capsule runs at 0.8 m, then - when the level has detailed sectors
-    (detailed.py: flagged objects, stacked floors in the 0.8 m samples) - the same two at 0.2 m over those sectors.
-    One confirmation for all game launches."""
+    """The level's sampling, offline (tools\\navsample_offline.py: the level's Havok collision and height field, no game
+    launch - MOH's OPFOR core has no in-game sampler): the normal and high-capsule runs at 0.8 m, then - when the level
+    has detailed sectors (stacked floors in the 0.8 m samples) - the same two at 0.2 m over those sectors. The files go
+    where build reads them (work\\navsample\\<lv>_navkit*.bin)."""
+    import navsample_offline
+    if box or y:
+        s = ensure_settings(pr, lv)
+        s['box'], s['y'] = box or s['box'], y or s['y']
+        json.dump(s, open(pr.settings_path(lv), 'w'), indent=1)
+    out = navsample_offline.sample_level(pr.root, lv, log=log)
+    os.makedirs(os.path.join(pr.work, 'navsample'), exist_ok=True)
+    for suf in ('_p02', '_hi_p02'):                          # a stale 0.2 m pair would be built in
+        if os.path.isfile(pr.samples(lv, suf)):
+            os.remove(pr.samples(lv, suf))
+    for p in out['p08'] + (out['p02'] or []):
+        shutil.copyfile(p, os.path.join(pr.work, 'navsample', os.path.basename(p)))
+    log(f'  samples in {os.path.relpath(os.path.join(pr.work, "navsample"), pr.root)}: 0.8 m pair'
+        + (f', 0.2 m pair over {len(out["detailed"])} detailed sectors' if out['p02'] else ''))
+    return True
+
+
+def sample_level_ingame(pr, lv, log=print, confirm=None, box=None, y=None):
+    """BFBC2's route (kept for an OPFOR core with the [dev] navsample sampler; MOH's has none): the in-game runs, the
+    normal and high-capsule runs at 0.8 m, then 0.2 m over the detailed sectors. One confirmation for all launches."""
     if confirm and not confirm(f'NavKit will start the game up to four times to sample {lv.upper()} (two 0.8 m runs, then '
                                'two 0.2 m runs over its detailed zones; about 1-15 minutes each; the screen may stay '
                                'black). Continue?'):
@@ -857,8 +906,10 @@ def main(argv):
         if cmd == 'prepare':
             prepare(pr, lv, box=box, y=y)
         elif cmd == 'sample':
-            if '--pitch' in opts:
+            if '--ingame' in opts and '--pitch' in opts:     # BFBC2's in-game sampler (not in MOH's OPFOR core)
                 sample(pr, lv, confirm=confirm, box=box, y=y, pitch=float(opts['--pitch']))
+            elif '--ingame' in opts:
+                sample_level_ingame(pr, lv, confirm=confirm, box=box, y=y)
             else:
                 sample_level(pr, lv, confirm=confirm, box=box, y=y)
         elif cmd == 'build':

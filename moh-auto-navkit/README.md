@@ -1,22 +1,79 @@
 # MOH NavKit
 
-Standalone tooling to create AI navigation data (`pathdata.hpd`) for Medal of Honor (2010)
-levels – including multiplayer maps that never shipped with any – so the game's own AI can move on
-them. Developed for Project OPFOR and published for other modders as `moh-auto-navkit`, the automated
-navigation-data generator of the MOH suite. It measures levels through Project OPFOR's in-game sampler,
-so it needs an OPFOR install, plus the suite's FbrbTool and DbxEdit. Since 2026-10-26 the same measurements can
-also be computed without the game (`tools\navsample_offline.py`, "Standalone sampling"; not yet part of
-`navkit.py` or the window).
+Standalone tooling to create navigation data (`pathdata.hpd`: walkable areas and a route graph) for the
+multiplayer maps of Medal of Honor (2010), which never shipped with any, so that Project OPFOR's bots can move on
+them. Developed for Project OPFOR: Medal of Honor and published for other modders as `moh-auto-navkit`, the
+automated navigation-data generator of the MOH suite. It reads each level's collision (Havok) and terrain from the
+game copy and samples them offline (`tools\navsample_offline.py`) - no game launch - so it needs OPFOR's game copy
+and the suite's FbrbTool and DbxEdit.
 
 **To use it, start with [QUICKSTART.md](QUICKSTART.md).** Double-click `navkitGUI.pyw` for the window, or
 run `python navkit.py` from a command prompt.
 
 ## Why
 
-MOH's AI uses Autodesk Kynapse. The game ships the Kynapse *runtime* (which loads `pathdata.hpd`)
-under DICE's runtime licence, but the *generator* that DICE used to create that data is a separately
-licensed developer tool: the copy that is still inside the game executable stops with a FLEXnet
-licence error. NavKit replaces it with independent code.
+MOH's multiplayer client (`MoHMPGame.exe`, build 592256) has no AI and no pathfinding: no Kynapse runtime, no AI
+types, no path data in any level. NavKit came from Project OPFOR's Battlefield: Bad Company 2 work, whose client
+runs DICE's Kynapse AI on `pathdata.hpd` files; for MOH it builds the same kind of file for OPFOR's own bot runtime
+(rsnav, through an RSNV export - `project-opfor-moh\BOT_PLAN.md`). The file format is Kynapse's, documented in the
+specification; the generator DICE used is licensed middleware NavKit replaces with independent code.
+
+## Medal of Honor MP (2026-10-30)
+
+What NavKit assumes about MOH's maps, and how it was checked (on all 26 MP levels unpacked by `navkit.py prepare`):
+
+| What | MOH | Was (BFBC2) | Where |
+|---|---|---|---|
+| The soldier | radius 0.35, height 1.8 (crouched 1.15), step 0.3, slope 45 deg, jump 0.65, water 1.4 m (`DefaultSoldierPhysics`) | Kynapse infantry: 0.4, 1.9, 0.28, 40 deg, -, 1.5 | `tools\mohsoldier.py`, used by every tool |
+| Sampling capsule | the physics' nominal capsule: sphere centres 0.65 .. 1.45 m over the surface (high run 1.0 .. 1.45); steep terrain blocked from 59 deg (high run 69) | fitted to BFBC2's in-game sampler: 0.95 .. 1.5 (1.15 .. 1.5), ~64 deg | `navsample_offline.CAPSULE_AXIS` |
+| Route edges | straight neighbours link up to the slope limit over one cell: 0.8 m at pitch 0.8, 0.3 m (the step) at 0.2 | DICE's 0.6 / 0.3 | `navbuild.LINK_STEP` |
+| Node / outline height | ground + 0.9 m (half the soldier) | + 0.95 | `mohsoldier.Y_OFFSET` |
+| Headroom | ground with a surface 0.5-1.9 m above it is not walkable | 0.5-2.0 | `navwalk.HEADROOM_BAND` |
+| Collision layers | per asset `h` and `c` bodies; `e` only where an asset has neither (158 of MP_01's 1,153: tires, propane tanks, crates, static vehicles); the level-wide groups' `detail` | `h`, `c` | `navsample_offline.BODIES = 'hcdE'` |
+| Terrain | 1 m per sample: 1024^2 over +-512 m or 512^2 over +-256 m; checked: 92 MP_01 spawn points median 0.00 m above it | 1-2 m, BFBC2 campaign | core `terrain.py` |
+| Sampling box | the combat areas (every stage, both teams) + 20 m: 150-480 m across | path data extent, or objects + 50 m (MOH: 3 km of backdrop) | `navsample_offline.combat_box`, `navkit.sampling_box` |
+| Sector offsets | NavKit's own rule (one 100 m sector below the box): -4 .. 1 (MP_08: -4, 1; was -16, -16 with the backdrop box) | the level's `SectorOffsets` asset | `navkit.json`; MOH reads no `SectorOffsets` - `tools\apply_sector_offsets.py` is BFBC2-only |
+| Seeds and anchors | spawn points: `AlternateSpawnEntityData` (MP_01: 92) and `SoldierSpawnEntityData` (10, markers 18 m up - unused) | `SoldierSpawnEntityData` | `levelobjects.SPAWN_TYPES` |
+| Route targets | objectives: `ObjectiveTriggerEntityData` (Combat Mission), `CapturePointEntityData` (Sector Control, Hot Zone, Objective Raid; Combat Mission's are team-base markers 18 m up, ignored: they attach to no ground within 1 m) | AI orders (`AreaGeometryEntityData`, `AreaOrderEntityData`) - none in MOH MP | `levelobjects.order_points`, core `level.OBJECTIVE_BLUEPRINTS` |
+| Detailed zones (0.2 m) | stacked floors only: MOH sets `NeedsDetailedPathfinding` on no blueprint (1,135 false) | the flag (it was read from the wrong flag: `ForbidPathfinding`) | `detailed.py` |
+| Ladders | MP_08 (all three modes): 3 x `Ladder_01`, 4 m; mp_01_elimination: 2 x `Ladder_01_Long`, 6 m; none elsewhere | - | `ladders.py` |
+| DLC modes | `mp_01_elimination`, `mp_02_koth2`, `mp_04_koth`: their level bundle holds resources only; the partition is in the map's `common_mp_<nn>` | - | `navkit.unpack_level` |
+| Terrain of a mode | a mode reads its map's terrain (MP_05_Domination: MP_05_TDM), a DLC mode another map's (MP_01_Elimination: MP_01_TDM) | - | core `level.terrain_name`, `heightfield_of` |
+
+Per level (combat areas, terrain in the box, slopes, spawns, objectives; `prepare` boxes):
+
+| Level | Combat areas (x, z) | Terrain | Ground in box (m) | > 45 deg | Spawns | Objectives | Ladders |
+|---|---|---|---|---|---|---|---|
+| mp_01 | -127..106, -250..200 | 1024, +-512 | 42-66 | 0.9 % | 92 | 5 + 11 bases | |
+| mp_02 | -168..264, -245..-53 | 1024, +-512 | 33-119 | 19 % | 64 | 5 + 11 bases | |
+| mp_02_koth | -74..76, -44..36 | 512 | 29-83 | 28 % | 19 | 1 | |
+| mp_03_elimination | -75..30, -96..-4 | 512 | 43-89 | 30 % | 24 | | |
+| mp_04 | -101..115, -210..224 | 1024, +-512 | 73-132 | 3.7 % | 98 | 5 + 11 bases | |
+| mp_05_* | -43..54, -30..84 | 512 | 100-105 | 0 | 29-51 | 0-3 | |
+| mp_06_* | -32..83, -57..68 | 512 | 64-92 | 9 % | 25-37 | 0-3 | |
+| mp_07_koth | -30..91, -48..35 | 512 | 23-33 | 3.8 % | 27 | 1 | |
+| mp_08_* | -190..-67, 253..360 | 1024, +-512 | 86-130 | 11 % | 27-34 | 0-3 | 3 |
+| mp_09_* | -61..54, -43..50 | 512 | 59-66 | 1 % | 25-48 | 0-3 | |
+| mp_10_* | -50..39, -9..75 | 512 | 108-119 | 1.8 % | 22-35 | 0-3 | |
+
+The steep maps (mp_02, mp_02_koth, mp_03_elimination: 19-30 % of their ground over 45 deg) are where the slope limit
+matters most; the flat urban ones (mp_05, mp_09, mp_10) are mostly buildings and detailed zones.
+
+Built and checked offline (2026-10-30; `navkit.py sample / build / check`; the check's points are the level's spawn
+points and objectives, pairs counted between those on walkable areas):
+
+| Level | Sample / build (s) | Detailed sectors | Nodes / edges | Ladders linked | Spawn / objective pairs route-connected |
+|---|---|---|---|---|---|
+| mp_05_tdm (Kandahar Marketplace) | 46 / 241 | 5 | 4,170 / 12,966 | - | 85.0 % - 3 spawns in doorway recesses of the town's outer wall, beside 1 m bush collision boxes, join the ground outside it |
+| mp_03_elimination (DLC) | 31 / 77 | 2 | 2,001 / 4,720 | - | 100 % |
+| mp_08_tdm (Kunar Base) | 36 / 70 | | 3,378 / 7,400 | 3 of 3 | 100 % |
+| mp_01_elimination (DLC partition) | 44 / 123 | | 3,997 / 11,716 | 2 of 2 | 100 % |
+| mp_02_koth (Hot Zone, 28 % of ground over 45 deg) | 30 / 101 | | 2,768 / 7,052 | - | 100 % (71.9 % before `navislands.ANCHOR_SERVED`: three spawns beside a wrecked humvee kept the wreck's 6-node island, their nearest node) |
+
+The other 21 levels are prepared (boxes, spawns, objectives, ladders) but not yet built.
+
+Not done for MOH: no in-game check exists (MOH's OPFOR core has no sampler, and no bots yet), so the capsule and the
+`e`-layer rule are the physics' and the data's word, not measured against the game; the RSNV exporter.
 
 ## Rules (clean-room approach)
 
@@ -29,8 +86,9 @@ licence error. NavKit replaces it with independent code.
    libraries (e.g. recastnavigation, zlib licence). No Kynapse code is copied or translated
    line-by-line, no Kynapse binaries are shipped, and the tool never runs Kynapse code.
 3. Game data (levels, collision meshes) always comes from the user's own installation.
-4. Geometry is sampled through the **game engine's own physics queries** (DICE code, via Project
-   OPFOR's `[dev] navsample` option) or read from the level's own data files – never through Kynapse.
+4. Geometry is read from the level's own data files (its Havok collision and terrain; for MOH the only route) or,
+   on BFBC2, sampled through the game engine's own physics queries (Project OPFOR BFBC2's `[dev] navsample`) –
+   never through Kynapse.
    Observations of the original generator are limited to its boundary with DICE's code (the point
    queries it makes, the files it writes) and its output data.
 5. The private folder `research\kynapse mapbuilder research\` is git-ignored and never published.
@@ -78,6 +136,11 @@ src\                 (reserved, empty)
 ```
 
 ## Standalone sampling (2026-10-26)
+
+*History: this section and the ones after it were written for BFBC2 (its campaign `sp_*`, Napisal's Onslaught
+`ons_mp_*` and its MP maps `mp_001` ... `mp_012sr`, against DICE's path data and OPFOR BFBC2's in-game sampler). The
+method holds for MOH; the numbers, level names and DICE comparisons are BFBC2's. Since 2026-10-30 `navkit.py sample`
+runs this sampler (MOH: section "Medal of Honor MP").*
 
 `tools\navsample_offline.py` writes the same files as OPFOR's `[dev] navsample` (version 3, both capsule runs, 0.8 m
 and 0.2 m over the detailed sectors) without starting the game, into `work\navsample_offline\`. NavKit's build takes

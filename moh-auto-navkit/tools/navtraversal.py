@@ -22,9 +22,10 @@ import os
 from collections import Counter
 
 import numpy as np
+import mohsoldier  # noqa: E402
 
 FORMAT, VERSION = 'moh-traversal', 1
-JOIN_XZ, JOIN_Y, Y_OFFSET = 15.0, 4.0, 0.95
+JOIN_XZ, JOIN_Y, Y_OFFSET = 15.0, 4.0, mohsoldier.Y_OFFSET
 
 
 def graph(f):

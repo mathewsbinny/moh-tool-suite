@@ -31,18 +31,23 @@ What an in-game sample is (navsample.cpp), and how it is reproduced here:
     Convex shapes are solid too (a start inside one hits at once); triangle meshes (MOPP) are not.
   * mesh triangles are hit from above only (one-sided: in-game samples never have a downward normal); convex shapes
     and boxes by their upper faces.
-  * each recorded surface gets a capsule test: radius 0.4, from stepMax (0.28; the high run 0.6) to 1.9 m above it.
-    Here: for every triangle near the column, the height interval of the vertical line inside (triangle + 0.4 m ball)
+  * each recorded surface gets a capsule test: the soldier's (mohsoldier.py; MOH radius 0.35, from the step height
+    0.3 - the high run the jump height 0.65 - to 1.8 m above it; BFBC2's sampler 0.4, 0.28 / 0.6, 1.9).
+    Here: for every triangle near the column, the height interval of the vertical line inside (triangle + radius ball)
     is computed exactly (face slab, edge cylinders, vertex spheres); a surface is blocked when its capsule axis
-    (y + stepMax + 0.4 .. y + 1.9 - 0.4) meets one. The height field: its height under the capsule's lower
+    (CAPSULE_AXIS: y + bottom + radius .. y + height - radius) meets one. The height field: its height under the capsule's lower
     hemisphere, sampled on rings (0, 0.1 .. 0.4 m, 16 directions).
   * hit info (the record's three words): the shape vtables the in-game file has - terrain TERRAIN_SHAPE_VTABLE,
     mesh MESH_SHAPE_VTABLE, convex / box CONVEX_SHAPE_VTABLE - then RAY_SHAPE_VTABLE, then 0. No soldiers are in this
     world (navwalk treats them as absent anyway).
 
 Which Havok bodies are in the world: every blueprint's *_Havok.res holds one or two physics systems of rigid bodies
-named 'h', 'e' or 'c' (one letter). Measured against the in-game samples (README, "Standalone sampling"): the AI ray
-and capsule see bodies named BODIES (default 'h' and 'c'); 'e' bodies are another layer.
+named 'h', 'e' or 'c' (one letter); MOH's level-wide group assets (StaticModelGroupEntity_HavokAsset - the buildings -
+and MiddlegrowthModelGroupEntity_HavokAsset) name theirs 'detail'. Measured against BFBC2's in-game samples (README,
+"Standalone sampling"): the AI ray and capsule see bodies named 'h' and 'c'; 'e' bodies are another, finer layer. MOH
+(1,153 assets of MP_01 and its commons): 879 have e + h, 80 h only, 14 c + e + h, 158 e only - props (tires, propane
+tanks, crates) and static vehicles, whose 'e' is their only collision - and the group assets 'detail'. So BODIES is
+'hcdE': h, c and detail bodies, and an asset's e bodies when it has no h or c body (marked 'E').
 
 Clean room: only the level's data files are read (Havok packfiles through hkpack.py, the height field through
 core's terrain.py); no game code runs.
@@ -70,22 +75,26 @@ SKIP = 0.1                      # gap below a hit where the next cast starts
 SOLID_STEP, MAX_SOLID = 0.5, 10.0
 AT_ONCE = RAY_RADIUS + 0.02     # a hit this close below the start: the cast started inside geometry
 MAX_LAYERS = 32
-RADIUS, HEIGHT = 0.4, 1.9
-CAP_BOTTOMS = {'': 0.28, '_hi': 0.6}     # normal and high-capsule runs
+import mohsoldier  # noqa: E402
+RADIUS, HEIGHT = mohsoldier.RADIUS, mohsoldier.HEIGHT          # MOH's soldier: 0.35, 1.8 (BFBC2 0.4, 1.9)
+CAP_BOTTOMS = {'': mohsoldier.STEP, '_hi': mohsoldier.HIGH_STEP}   # normal and high-capsule runs: 0.3 / 0.65 (BFBC2 0.28 / 0.6)
 # The capsule as the in-game flags show it: heights of its lowest and highest sphere centres above the surface, per
 # run. navsample.cpp asks for one from stepMax to 1.9 m (sphere centres 0.68 .. 1.5 m; high run 1.0 .. 1.5), but its
 # blocked flags fit a capsule whose lowest centre is higher: fitted on sp_004_b's 0.8 m runs (agreement of the blocked
 # flag on matched surfaces, terrain / objects): normal 0.68 -> 98.9 / 94.3 %, 0.95 -> 99.3 / 96.6 %; high 1.0 -> 98.9 /
 # 94.9 %, 1.15 -> 99.2 / 96.3 % (the upper end hardly matters: 1.3 .. 1.9 within 0.1 point). Steep terrain shows it
 # plainly: in game the normal run's capsule is blocked from a slope of ~64 deg, the high run's from ~69 deg.
-CAPSULE_AXIS = {0.28: (0.95, 1.5), 0.6: (1.15, 1.5)}
+# MOH has no in-game sampler to fit against: its capsule is the physics' nominal one (mohsoldier.capsule_axis:
+# 0.65 .. 1.45 and 1.0 .. 1.45). BFBC2's fitted values stay below for its levels.
+CAPSULE_AXIS = {b: mohsoldier.capsule_axis(b) for b in CAP_BOTTOMS.values()}
+CAPSULE_AXIS_BFBC2 = {0.28: (0.95, 1.5), 0.6: (1.15, 1.5)}
 
 TERRAIN_SHAPE_VTABLE = 0x1454D14
 MESH_SHAPE_VTABLE = 0x1483B38    # MOPP-tree object hits in the in-game files (44,298 of sp_004_b's 0.8 m samples)
 CONVEX_SHAPE_VTABLE = 0x14864B0  # the rare third kind in the in-game files (39 on sp_004_b)
 RAY_SHAPE_VTABLE = 0x14852B8     # second word of every in-game record (the cast's own body)
 
-BODIES = 'hc'                    # rigid-body names whose collision the AI queries see (measured, see the docstring)
+BODIES = 'hcdE'                  # rigid-body names whose collision the soldier meets (see the docstring; BFBC2: 'hc')
 CONVEX_RADIUS = True             # convex shapes and boxes grown by their convex radius (Havok's 0.05 m shell)
 TERRAIN_LIFT = True              # terrain hits RAY_RADIUS * (1 - ny) above the height field, as in game
 CONVEX_IN_TREE_HOLLOW = False    # convex pieces in a MOPP tree (a list shape under it) are not solid: the cast hits
@@ -382,7 +391,10 @@ def level_geometry(level_dir, extra_bases=(), log=print, box=None):
                 solid_id += 1
             else:
                 S.append(np.full(len(w), -1, np.int32))
-            B.append(np.full(len(w), ord(name[:1] or '?'), np.uint8))
+            letter = name[:1] or '?'
+            if letter == 'e' and not ({nm[:1] for _s, nm, *_r in cache[bp]} & {'h', 'c'}):
+                letter = 'E'                    # the asset's only collision layer (see BODIES)
+            B.append(np.full(len(w), ord(letter), np.uint8))
             I.append(np.full(len(w), iid, np.int32))
             OFF.append(np.full(len(w), bool(gone)))
             V.append(np.full(len(w), rk, np.uint8))
@@ -877,7 +889,7 @@ def capsule_blocked(grid, cols, ys, tris, bottoms, hf=None, radius=RADIUS, heigh
 
 
 # --- one sampling run ------------------------------------------------------------------------------------------------
-def sample_grid(grid, geom, hf, log=print, bottoms=(0.28, 0.6)):
+def sample_grid(grid, geom, hf, log=print, bottoms=(mohsoldier.STEP, mohsoldier.HIGH_STEP)):
     """Samples a grid: {bottom: navsample.Samples} for each capsule bottom (one cast, one capsule test per bottom)."""
     t0 = time.time()
     # mesh hits (up-facing triangles), convex faces (their upper faces), terrain per column
@@ -989,7 +1001,7 @@ def write(path, s):
 
 
 # --- comparison with an in-game file ---------------------------------------------------------------------------------
-def compare(a, b, tol=0.1, slope=40.0, log=print, both_only=True):
+def compare(a, b, tol=0.1, slope=mohsoldier.SLOPE, log=print, both_only=True):
     """Per column agreement of two sample files on the same grid (a: in game, b: offline). Columns empty in a (outside
     the in-game run's rectangles) are left out when both_only. Returns a dict of measures."""
     if (a.nx, a.nz) != (b.nx, b.nz) or abs(a.min_x - b.min_x) > 1e-3 or abs(a.min_z - b.min_z) > 1e-3:
@@ -1133,10 +1145,17 @@ def sample_level(root, lv, log=print, bodies=None):
 
 
 # --- stock multiplayer maps ------------------------------------------------------------------------------------------
-STOCK_MP = ['mp_001', 'mp_001sr', 'mp_002', 'mp_002sr', 'mp_003', 'mp_004', 'mp_004sdm', 'mp_005', 'mp_005sr', 'mp_006',
-            'mp_006cq', 'mp_006sdm', 'mp_007', 'mp_007sdm', 'mp_008', 'mp_009cq', 'mp_009gr', 'mp_009sdm', 'mp_012gr',
-            'mp_012sr']
-COMBAT_MARGIN = 50.0     # sampling box of a map without path data: its combat areas' extent plus this (m)
+# Medal of Honor's 26 MP levels (package.mft): Combat Mission (no suffix), Team Assault (_tdm), Sector Control
+# (_domination), Objective Raid (_overrun), Clean Sweep (_elimination, DLC), Hot Zone (_koth / _koth2, DLC). Each mode
+# has its own partition, objects and combat area, so every one is built on its own.
+STOCK_MP = ['mp_01', 'mp_01_elimination', 'mp_02', 'mp_02_koth', 'mp_02_koth2', 'mp_03_elimination', 'mp_04',
+            'mp_04_koth', 'mp_05_domination', 'mp_05_overrun', 'mp_05_tdm', 'mp_06_domination', 'mp_06_elimination',
+            'mp_06_overrun', 'mp_06_tdm', 'mp_07_koth', 'mp_08_domination', 'mp_08_overrun', 'mp_08_tdm',
+            'mp_09_domination', 'mp_09_elimination', 'mp_09_overrun', 'mp_09_tdm', 'mp_10_domination', 'mp_10_overrun',
+            'mp_10_tdm']
+COMBAT_MARGIN = 20.0     # sampling box: the level's combat areas' extent plus this (m). MOH's combat areas are 90-430 m
+                         # across and a soldier outside one dies after TimeToReturn (5 s), so 20 m holds every route;
+                         # its placed objects reach 1.5 km past them (MP_01: -1410..1680) - backdrop. (BFBC2: 50)
 
 
 def combat_box(root, lv, margin=COMBAT_MARGIN):

@@ -1,5 +1,12 @@
 # Kynapse navigation data in Medal of Honor (2010) – specification (work in progress)
 
+> **Which game (2026-10-30).** This specification was written on Battlefield: Bad Company 2 (its campaign files,
+> Napisal's Onslaught maps and its MP client, build 795745) and carried over when the suite moved to Medal of Honor
+> (2010). MOH's MP client (`MoHMPGame.exe` build 592256) has no Kynapse runtime and no path data; NavKit writes the
+> same format for OPFOR's own bot runtime. The file format (§4) holds as written; the soldier sizes in §2-3 (radius
+> 0.4, StepMax 0.28, height 1.9, slope 40) are BFBC2's Kynapse settings - MOH builds use its own soldier
+> (`..\tools\mohsoldier.py`: 0.35, 0.3, 1.8, 45), node heights ground + 0.9 instead of 0.95.
+
 Interoperability specification written from reverse engineering (see `..\README.md` for the
 clean-room rules). Sources: the user's own game files (`Output\win32\ai\levels\<level>\{infantry,
 vehicle}\pathdata.hpd`, 25 campaign files; byte-identical on Xbox 360), Napisal's MP files, and the

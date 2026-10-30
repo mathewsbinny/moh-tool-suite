@@ -1,7 +1,8 @@
 r"""NavKit's area link rule (navbuild.Level.connected with rule 'terrain' / 'raw', navbuild.components) on a sample
-grid built here (no game data): straight neighbours join an area up to a raw 0.6 m step, diagonal ones when a
-route through a side column (walkable or not) has both steps within 0.6 m; the slope rule still joins a steep
-plane, so portals and routes keep it; object surfaces use the slope rule under 'terrain'.
+grid built here (no game data): straight neighbours join an area up to a raw step of navbuild.LINK_STEP (MOH: the
+45 deg slope limit over one 0.8 m cell, 0.8 m; BFBC2: DICE's 0.6), diagonal ones when a route through a side column
+(walkable or not) has both steps within it; the slope rule still joins a plane steeper than that, so portals and
+routes keep it; object surfaces use the slope rule under 'terrain'.
 
   python test_area_link.py
 """
@@ -13,6 +14,7 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'tools'))
+import mohsoldier  # noqa: E402
 import navbuild  # noqa: E402
 import navwalk  # noqa: E402
 
@@ -32,7 +34,7 @@ def level(heights, keep=None, terrain=None):
     s = SimpleNamespace(nx=nx, nz=nz, pitch=0.8, min_x=0.0, min_z=0.0, start=np.arange(h.size + 1),
                         y=h.ravel().astype(np.float32), normal=n.astype(np.float32), hit=hit)
     k = np.ones(h.size, bool) if keep is None else np.array(keep, bool).ravel()
-    return navbuild.Level(s, k, 0.28)
+    return navbuild.Level(s, k, mohsoldier.STEP)
 
 
 def main(argv):
@@ -43,28 +45,30 @@ def main(argv):
         failed += not ok
         print(f'{"ok  " if ok else "FAIL"} {what}')
 
-    lv = level([[0.0, 0.55, 1.2]])
-    check(lv.connected(0, 1, 1, 0, 'raw'), 'straight step 0.55 m links')
-    check(not lv.connected(1, 2, 1, 0, 'raw'), 'straight step 0.65 m does not')
+    L = navbuild.LINK_STEP                               # 0.8 on MOH
+    lo, hi = L - 0.05, L + 0.1
+    lv = level([[0.0, lo, lo + hi]])
+    check(lv.connected(0, 1, 1, 0, 'raw'), f'straight step {lo:.2f} m links')
+    check(not lv.connected(1, 2, 1, 0, 'raw'), f'straight step {hi:.2f} m does not')
 
-    plane = level([[0.0, 0.66, 1.32, 1.98]])           # a 39.5 deg plane: walkable, steps of 0.66 m
+    plane = level([[0.0, hi, 2 * hi, 3 * hi]])           # a plane steeper than one link step per cell
     check(lv is not None and plane.connected(0, 1, 1, 0, 'slope'), 'the slope rule joins a steep plane')
     check(not plane.connected(0, 1, 1, 0, 'raw'), 'the raw rule cuts it')
     check(len(navbuild.components(plane, {k: (k, 0) for k in range(4)}, 0, 0)) == (4 if navbuild.AREA_LINK != 'slope' else 1),
           'components: the steep plane gives one area per cell')
 
-    # diagonal (0,0) -> (1,1), step 0.9: through side (1,0) at 0.45 (both steps 0.45) - links, even unwalkable
-    d = level([[0.0, 0.45], [5.0, 0.9]], keep=[[1, 0], [0, 1]])
-    check(d.connected(0, 3, 1, 1, 'raw'), 'diagonal links through an unwalkable side cell with steps within 0.6 m')
-    d2 = level([[0.0, 5.0], [5.0, 0.9]])
+    # diagonal (0,0) -> (1,1), a step of 2 x lo: through side (1,0) at lo (both steps lo) - links, even unwalkable
+    d = level([[0.0, lo], [5.0, 2 * lo]], keep=[[1, 0], [0, 1]])
+    check(d.connected(0, 3, 1, 1, 'raw'), 'diagonal links through an unwalkable side cell with steps within the link step')
+    d2 = level([[0.0, 5.0], [5.0, 2 * lo]])
     check(not d2.connected(0, 3, 1, 1, 'raw'), 'diagonal without such a side route does not link')
     d3 = level([[0.0, 0.0], [0.0, 0.0]])
     check(d3.connected(0, 3, 1, 1, 'raw'), 'flat diagonal links')
 
-    obj = level([[0.0, 0.66, 1.32]], terrain=[[1, 0, 0]])
+    obj = level([[0.0, hi, 2 * hi]], terrain=[[1, 0, 0]])
     check(obj.connected(1, 2, 1, 0, 'terrain'), "'terrain': two object surfaces use the slope rule")
     check(obj.connected(0, 1, 1, 0, 'terrain'), "'terrain': terrain next to an object uses the slope rule")
-    ter = level([[0.0, 0.66, 1.32]], terrain=[[1, 1, 1]])
+    ter = level([[0.0, hi, 2 * hi]], terrain=[[1, 1, 1]])
     check(not ter.connected(0, 1, 1, 0, 'terrain'), "'terrain': two terrain surfaces use the raw rule")
     check(navbuild.LINK_RULE == 'slope', 'portals and routes use the slope rule')
     print('all passed' if not failed else f'{failed} check(s) failed')

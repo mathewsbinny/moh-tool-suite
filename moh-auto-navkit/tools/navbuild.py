@@ -25,7 +25,7 @@ Pipeline (research/KYNAPSE_SPEC.md sections 3 and 4):
 
 Detailed zones (pitch 0.2) are a second pass at pitch 0.2 over the chosen sectors (build(..., detailed=...)).
 
-Usage: navbuild.py <samples.bin> <forbid_tris.npy> <XOffset> <ZOffset> <out.hpd> [--step 0.28]
+Usage: navbuild.py <samples.bin> <forbid_tris.npy> <XOffset> <ZOffset> <out.hpd> [--step 0.3]
                    [--dynamic dynamic_tris.npy] [--high samples_high_capsule.bin] [--narrow samples_narrow.bin]
                    [--stairs stair_tris.npy] [--exclude exclude_tris.npy] [--exclude-foot exclude_footprint_tris.npy]
                    [--no-detail]   (no D lines / F cells: DETAIL_FEATURES off)
@@ -43,6 +43,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hpdtool  # noqa: E402
 import kymesh  # noqa: E402
+import mohsoldier  # noqa: E402
 import navislands  # noqa: E402
 import navsample  # noqa: E402
 import navwalk  # noqa: E402
@@ -89,11 +90,11 @@ AREA_LINK = 'terrain'           # which neighbours one area joins: 'terrain' = D
                                 # the steep pieces DICE cuts off stay reachable (NavKit lacks some of the steep cells
                                 # that join them in DICE's data: the DICE rule there cost sp_004_b 9 connectivity points)
 LINK_RULE = 'slope'             # the rule for everything else
-LINK_STEP = 0.6                 # DICE: straight neighbours link when their raw height step is <= 0.6 m (36.9 deg at
-                                # 0.8 m - steeper walkable cells are cut off, DICE's single-cell areas); diagonal ones
-                                # when a route through either side cell (walkable or not) has both steps <= 0.6 m
-                                # (sp_004_b terrain: linked steps max 0.591, unlinked mostly 0.62+; KYNAPSE_SPEC.md 4.5)
-RADIUS = 0.4
+LINK_STEP = mohsoldier.link_step(0.8)   # straight neighbours link when their raw height step is <= this (MOH: the
+                                # 45 deg slope limit over one 0.8 m cell, 0.8 m); diagonal ones when a route through
+                                # either side cell (walkable or not) has both steps <= it. (BFBC2: DICE's 0.6 m - 36.9 deg
+                                # at 0.8 m; sp_004_b terrain: linked steps max 0.591; KYNAPSE_SPEC.md 4.5)
+RADIUS = mohsoldier.RADIUS
 RESOLUTION = 0.025
 DIST_EDGE_MAX = 15.0
 NODE_COVER = {'detailed': 4.0, 'normal': None}   # coverage nodes: in each area, a route node wherever walkable ground is
@@ -132,8 +133,8 @@ REPAIR_STATS = {}               # nodes added per pass (summed over sectors; for
 LADDER_STATS = {}               # ladder links made, and ladders whose ends lie in two sectors (not linked yet)
 BORDER_NODE_SPACING = 10.0
 BRIDGE_UNION = True             # 45-degree bridges: outline from the exact union (bridge_union) - False: clip_bridges
-MAX_WATER_DEPTH = 1.5           # ground deeper under water is not walkable (DICE's data: 99.9 % of its ground under
-                                # water is within 1.45 m, median over 11 levels; navwater.py)
+MAX_WATER_DEPTH = mohsoldier.WATER_DEPTH   # ground deeper under water is not walkable: MOH's WaterDepthLimit 1.4 m
+                                # (BFBC2: 1.5, DICE's data: 99.9 % of its ground under water within 1.45 m; navwater.py)
 DETAIL_FEATURES = True          # D lines and F cells (navdetail.py): sides between two cells of one area whose heights
                                 # differ by more than DETAIL_STEP are D lines (both sides) or, where a cell has both sides
                                 # along an axis broken, F cells - and not outline (E), as in DICE's files. The runtime's
@@ -215,14 +216,15 @@ def deep_water(s, water, limit=MAX_WATER_DEPTH):
     col = np.repeat(np.arange(s.nx * s.nz), np.diff(s.start[:s.nx * s.nz + 1]))
     return (top[col] - s.y.astype(np.float64)) > limit
 AREA_Y_MIN = 0.0                # area height range relative to its ground: DICE's convention (see build())
-AREA_Y_MAX = 1.52
-Y_OFFSET = 0.95                 # outline / node height above the ground (EntityHeight / 2)
+AREA_Y_MAX = mohsoldier.AREA_Y_MAX        # 0.8 x the soldier's height (BFBC2 1.52)
+Y_OFFSET = mohsoldier.Y_OFFSET            # outline / node height above the ground: half the soldier's height (BFBC2 0.95)
 HEADER = (2, 2, 0, 1, 0, 0, 0, 0, 2, 0, 8, 0) + (0,) * 20 + (36, 12, 1, 0)
 DETAILED_PITCH = 0.2            # DICE's detailed zones: whole sectors at pitch 0.2, resolution 0.05, 6 x 6 tiles of 20 m
                                 # (header rect -0.2 .. 100.22; KYNAPSE_SPEC.md 4.5). Built in a second pass (build(...,
                                 # detailed=...)) from a pitch-0.2 sampling run, merged with the normal build.
 CARRY_RADIUS = 1.0              # a shared node carried across a mixed-pitch seam is attached to ground within this (m)
-DETAILED_LINK_STEP = 0.3        # LINK_STEP in detailed zones: DICE's one-cell height steps inside its pitch-0.2 areas
+DETAILED_LINK_STEP = mohsoldier.link_step(DETAILED_PITCH)   # LINK_STEP in detailed zones (MOH: the 0.3 m step; BFBC2
+                                # 0.3 from DICE's one-cell height steps inside its pitch-0.2 areas
                                 # (ONS_MP_002, 10,353 outline segments) p99 0.31, p99.9 0.42, max 0.49 m - about half its
                                 # pitch-0.8 values (p99 0.96, max 1.03), not a quarter: the same slope (0.15 m) cut sloped
                                 # ground into 3x DICE's areas (8,400 against 2,640; 2026-10-21)
@@ -238,7 +240,7 @@ def set_pitch(p):
     TILES = 6 if detailed else 3
     TILE = int(round((20 if detailed else 40) / p))       # 100 / 50 samples
     RESOLUTION = 0.05 if detailed else 0.025
-    LINK_STEP = DETAILED_LINK_STEP if detailed else 0.6
+    LINK_STEP = DETAILED_LINK_STEP if detailed else mohsoldier.link_step(0.8)
 
 
 class Level:
@@ -753,7 +755,7 @@ def trace_emit(level, areas, per_area, gi0, gj0, ox, oz):
     return result
 
 
-def build(samples_path, tris_path, xoff, zoff, out_path, step=0.28, log=print, dynamic_path=None, high_path=None,
+def build(samples_path, tris_path, xoff, zoff, out_path, step=mohsoldier.STEP, log=print, dynamic_path=None, high_path=None,
           narrow_path=None, stairs_path=None, exclude_path=None, exclude_foot_path=None, seeds=None, edits=None,
           water=None, max_water_depth=MAX_WATER_DEPTH, bounds=None, order_points=None, detailed=None, ladders=None,
           area_orders=None):
@@ -794,7 +796,7 @@ def build(samples_path, tris_path, xoff, zoff, out_path, step=0.28, log=print, d
     write_file(graphs, out_path, log, t0)
 
 
-def stage(samples_path, high_path, xoff, zoff, tris_path=None, step=0.28, log=print, dynamic_path=None,
+def stage(samples_path, high_path, xoff, zoff, tris_path=None, step=mohsoldier.STEP, log=print, dynamic_path=None,
           narrow_path=None, stairs_path=None, exclude_path=None, exclude_foot_path=None, seeds=None, edits=None,
           water=None, max_water_depth=MAX_WATER_DEPTH, bounds=None, order_points=None, area_orders=None, t0=None,
           sector_filter=None, grid_min=None, id_start=1, carried=None, seed_points=None, ladders=None):
@@ -1705,7 +1707,7 @@ def main(argv):
         global DETAIL_FEATURES
         DETAIL_FEATURES = False
     build(args[0], args[1] if args[1] != '-' else None, int(args[2]), int(args[3]), args[4],
-          float(opts.get('--step', 0.28)), dynamic_path=opts.get('--dynamic'), high_path=opts.get('--high'),
+          float(opts.get('--step', mohsoldier.STEP)), dynamic_path=opts.get('--dynamic'), high_path=opts.get('--high'),
           narrow_path=opts.get('--narrow'), stairs_path=opts.get('--stairs'), exclude_path=opts.get('--exclude'),
           exclude_foot_path=opts.get('--exclude-foot'))
     return 0

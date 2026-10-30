@@ -63,6 +63,9 @@ def main(argv):
     check(101 in kept_ids(out), 'an anchor (spawn / order) on the pocket floor keeps it')
     out = navislands.prune(g, anchors=[(20.5, 10.0, 5.0)])
     check(101 not in kept_ids(out), 'an anchor on the main floor below does not keep the pocket')
+    out = navislands.prune(g, anchors=[(20.5, 10.3, 7.0)])
+    check(101 not in kept_ids(out), 'an anchor beside the pocket nearer the main floor\'s height (a spawn by a wreck) '
+                                    'does not keep it (ANCHOR_SERVED)')
 
     big = chain(list(range(401, 401 + navislands.SHADOW_MIN_NODES)), [0.5 * q for q in range(navislands.SHADOW_MIN_NODES)], 10.8, 9.0)
     out = navislands.prune([sector([main_, big])])

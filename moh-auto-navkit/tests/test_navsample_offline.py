@@ -75,40 +75,43 @@ def main(argv):
         failed += not ok
         print(f'{"ok  " if ok else "FAIL"} {what}')
 
+    B = no.CAP_BOTTOMS['']                           # the normal run's capsule bottom (MOH 0.3)
     flat = heightfield(lambda x, z: np.zeros_like(x))
     grid = no.Grid(0.8, -4.0, -4.0, 11, 11, -10.0, 50.0)
 
     # 1. a deck 0.3 m thick at 3 m over flat terrain: its top, its underside (hit from below the top, normal flipped
     #    up) and the terrain; beside it only the terrain
     g = geometry([(slab(-2.1, -2.1, 2.1, 2.1, 2.7, 3.0), no.KIND_MESH)])
-    s = no.sample_grid(grid, g, flat, log=lambda *a: None)[0.28]
+    s = no.sample_grid(grid, g, flat, log=lambda *a: None)[B]
     col = column(s, 0.0, 0.0)
     check([c[0] for c in col] == [3.0, 2.7, 0.0] and all(c[1] > 0.99 for c in col),
           f'deck: top, underside (normal facing the ray), terrain: {col}')
     check(col[0][3] == no.MESH_SHAPE_VTABLE and col[2][3] == no.TERRAIN_SHAPE_VTABLE, 'deck: hit kinds (mesh, terrain)')
-    check(col[1][2] == 0 and col[2][2] == 0, 'deck: the capsule (up to 1.9 m) fits under a 2.7 m underside')
+    # the underside 'surface' (inside the 0.3 m deck) is blocked: MOH's capsule starts 0.3 m over it (BFBC2's fitted
+    # in-game capsule started 0.55 m over it, clear of the deck's top); the terrain under the deck is clear
+    check(col[1][2] == 1 and col[2][2] == 0, 'deck: the capsule (up to the soldier height, 1.8 m) fits under a 2.7 m underside')
     check(column(s, 3.2, 3.2) == [(0.0, 1.0, 0, no.TERRAIN_SHAPE_VTABLE)], 'beside the deck: terrain only, clear')
 
     # 2. a thin slab (0.07 m): its underside is within 0.17 m of its top - the cast starting 0.1 under the top hits it
     #    at once and steps down 0.5 m, so it is not recorded
     g = geometry([(slab(-2.1, -2.1, 2.1, 2.1, 2.93, 3.0), no.KIND_MESH)])
-    s = no.sample_grid(grid, g, flat, log=lambda *a: None)[0.28]
+    s = no.sample_grid(grid, g, flat, log=lambda *a: None)[B]
     check([c[0] for c in column(s, 0.0, 0.0)] == [3.0, 0.0], f'thin slab: underside skipped {column(s, 0.0, 0.0)}')
 
     # 3. nothing under the terrain is recorded (a box buried 2 m deep)
     g = geometry([(slab(-2.1, -2.1, 2.1, 2.1, -3.0, -2.0), no.KIND_MESH)])
-    s = no.sample_grid(grid, g, flat, log=lambda *a: None)[0.28]
+    s = no.sample_grid(grid, g, flat, log=lambda *a: None)[B]
     check([c[0] for c in column(s, 0.0, 0.0)] == [0.0], 'buried box: not recorded')
 
     # 4. a convex block standing on the terrain is solid: its top (grown by nothing here), then the cast steps
     #    through it and stops in the terrain - the terrain under it is not recorded
     g = geometry([(slab(-2.1, -2.1, 2.1, 2.1, 0.0, 3.0), no.KIND_CONVEX)])
-    s = no.sample_grid(grid, g, flat, log=lambda *a: None)[0.28]
+    s = no.sample_grid(grid, g, flat, log=lambda *a: None)[B]
     col = column(s, 0.0, 0.0)
     check([c[0] for c in col] == [3.0] and col[0][3] == no.CONVEX_SHAPE_VTABLE, f'convex block: top only {col}')
     # the same block as a mesh: hollow, its floor (the bottom face from inside) is recorded at the terrain height
     g = geometry([(slab(-2.1, -2.1, 2.1, 2.1, 0.0, 3.0), no.KIND_MESH)])
-    s = no.sample_grid(grid, g, flat, log=lambda *a: None)[0.28]
+    s = no.sample_grid(grid, g, flat, log=lambda *a: None)[B]
     check([c[0] for c in column(s, 0.0, 0.0)] == [3.0, 0.0], f'mesh block: top and bottom {column(s, 0.0, 0.0)}')
 
     # 5. the sphere touching an edge: a thin vertical sheet (no thickness) 0.03 m beside a column gives a hit at its
@@ -116,7 +119,7 @@ def main(argv):
     sheet = np.array([[[0.03, 0.0, -2.0], [0.03, 1.0, -2.0], [0.03, 1.0, 2.0]],
                       [[0.03, 0.0, -2.0], [0.03, 1.0, 2.0], [0.03, 0.0, 2.0]]])
     g = geometry([(sheet, no.KIND_MESH)])
-    s = no.sample_grid(grid, g, flat, log=lambda *a: None)[0.28]
+    s = no.sample_grid(grid, g, flat, log=lambda *a: None)[B]
     col = column(s, 0.0, 0.0)
     check(col[0][0] == 1.0 and col[0][1] > 0.5, f'sheet 0.03 m away: its top edge hit, normal up-ish {col}')
     check([c[0] for c in column(s, 0.8, 0.0)] == [0.0], 'sheet 0.77 m away: terrain only')
@@ -125,23 +128,23 @@ def main(argv):
     wall = slab(0.3, -4.0, 0.5, 4.0, -1.0, 5.0)
     g = geometry([(wall, no.KIND_MESH)])
     s = no.sample_grid(grid, g, flat, log=lambda *a: None)
-    check(column(s[0.28], 0.0, 0.0)[0][2] == 1, 'wall 0.3 m away: blocked')
-    check(column(s[0.28], -0.8, 0.0)[0][2] == 0, 'wall 1.1 m away: clear')
+    check(column(s[B], 0.0, 0.0)[0][2] == 1, 'wall 0.3 m away: blocked')
+    check(column(s[B], -0.8, 0.0)[0][2] == 0, 'wall 1.1 m away: clear')
     for top, want in ((1.7, 1), (2.6, 0)):
         g = geometry([(slab(-4.0, -4.0, 4.0, 4.0, top, top + 0.3), no.KIND_MESH)])
         s = no.sample_grid(grid, g, flat, log=lambda *a: None)
-        check(column(s[0.28], 0.0, 0.0)[-1][2] == want, f'ceiling (underside) {top} m over the floor: blocked {want}')
+        check(column(s[B], 0.0, 0.0)[-1][2] == want, f'ceiling (underside) {top} m over the floor: blocked {want}')
 
-    # 7. steep terrain: blocked from about 64 degrees in the normal run (CAPSULE_AXIS), 30 and 55 degrees clear
+    # 7. steep terrain: blocked from about 59 degrees in the normal run with MOH's capsule (BFBC2's fitted one: ~64), 30 and 55 clear
     for deg, want in ((30, 0), (55, 0), (72, 1)):
         hf = heightfield(lambda x, z, d=deg: x * math.tan(math.radians(d)), size=128)
-        s = no.sample_grid(no.Grid(0.8, -1.6, -1.6, 5, 5, -100.0, 100.0), geometry([]), hf, log=lambda *a: None)[0.28]
+        s = no.sample_grid(no.Grid(0.8, -1.6, -1.6, 5, 5, -100.0, 100.0), geometry([]), hf, log=lambda *a: None)[B]
         col = column(s, 0.0, 0.0)
         check(len(col) == 1 and col[0][2] == want and abs(col[0][1] - math.cos(math.radians(deg))) < 0.02,
               f'terrain at {deg} deg: blocked {want}, normal {col}')
     # the reported terrain height is lifted by RAY_RADIUS * (1 - ny) on a slope, as the in-game samples show
     hf = heightfield(lambda x, z: x * math.tan(math.radians(45)), size=128)
-    s = no.sample_grid(no.Grid(0.8, -1.6, -1.6, 5, 5, -100.0, 100.0), geometry([]), hf, log=lambda *a: None)[0.28]
+    s = no.sample_grid(no.Grid(0.8, -1.6, -1.6, 5, 5, -100.0, 100.0), geometry([]), hf, log=lambda *a: None)[B]
     y = column(s, 0.0, 0.0)[0][0]
     check(abs(y - (float(hf.height(0.0, 0.0)) + no.RAY_RADIUS * (1 - math.cos(math.radians(45))))) < 0.002,
           f'terrain lift on a 45 deg slope: {y}')
@@ -168,13 +171,13 @@ def main(argv):
 
     # 9. the file: navsample.cpp's version-3 layout, read back by navsample.py
     g = geometry([(slab(-2.1, -2.1, 2.1, 2.1, 2.7, 3.0), no.KIND_MESH)])
-    s = no.sample_grid(grid, g, flat, log=lambda *a: None)[0.6]
+    s = no.sample_grid(grid, g, flat, log=lambda *a: None)[no.CAP_BOTTOMS['_hi']]
     with tempfile.TemporaryDirectory() as d:
         p = os.path.join(d, 'x_navkit_hi.bin')
         no.write(p, s)
         b, cols = navsample.load(p)
         check(cols == grid.ncols and np.array_equal(b.start, s.start) and np.allclose(b.y, s.y) and
-              np.array_equal(b.flags, s.flags) and np.array_equal(b.hit, s.hit) and abs(b.cap_bottom - 0.6) < 1e-6,
+              np.array_equal(b.flags, s.flags) and np.array_equal(b.hit, s.hit) and abs(b.cap_bottom - no.CAP_BOTTOMS['_hi']) < 1e-6,
               'file written and read back (version 3)')
         r = no.compare(b, s, log=lambda *a: None)
         check(r['layers_equal'] == 100 and r['surf_a_found'] == 100 and r['blocked_agree_matched'] == 100,

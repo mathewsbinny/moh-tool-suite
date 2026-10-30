@@ -22,7 +22,7 @@ if not os.path.isfile(PYTHON):
     PYTHON = sys.executable
 
 STEPS = [('prepare', '1. Prepare', 'Unpack the level, extract its objects, choose the sampling box'),
-         ('sample', '2. Sample in game', 'Starts the game twice to sample the level\'s collision (a few minutes)'),
+         ('sample', '2. Sample', 'Samples the level\'s collision from its files - no game launch (a few minutes)'),
          ('build', '3. Build', 'Generate pathdata.hpd from the samples'),
          ('check', '4. Check', 'Score the result (against the original path data if the level has one)')]
 
@@ -56,7 +56,7 @@ class App:
         self.combo = ttk.Combobox(row, textvariable=self.level, state='readonly', width=34)
         self.combo.pack(side='left', padx=(6, 6))
         self.combo.bind('<<ComboboxSelected>>', lambda e: self.refresh())
-        self.only_ai = tk.BooleanVar(value=True)
+        self.only_ai = tk.BooleanVar(value=False)       # MOH's MP levels ship no AI path data: all are listed
         ttk.Checkbutton(row, text='Only levels with AI', variable=self.only_ai,
                         command=self.fill_levels).pack(side='left')
         ttk.Button(row, text='Open output folder', command=self.open_folder).pack(side='right')
@@ -149,7 +149,7 @@ class App:
         orig = self.pr.dice_pathdata(lv)
         self.installed['text'] = ('NavKit\'s path data is INSTALLED in the game for this level.' if inst else
                                   'The game uses the level\'s original path data.' if orig else
-                                  'This level has no AI path data in the game (see QUICKSTART.md: levels without AI).')
+                                  'MOH\'s MP levels ship no AI path data: NavKit\'s build is for OPFOR\'s bots.')
 
     def area_args(self):
         vals = [self.vars[k].get().strip() for k in ('minx', 'minz', 'maxx', 'maxz', 'ybot', 'ytop')]
@@ -174,12 +174,7 @@ class App:
             messagebox.showerror('NavKit', str(e))
             return
         if cmd in ('sample', 'all'):
-            if not messagebox.askokcancel('NavKit', f'NavKit will now start the game twice to sample {lv.upper()}.\n\n'
-                                          'Each run takes a few minutes; the game window may stay black. '
-                                          'Do not use the game while it runs - NavKit closes it when done.\n\n'
-                                          'Close the game first if it is open.'):
-                return
-            args.append('--yes')
+            args.append('--yes')               # offline sampling: no game launch to confirm
         if cmd == 'install' and not messagebox.askokcancel(
                 'NavKit', f'Install NavKit\'s path data for {lv.upper()} into the game?\n\n'
                           'The original file is kept and can be put back with "Restore original".'):

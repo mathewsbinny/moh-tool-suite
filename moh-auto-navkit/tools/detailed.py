@@ -23,21 +23,23 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))   # navkit.py
 import levelobjects  # noqa: E402
+import mohsoldier  # noqa: E402
 import navsample  # noqa: E402
 
 MARGIN = 5.0           # m around a flagged object's collision box
 STACKED_MIN = 100      # stacked-floor columns (0.8 m samples) that make a sector detailed
 STACK_GAP = 2.0        # m between the lowest and highest standable surface of a column
-SLOPE_MAX = 40.0
+SLOPE_MAX = mohsoldier.SLOPE                 # the soldier's MaxAscendAngle (BFBC2 40)
 
 
 def flagged_sectors(level_dir, common, xoff, zoff, margin=MARGIN):
-    """Sectors (X, Z) within margin of a NeedsDetailedPathfinding object's collision box (objects.json)."""
+    """Sectors (X, Z) within margin of a NeedsDetailedPathfinding object's collision box (objects.json; the flag is
+    blueprint_flags' sixth item - MOH's MP blueprints set it on none, 1,135 false)."""
     bases = [b for b in [os.path.join(level_dir, 'pkg'), os.path.join(level_dir, 'dist')] + list(common) if os.path.isdir(b)]
     hv = levelobjects.havok_index(bases)
     out, cache = set(), {}
     for o in json.load(open(os.path.join(level_dir, 'objects.json'))):
-        if not (o.get('flags') and o['flags'][0]):
+        if not (o.get('flags') and len(o['flags']) > 5 and o['flags'][5]):
             continue
         bp = o['bp'].lower()
         if bp not in cache:

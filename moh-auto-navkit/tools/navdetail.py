@@ -23,8 +23,9 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import kymesh  # noqa: E402
+import mohsoldier  # noqa: E402
 
-Y_OFFSET = 0.95                       # stored heights are ground + EntityHeight / 2 (as the outline)
+Y_OFFSET = mohsoldier.Y_OFFSET        # stored heights are ground + the soldier's height / 2 (as the outline)
 SIDES = ((1, 0), (-1, 0), (0, 1), (0, -1))
 CUT_CORNERS = True                    # a cell with D on exactly two perpendicular sides: its own line is the diagonal across
                                       # it (the corner cut), the neighbours' lines an L round the corner (DICE, sp_01: 409

@@ -25,6 +25,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import hpdtool  # noqa: E402
 import kymesh  # noqa: E402
+import mohsoldier  # noqa: E402
 
 DY = 1.0                    # height tolerance of a match (m): one floor
 GRID = 0.8                  # ground cells of navdiff (shared-ground test)
@@ -138,7 +139,7 @@ def _shared(ref_d, ground):
         owner = (line + side) // 2
         x, z = (owner * P, along * P) if axis == 'x' else (along * P, owner * P)
         ij = (int(round(x / GRID)), int(round(z / GRID)))
-        keep = [y for y in ys if any(abs(gy + 0.95 - y) <= DY for gy in ground.get(ij, ()))]
+        keep = [y for y in ys if any(abs(gy + mohsoldier.Y_OFFSET - y) <= DY for gy in ground.get(ij, ()))]
         if keep:
             out[key] = keep
     return out

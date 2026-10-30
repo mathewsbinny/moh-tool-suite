@@ -2,16 +2,16 @@
 
 Rules (research/KYNAPSE_SPEC.md section 3):
   1. a sampled surface is a candidate when the soldier capsule fits and its normal is within
-     GroundSlopeMax (40 deg) of vertical;
+     the soldier's MaxAscendAngle (MOH 45 deg; BFBC2's Kynapse GroundSlopeMax 40) of vertical;
   2. surfaces lying on a ForbidPathfinding object (forbid_tris.npy from levelobjects.py) are removed;
   3. regions grow 8-connected between neighbouring samples when the height step, relative to the local
-     ground plane (from both normals), is at most StepMax (0.28 m);
+     ground plane (from both normals), is at most the soldier's StepHeight (MOH 0.3 m; BFBC2 StepMax 0.28);
   4. regions are seeded on the sector perimeter lines (1.6 m inside every 100 m sector edge), on terrain
      and objects alike (terrain-only seeding cut off decks, platforms and building floors: sp_01's AI order
      positions went from 463 to 613 of DICE's 633 with object seeds; terrain_seeds_only=True restores it).
 
 Usage:
-  navwalk.py score <samples.bin> <pathdata.hpd> [forbid_tris.npy] [--step 0.28] [--slope 40]
+  navwalk.py score <samples.bin> <pathdata.hpd> [forbid_tris.npy] [--step 0.3] [--slope 45]
                    scores at the 0.8 m sample grid (a 0.2 m run is subsampled)
 """
 import math
@@ -22,13 +22,15 @@ from collections import defaultdict, deque
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mohsoldier  # noqa: E402
 import navsample  # noqa: E402
 
 TERRAIN_SHAPE_VTABLE = 0x1454D14   # shape class of terrain hits (navsample version 2 hit info), build 795745
 CHARACTER_SHAPE_VTABLE = 0x1483378  # shape class of soldiers standing in the level while it is sampled (their spawns):
                                     # hits 1.3-1.5 m over the floor at the spawn points (sp_006: player, Sweetwater,
                                     # Redford; sp_004_b: player), 137 soldier-sized clusters on sp_004_b; build 795745
-HEADROOM_BAND = (0.5, 2.0)          # ground with the next sampled surface above it this much higher is not walkable: DICE
+HEADROOM_BAND = (0.5, mohsoldier.HEADROOM)   # (MOH: up to the soldier's 1.8 m + 0.1; BFBC2 1.9 + 0.1)
+                                    # ground with the next sampled surface above it this much higher is not walkable: DICE
                                     # keeps almost none (sp_004_b and sp_01, NavKit ground cells against DICE's: 0.4-0.5 m
                                     # above 50-52 % kept, 0.5-1.2 m 0-18 %, 1.2-2.0 m 0-1 %; from 2.0 m sp_004_b 32-94 %).
                                     # Under 0.5 m: thin things (steps, rails) - kept. None to switch off. (2026-10-19)
@@ -91,7 +93,7 @@ OBJECTIVE_REACH = 1.5
 OBJECTIVE_STATS = {}
 STEEP_TERRAIN_SPAN = 0.8
 STEEP_STATS = {}
-OUTLINE_Y_OFFSET = 0.95            # outline heights in pathdata.hpd = ground + EntityHeight / 2
+OUTLINE_Y_OFFSET = mohsoldier.Y_OFFSET   # outline heights in pathdata.hpd = ground + the soldier's height / 2
 PITCH = 0.8
 SECTOR = 100.0
 
@@ -430,7 +432,7 @@ def objective_floor(s, onf, ok, character, slope_ok, points, reach=None):
     return add
 
 
-def walkable(s, forbid_tris=None, slope=40.0, step=0.28, terrain_seeds_only=False, dynamic_tris=None,
+def walkable(s, forbid_tris=None, slope=mohsoldier.SLOPE, step=mohsoldier.STEP, terrain_seeds_only=False, dynamic_tris=None,
              high_capsule=None, stairs=True, return_gradients=False, narrow_capsule=None, raised_bars=False,
              stair_tris=None, exclude_tris=None, exclude_footprint_tris=None, forbid_tol=0.08,
              extra_seeds=None, return_stairs=False, force_walkable=None, force_unwalkable=None, unseeds=None,
@@ -547,7 +549,7 @@ def walkable(s, forbid_tris=None, slope=40.0, step=0.28, terrain_seeds_only=Fals
                         continue
                     cc = b * s.nx + a
                     for n in range(s.start[cc], s.start[cc + 1]):
-                        if 0.7 <= y[k] - y[n] <= 1.9 and (s.flags[n] & 2) == 0:
+                        if 0.7 <= y[k] - y[n] <= mohsoldier.HEADROOM and (s.flags[n] & 2) == 0:
                             bar[n] = True
         ok |= bar & slope_ok & ~onf
     if narrow_capsule is not None:
@@ -854,7 +856,7 @@ def main(argv):
     f, _ = navsample.load(args[0])
     s = coarse(f) if abs(f.pitch - PITCH) > 1e-3 else f
     tris = np.load(args[2]) if len(args) > 2 else None
-    keep = walkable(s, tris, float(opts.get('--slope', 40)), float(opts.get('--step', 0.28)))
+    keep = walkable(s, tris, float(opts.get('--slope', mohsoldier.SLOPE)), float(opts.get('--step', mohsoldier.STEP)))
     r = score(s, keep, args[1])
     print(f"reference layers {r['reference']}: found {r['found']:.1f}% (within 0.8 m {r['found_near']:.1f}%), "
           f"extra {r['extra']:.1f}% (far {r['extra_far']:.1f}%); agreement within 0.8 m: {r['within_one_cell']:.2f}%")
