@@ -15,3 +15,5 @@
 00C8DAC0  Blaze redirector connect failure
 01010900  NetConnStartup
 007CE0F0  menus' online events (thiscall: this, event; type at +0x28: 1 connecting, 3 connected, 9 connection failed, 10 login failed, 14 connection lost)  | the OPFOR core quiets types 1, 9 and 14 while offline ([offline] quiet=1, offline.cpp)
+007BFF00  menus' extern / FSCommand name table -> map (the table at 0x0151EAA8: {char* name, u32 id})
+007DA420  menus' extern getter (thiscall: this = UI manager, request; ret 4; switch on the id at 0x007DA50A; isPresenceConnected = UI manager +0x209448)  | the OPFOR core keeps isPresenceConnected at 1 while offline ([offline] presence=1, offline.cpp)
