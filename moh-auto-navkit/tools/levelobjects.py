@@ -54,11 +54,36 @@ OBJECTIVE_TYPES = ('.ObjectiveTriggerEntityData', '.CapturePointEntityData')
 SPAWN_TYPES = ('.SoldierSpawnEntityData', '.AlternateSpawnEntityData')
 
 
+def spawn_marker(body):
+    """Whether a SoldierSpawnEntityData is a spawner's marker, not a place a soldier appears: it lists alternative
+    spawn points and is not one itself (UseAsAlternateSpawnPoint false) - soldiers appear at the alternates. All 132 of
+    MOH's 26 MP levels are (2026-10-31): base markers metres up, one on mp_05's rooftops (25.2, 115.0, 38.1), which the
+    checks took for a spawn nothing routes to."""
+    use = re.search(r'<field name="UseAsAlternateSpawnPoint">(\w+)</field>', body)
+    alts = re.search(r'<array name="AlternativeSpawnPoints">(.*?)</array>', body, re.S)
+    return bool(alts and '<item ' in alts.group(1)) and not (use and use.group(1).lower() == 'true')
+
+
+def spawn_points(level_xml):
+    """The places soldiers appear: the AlternateSpawnEntityData points, and a SoldierSpawnEntityData's own position
+    only where it is not a marker (spawn_marker)."""
+    pts = positions(level_xml, '.AlternateSpawnEntityData')
+    for _typ, _guid, body in xmlinst.instances(level_xml, '.SoldierSpawnEntityData'):
+        if spawn_marker(body):
+            continue
+        t = re.search(r'<complex name="Transform">([^<]*)</complex>', body)
+        if t:
+            v = [float(a) for a in t.group(1).split('/')]
+            if len(v) >= 15 and any(abs(c) > 1e-3 for c in v[12:15]):
+                pts.append(v[12:15])
+    return pts
+
+
 def order_points(level_xml):
-    """Positions route nodes are guaranteed at (navbuild.ORDER_NODES): the level's objectives and spawn points. (BFBC2:
-    every AreaGeometryEntityData - its AI orders' points; on MOH those are combat-area and spawn-area outline
-    vertices, so they are not taken.)"""
-    return positions(level_xml, *(OBJECTIVE_TYPES + SPAWN_TYPES))
+    """Positions route nodes are guaranteed at (navbuild.ORDER_NODES): the level's objectives and spawn points
+    (spawn_points: not the spawners' markers). (BFBC2: every AreaGeometryEntityData - its AI orders' points; on MOH
+    those are combat-area and spawn-area outline vertices, so they are not taken.)"""
+    return positions(level_xml, *OBJECTIVE_TYPES) + spawn_points(level_xml)
 
 
 def area_orders(level_xml):
@@ -184,8 +209,9 @@ def main(argv):
             groups.append({'group': os.path.basename(f), 'bp': bp, 'flags': flags.get(bp),
                            'm': tr[i * 16:(i + 1) * 16]})
     # soldier spawn points (seed points of the path data): MOH places its soldiers at the AlternateSpawnEntityData
-    # points (MP_01: 92, 93 % on the terrain); its SoldierSpawnEntityData are the spawn entities (all at one height)
-    spawns = positions(x, *SPAWN_TYPES)
+    # points (MP_01: 92, 93 % on the terrain); its SoldierSpawnEntityData are the spawners, their positions markers
+    # (spawn_marker: not seeds - a marker over a roof kept the roof as a route island)
+    spawns = spawn_points(x)
     json.dump(spawns, open(os.path.join(level_dir, 'soldier_spawns.json'), 'w'))
     json.dump(order_points(x), open(os.path.join(level_dir, 'order_points.json'), 'w'))
     json.dump(area_orders(x), open(os.path.join(level_dir, 'area_orders.json'), 'w'))

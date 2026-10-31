@@ -1,7 +1,8 @@
 r"""NavKit's MOH soldier (tools\mohsoldier.py): the values every tool takes from it (sampler capsule, walkability,
 link steps, headroom, node heights, water), its derived values, and - when Project OPFOR's game copy has been
 prepared (work\navkit\common) - the same values in the game's DefaultSoldierPhysics. The MOH-specific readers
-beside it: levelobjects' spawn and objective types on a level partition built here.
+beside it: levelobjects' spawn and objective types on a level partition built here (a spawner's marker - a
+SoldierSpawnEntityData listing alternative spawn points - is no spawn point).
 
   python test_mohsoldier.py [<OPFOR root>]
 """
@@ -23,6 +24,13 @@ LEVEL = '''<?xml version="1.0"?>
 \t</instance>
 \t<instance guid="S1" type="GameSharedResources.SoldierSpawnEntityData">
 \t\t<complex name="Transform">1/0/0/0/0/1/0/0/0/0/1/0/1/74.7/2/0</complex>
+\t</instance>
+\t<instance guid="S2" type="GameSharedResources.SoldierSpawnEntityData">
+\t\t<complex name="Transform">1/0/0/0/0/1/0/0/0/0/1/0/3/80/4/0</complex>
+\t\t<array name="AlternativeSpawnPoints">
+\t\t\t<item ref="a1" />
+\t\t</array>
+\t\t<field name="UseAsAlternateSpawnPoint">false</field>
 \t</instance>
 \t<instance guid="O1" type="GameSharedResources.ObjectiveTriggerEntityData">
 \t\t<complex name="Transform">1/0/0/0/0/1/0/0/0/0/1/0/5/6/7/0</complex>
@@ -69,8 +77,9 @@ def main(argv):
         path = os.path.join(d, 'MP_TEST.xml')
         open(path, 'w', encoding='utf-8').write(LEVEL)
         x = LEVEL                                    # levelobjects' readers take the partition's text
-        sp = levelobjects.positions(x, *levelobjects.SPAWN_TYPES)
-        check(sorted(map(tuple, sp)) == [(1.0, 74.7, 2.0), (10.0, 20.0, 30.0)], f'spawns: soldier and alternate {sp}')
+        sp = levelobjects.spawn_points(x)
+        check(sorted(map(tuple, sp)) == [(1.0, 74.7, 2.0), (10.0, 20.0, 30.0)],
+              f'spawns: alternate, and a soldier spawn that is no spawner marker (S2 left out) {sp}')
         op = levelobjects.order_points(x)
         check(sorted(map(tuple, op)) == [(1.0, 74.7, 2.0), (5.0, 6.0, 7.0), (8.0, 9.0, 10.0), (10.0, 20.0, 30.0)],
               f'order points: objectives and spawns, no area-geometry vertices {op}')

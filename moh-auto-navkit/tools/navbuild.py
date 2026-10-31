@@ -1663,8 +1663,12 @@ def add_order_nodes(level, pts, pairs, node_at, area_of, orders, gi0, gj0, ox, o
         if k in node_at:
             continue
         pos = (ox + (gi - gi0) * PITCH, float(level.y[k]) + Y_OFFSET, oz + (gj - gj0) * PITCH)
-        near = [math.hypot(p[1][0] - pos[0], p[1][2] - pos[2]) for p in pts if abs(p[1][1] - pos[1]) < 1.5]
-        if near and min(near) <= ORDER_NODE_MIN:
+        # a node within ORDER_NODE_MIN counts only when the position walks to it in a straight line: one on the other
+        # side of a wall, or on a ledge 0.6 m up, served nothing (mp_10's spawn at (24.0, 113.3, 6.4), in a walled
+        # pocket: a node 1.8 m away beyond its wall stopped the order node, the pocket's own nodes were 6.8 m off and
+        # rsnav found no start node in sight - 2026-10-31)
+        if any(math.hypot(p[1][0] - pos[0], p[1][2] - pos[2]) <= ORDER_NODE_MIN and abs(p[1][1] - pos[1]) < 1.5 and
+               line_walkable(level, k, (gi - gi0, gj - gj0), (p[3], p[4]), gi0, gj0, p[2]) for p in pts):
             continue
         u = len(pts)
         pts.append((new_id(), pos, k, gi - gi0, gj - gj0))

@@ -26,11 +26,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 import hpdtool  # noqa: E402
 from mohcore import xmlinst  # noqa: E402
 import kymesh  # noqa: E402
+import levelobjects  # noqa: E402
 import mohsoldier  # noqa: E402
 
 Y_OFFSET = mohsoldier.Y_OFFSET
 # the places bots go on a MOH MP level: Combat Mission's targets, the capture points of Sector Control, Hot Zone and
 # Objective Raid (Combat Mission's are team-base markers some 18 m up - reported as off the areas), the spawn points
+# (a SoldierSpawnEntityData only where it is not a spawner's marker: levelobjects.spawn_marker)
 MOH_POINT_TYPES = ('ObjectiveTriggerEntityData', 'CapturePointEntityData', 'AlternateSpawnEntityData',
                    'SoldierSpawnEntityData')
 
@@ -72,6 +74,8 @@ def order_points(xml_path):
         for guid, (typ, body) in inst.items():
             short = typ.split('.')[-1]
             if short in MOH_POINT_TYPES:
+                if short == 'SoldierSpawnEntityData' and levelobjects.spawn_marker(body):
+                    continue                # a spawner's marker: soldiers appear at its alternates (2026-10-31)
                 p = pos(body)
                 if p:
                     name = re.search(r'<field name="Name">([^<]*)</field>', body)
