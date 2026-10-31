@@ -1,5 +1,5 @@
 r"""The suite's type checks (pyproject.toml [tool.mypy]): mypy over the typed modules - core\mohcore and NavKit's
-hpdtool, kymesh, hkpack and navsample - with their imports resolved the way the tools run them. Skipped (exit 0, said
+hpdtool, kymesh, hkpack, navsample, navbuild, navwalk, navdrops and navislands - with their imports resolved the way the tools run them. Skipped (exit 0, said
 so) when mypy is not installed: python -m pip install mypy==2.4.1 (the version pyproject.toml pins).
 
   python test_types.py

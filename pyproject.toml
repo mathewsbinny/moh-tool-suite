@@ -56,6 +56,10 @@ files = [
     "moh-auto-navkit/tools/kymesh.py",
     "moh-auto-navkit/tools/hkpack.py",
     "moh-auto-navkit/tools/navsample.py",
+    "moh-auto-navkit/tools/navbuild.py",
+    "moh-auto-navkit/tools/navwalk.py",
+    "moh-auto-navkit/tools/navdrops.py",
+    "moh-auto-navkit/tools/navislands.py",
 ]
 mypy_path = ["core", "moh-auto-navkit/tools", "moh-auto-navkit"]
 explicit_package_bases = true

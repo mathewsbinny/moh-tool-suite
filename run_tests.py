@@ -78,6 +78,8 @@ def tests():
         ('level loader: terrain unpack, water layers, built data', 'quick', [PY, os.path.join(SUITE, 'core', 'tests', 'test_level.py'), '--quick']),
         ('DBX reader: truncated files, built data', 'quick', [PY, os.path.join(SUITE, 'core', 'tests', 'test_dbx.py')]),
         ('Navigation Studio editor: side files, undo, keys, built data', 'quick', [PY, os.path.join(SUITE, 'moh-navigation-studio', 'tests', 'test_editing.py'), '--quick']),
+        ('3D tools offscreen: viewer, Map Inspector, Navigation Studio, overlays, level picker (built data)', 'quick',
+         [PY, os.path.join(SUITE, 'tests', 'test_3d_quick.py')]),
         ('NavKit water rule (ground too deep under water)', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_water_rule.py')]),
         ('NavKit walkability edits (navedits)', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_navedits.py')]),
         ('NavKit area link rule', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_area_link.py')]),

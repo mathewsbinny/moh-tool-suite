@@ -26,9 +26,12 @@ Rules (on the build's kept surfaces, per stage and pitch):
     to n (mp_09_overrun had a 1 m drop to a landing 2.8 m out with no floor before it, through a wall);
   - a diagonal step blocked by a wall (either kind above) in either of the two straight columns beside it (a corner);
   - at most DROP_PER_PAIR links per pair of regions, DROP_SPACING apart, the shortest first.
+
+find fills the DropFindStats its caller passes (no module state).
 """
 import math
 from collections import defaultdict
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -43,15 +46,23 @@ DROP_PER_PAIR = 3
 DROP_MIN_AREA = 4.0       # m2: an upper region smaller than this (a rock top, a crate) gets no drop link
 DROP_SPACING = 4.0        # m
 DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]
-STATS = {}
 
 
-def run_reach(drop, pitch):
+@dataclass
+class DropFindStats:
+    """One find call's counts (for the build's log): step-rule regions, candidate ledges, region pairs, links made."""
+    regions: int = 0
+    candidates: int = 0
+    pairs: int = 0
+    links: int = 0
+
+
+def run_reach(drop: float, pitch: float) -> float:
     """How far out a landing drop metres down can be: the run (mohsoldier.RUN) for the time of the fall, plus a cell."""
     return mohsoldier.RUN * math.sqrt(2.0 * drop / mohsoldier.GRAVITY) + pitch
 
 
-def components(s, keep, link_step):
+def components(s: navsample.Samples, keep: np.ndarray, link_step: float) -> np.ndarray:
     """A label per surface (kept surfaces joined to their 8 neighbours by |dy| <= link_step; -1 for the others)."""
     ks = np.nonzero(keep)[0]
     lab = np.full(len(s.y), -1, np.int64)
@@ -68,7 +79,8 @@ def components(s, keep, link_step):
     layers = int(rank.max()) + 1
     grid = np.full((layers, s.nz, s.nx), -1, np.int64)
     grid[rank, kc // s.nx, kc % s.nx] = ks
-    us, vs = [], []
+    us: list[np.ndarray] = []
+    vs: list[np.ndarray] = []
     for di, dj in ((1, 0), (0, 1), (1, 1), (1, -1)):
         ia0, ia1 = max(0, -di), s.nx - max(0, di)          # a's cell (i, j) pairs with b's (i + di, j + dj)
         ja0, ja1 = max(0, -dj), s.nz - max(0, dj)
@@ -104,23 +116,27 @@ def components(s, keep, link_step):
     return lab
 
 
-def find(s, keep, link_step, pitch):
-    """[(upper surface, lower surface)] drop links of a stage's kept surfaces."""
-    STATS.clear()
+def find(s: navsample.Samples, keep: np.ndarray, link_step: float, pitch: float,
+         stats: DropFindStats | None = None) -> list[tuple[int, int]]:
+    """[(upper surface, lower surface)] drop links of a stage's kept surfaces. stats: a DropFindStats to fill with this
+    call's counts (overwritten; all zero when nothing is kept)."""
+    st = DropFindStats() if stats is None else stats
+    st.regions = st.candidates = st.pairs = st.links = 0
     lab = components(s, keep, link_step)
     ks = np.nonzero(keep)[0]
     if not len(ks):
         return []
-    size = defaultdict(int)
+    size: defaultdict[int, int] = defaultdict(int)
     for v in lab[ks].tolist():
         size[v] += 1
-    largest = max(size, key=size.get)
+    largest = max(size, key=lambda r: size[r])
     y = s.y.astype(np.float64)
     col = np.repeat(np.arange(s.nx * s.nz), np.diff(s.start[:s.nx * s.nz + 1]))
     reach = max(1, int(math.ceil(DROP_REACH / pitch)) + 1)
     head = mohsoldier.HEIGHT
     blocked = navsample.BLOCKED | navsample.FAULT
-    cands = defaultdict(list)                       # (upper region, lower region) -> [(horizontal distance, k, n)]
+    cands: defaultdict[tuple[int, int], list[tuple[float, int, int]]] = defaultdict(list)
+                                                    # (upper region, lower region) -> [(horizontal distance, k, n)]
     small = max(1, int(math.ceil(DROP_MIN_AREA / (pitch * pitch))))
     for k in ks[lab[ks] != largest].tolist():
         if size[int(lab[k])] < small:
@@ -129,7 +145,7 @@ def find(s, keep, link_step, pitch):
         i, j = c % s.nx, c // s.nx
         yk = y[k]
 
-        def cramped(rng):
+        def cramped(rng: range) -> bool:
             # floor at the ledge's height (within a step) only where the capsule does not fit, under something above
             # the head: inside a wall whose surfaces in the body range the sampler never recorded (a mesh wall: only
             # its top - mp_09_overrun's facades). Without anything overhead it is the cramped edge of open ground,
@@ -138,12 +154,12 @@ def find(s, keep, link_step, pitch):
             return (bool(near) and all(s.flags[m] & blocked for m in near) and
                     any(y[m] >= yk + head for m in rng))
 
-        def wall(a, b):
+        def wall(a: int, b: int) -> bool:
             cc = b * s.nx + a
             rng = range(s.start[cc], s.start[cc + 1])
             return any(yk + mohsoldier.STEP < y[m] < yk + head for m in rng) or cramped(rng)
         for di, dj in DIRS:
-            land = None                                     # how far out the first floor at drop height lies
+            land: tuple[float, float] | None = None         # how far out the first floor at drop height lies
             for r in range(1, reach + 1):
                 a, b = i + di * r, j + dj * r
                 dist = r * pitch * math.hypot(di, dj)
@@ -158,7 +174,7 @@ def find(s, keep, link_step, pitch):
                     break                                   # in a wall too tall for the sampled body range
                 if land is None and any(DROP_MIN <= yk - y[m] <= DROP_MAX for m in rng):
                     land = (dist, max(y[m] for m in rng if DROP_MIN <= yk - y[m] <= DROP_MAX))
-                hit = None
+                hit: int | None = None
                 for n in rng:
                     if (keep[n] and lab[n] != lab[k] and size[int(lab[n])] > size[int(lab[k])] and
                             DROP_MIN <= yk - y[n] <= DROP_MAX and land is not None and
@@ -176,10 +192,10 @@ def find(s, keep, link_step, pitch):
                 # the path out over this column: nothing from the ledge's step up to the soldier's height
                 if any(yk + mohsoldier.STEP < y[m] < yk + head for m in rng):
                     break
-    out = []
+    out: list[tuple[int, int]] = []
     for key, lst in cands.items():
         lst.sort()
-        chosen = []
+        chosen: list[tuple[float, float]] = []
         for d, k, n in lst:
             ck = int(col[k])
             px, pz = ck % s.nx * pitch, ck // s.nx * pitch
@@ -188,5 +204,5 @@ def find(s, keep, link_step, pitch):
                 out.append((k, n))
                 if len(chosen) >= DROP_PER_PAIR:
                     break
-    STATS.update(regions=len(size), candidates=sum(len(v) for v in cands.values()), pairs=len(cands), links=len(out))
+    st.regions, st.candidates, st.pairs, st.links = len(size), sum(len(v) for v in cands.values()), len(cands), len(out)
     return out

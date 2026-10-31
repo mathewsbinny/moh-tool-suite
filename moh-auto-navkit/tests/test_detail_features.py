@@ -205,12 +205,12 @@ def main(argv):
     per_area = [{E('x', 0.5, 1): [(1, 0.95)], E('x', 0.5, -1): [(1, 1.65)],       # (0,1)|(1,1): outline on both cells
                  E('z', 0.5, 1): [(1, 0.95)],                                     # (1,0)|(1,1): on one cell only
                  E('x', -0.5, -1): [(0, 0.95), (1, 0.95)]}]                       # the area's own west edge
-    navbuild.DETAIL_STATS.clear()
-    out = navbuild.detail_pass(level, [area], per_area, 0.0, 0.0)
+    dstats = navbuild.DetailStats()
+    out = navbuild.detail_pass(level, [area], per_area, 0.0, 0.0, stats=dstats)
     e = per_area[0]
     check(e[E('x', 0.5, 1)] == [] and e[E('x', 0.5, -1)] == [] and e[E('z', 0.5, 1)] == [(1, 0.95)] and
           e[E('x', -0.5, -1)] == [(0, 0.95), (1, 0.95)], 'detail_pass: a pair of outline sides moved to D, a one-sided one kept, the rest untouched')
-    check(len(out[0][0]) == 2 and navbuild.DETAIL_STATS.get('outline_one_sided') == 1, 'detail_pass: the D lines of the area (two L-shaped), the one-sided side counted')
+    check(len(out[0][0]) == 2 and dstats.outline_one_sided == 1, 'detail_pass: the D lines of the area (two L-shaped), the one-sided side counted')
     # route edges and D sides (DETAIL_BLOCKS_EDGES): a flat 3 x 3 grid, surface k = j * 3 + i
     class Grid:
         y = [0.0] * 9

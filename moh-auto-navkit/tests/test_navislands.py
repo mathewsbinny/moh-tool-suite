@@ -1,7 +1,7 @@
 r"""NavKit's shadow-island rule (navislands.py, SHADOW_ISLANDS) on route graphs built here (no game data): a small route
 island next to a large one loses its edges (and, through navbuild.finalize_graph, its nodes); one with an anchor
 (spawn / AI order on its floor), one far away or far above, and a large one stay; border ids join sectors; with
-SHADOW_OBJECTS_ONLY a pocket on terrain stays (note_nodes records the terrain nodes); the switch off leaves the graphs
+SHADOW_OBJECTS_ONLY a pocket on terrain stays (terrain_nodes gives the terrain nodes); the switch off leaves the graphs
 as they were.
 
   python test_navislands.py
@@ -51,12 +51,13 @@ def main(argv):
     far = chain([201, 202], [20.0, 21.0], 10.0, 40.0)                                    # 35 m away
     roof = chain([301, 302], [30.0, 31.0], 15.5, 6.0)                                    # 5.5 m up
     g = [sector([main_, speck, far, roof])]
-    out = navislands.prune(g)
+    st = navislands.IslandStats()
+    out = navislands.prune(g, stats=st)
     k = kept_ids(out)
     check(101 not in k and 102 not in k, 'a 2-node pocket 0.8 m above the main island, 3 m beside it, loses its edges')
     check(201 in k and 301 in k, 'a pocket 35 m away and one 5.5 m above stay')
     check(all(i in k for i in range(1, 31)), 'the main island stays whole')
-    check(navislands.STATS.get('islands') == 1 and navislands.STATS.get('nodes') == 2, 'stats: 1 island, 2 nodes')
+    check(st.islands == 1 and st.nodes == 2, f'stats: 1 island, 2 nodes ({st})')
 
     out = navislands.prune(g, anchors=[(20.5, 10.8, 8.0)])
     check(101 in kept_ids(out), 'an anchor (spawn / order) on the pocket floor keeps it')
@@ -91,23 +92,23 @@ def main(argv):
     check(501 not in ids and (b | 2) not in ids and 1 in ids, 'finalize_graph drops the pocket nodes (no edges)')
     check(all(e.src < len(nodes) and e.dst < len(nodes) for e in edges), 'edges index the remaining nodes')
 
-    # SHADOW_OBJECTS_ONLY: a pocket on terrain (an island DICE seeds as well) stays; note_nodes records terrain nodes
+    # SHADOW_OBJECTS_ONLY: a pocket on terrain (an island DICE seeds as well) stays; terrain_nodes gives the terrain nodes
     from types import SimpleNamespace
     tpocket = chain([601, 602, 603], [10.0, 11.0, 12.0], 10.4, 9.0)
     lvl = SimpleNamespace(terrain=[False, True, True, True])
-    navislands.TERRAIN_IDS.clear()
-    navislands.note_nodes(lvl, [(601, (0, 0, 0), 1, 0, 0), (602, (0, 0, 0), 2, 0, 0), (603, (0, 0, 0), 3, 0, 0),
-                                (101, (0, 0, 0), 0, 0, 0), (102, (0, 0, 0), None, 0, 0)])
-    check(navislands.TERRAIN_IDS == {601, 602, 603}, 'note_nodes: nodes on terrain surfaces recorded, object / unknown not')
+    terrain = navislands.terrain_nodes(lvl, [(601, (0, 0, 0), 1, 0, 0), (602, (0, 0, 0), 2, 0, 0), (603, (0, 0, 0), 3, 0, 0),
+                                             (101, (0, 0, 0), 0, 0, 0), (102, (0, 0, 0), None, 0, 0)])
+    check(terrain == {601, 602, 603}, 'terrain_nodes: nodes on terrain surfaces given, object / unknown not')
     gt = [sector([main_, speck, tpocket])]
     navislands.SHADOW_OBJECTS_ONLY = True
-    k = kept_ids(navislands.prune(gt))
+    k = kept_ids(navislands.prune(gt, terrain_ids=terrain))
     check(601 in k and 101 not in k, 'objects only: the terrain pocket stays, the object pocket goes')
     navislands.SHADOW_OBJECTS_ONLY = False
-    k = kept_ids(navislands.prune(gt))
+    k = kept_ids(navislands.prune(gt, terrain_ids=terrain))
     check(601 not in k and 101 not in k, 'objects only off: both pockets go')
     navislands.SHADOW_OBJECTS_ONLY = True
-    navislands.TERRAIN_IDS.clear()
+    k = kept_ids(navislands.prune(gt))
+    check(601 not in k, 'no terrain ids given: every node counts as on an object (the pocket goes)')
 
     navislands.SHADOW_ISLANDS = False
     out = navislands.prune(g)

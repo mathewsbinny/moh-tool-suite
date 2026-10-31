@@ -13,11 +13,16 @@ Rules (research/KYNAPSE_SPEC.md section 3):
 Usage:
   navwalk.py score <samples.bin> <pathdata.hpd> [forbid_tris.npy] [--step 0.3] [--slope 45]
                    scores at the 0.8 m sample grid (a 0.2 m run is subsampled)
+
+walkable adds its rules' counts to the WalkStats its caller passes (no module state).
 """
 import math
 import os
 import sys
 from collections import defaultdict, deque
+from collections.abc import Callable, Iterable, Mapping, Sequence, Set
+from dataclasses import dataclass, field
+from typing import Literal, overload
 
 import numpy as np
 
@@ -25,10 +30,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mohsoldier  # noqa: E402
 import navsample  # noqa: E402
 
+Point = Sequence[float]                 # (x, y, z): a seed, anchor, soldier spawn or AI order position
+Ladder = Mapping[str, Sequence[float]]  # a ladder of ladders.py: {'lo': (x, y, z), 'hi': (x, y, z)}
+
 TERRAIN_SHAPE_VTABLE = 0x1454D14   # shape class of terrain hits (navsample version 2 hit info), build 795745
 CHARACTER_SHAPE_VTABLE = 0x1483378  # shape class of soldiers standing in the level while it is sampled (their spawns):
                                     # hits 1.3-1.5 m over the floor at the spawn points (sp_006: player, Sweetwater,
                                     # Redford; sp_004_b: player), 137 soldier-sized clusters on sp_004_b; build 795745
+HEADROOM_BAND: tuple[float, float] | None
 HEADROOM_BAND = (0.5, mohsoldier.HEADROOM)   # (MOH: up to the soldier's 1.8 m + 0.1; BFBC2 1.9 + 0.1)
                                     # ground with the next sampled surface above it this much higher is not walkable: DICE
                                     # keeps almost none (sp_004_b and sp_01, NavKit ground cells against DICE's: 0.4-0.5 m
@@ -48,6 +57,7 @@ STEEP_TERRAIN = False              # terrain whose sampled normal is steeper tha
                                     # 97.3 -> 98.9 but extra ground 6.2 -> 12.0 and over-connection 19 -> 42 %, and
                                     # connectivity only 63.2 -> 63.8 - those routes were cut by something else
 STEEP_TERRAIN_MAX = 55.0
+LIP_WIDTH: int | None
 LIP_WIDTH = 2                      # pitch < 0.5 only: a terrain sample steeper than the slope limit (up to
                                     # STEEP_TERRAIN_MAX) is walkable when walkable ground lies within LIP_WIDTH samples on
                                     # both opposite sides (an axis or a diagonal) with a slope within the limit between them
@@ -56,10 +66,12 @@ LIP_WIDTH = 2                      # pitch < 0.5 only: a terrain sample steeper 
                                     # 81-86 % of terrain under 40 deg and 15 % at 40-45, so a blanket rule is wrong
                                     # (STEEP_TERRAIN); of the lips this accepts DICE covers 40 % (sp_007 window: +0.9 %
                                     # ground, +1.4 % extra; width 3: +1.3 / +3.0). None to switch off
+LIP_OBJECT_RISE: float | None
 LIP_OBJECT_RISE = 0.3              # ... and on objects when the steep sample is within this of the walkable ground on
                                     # both sides: door sills and thresholds (sp_009's aircraft: a 5 cm sill with steep
                                     # sides at every hull-section seam cut the aisle at pitch 0.2), never wall tops or
                                     # ledges; None for terrain only
+LIP_OBJECT_SLOPE_MAX: float | None
 LIP_OBJECT_SLOPE_MAX = None        # a slope cap (deg) on object lips; None: any steepness, above STEEP_TERRAIN_MAX
                                     # only with flat floor on both sides (LIP_OBJECT_FLAT deg; 2026-10-22 evening)
 LIP_OBJECT_FLAT = 15.0
@@ -76,9 +88,9 @@ ROOF_RAISE = 2.0
 ROOF_SHARE = 0.5
 ROOF_NEAR = 2.0
 ROOF_NEAR_DY = 2.5
-ROOF_STATS = {}
 DYNAMIC_ABSENT_HEADROOM = True     # dynamic props do not count as a ceiling for HEADROOM_BAND (they are absent for path
                                     # data - a closed gate's leaves made the floor beside it 'low headroom')
+DYNAMIC_FLOOR: float | None
 DYNAMIC_FLOOR = 0.3                # a surface on a dynamic prop within this of walkable floor in a neighbouring column
                                     # stands for the floor under the prop (the sampler records only a prop lying on the
                                     # floor, e.g. a gate's bottom rail 0.09 m up - its columns were a hole, and at pitch
@@ -90,31 +102,61 @@ OBJECTIVE_FLOOR = True             # an AI order position on a ForbidPathfinding
                                     # (mpobjective) are ForbidPathfinding; the order positions where bots arm them stood
                                     # in its hole - 14 of 15 Onslaught M-COM targets were on no area (2026-10-23)
 OBJECTIVE_REACH = 1.5
-OBJECTIVE_STATS = {}
 STEEP_TERRAIN_SPAN = 0.8
-STEEP_STATS = {}
 OUTLINE_Y_OFFSET = mohsoldier.Y_OFFSET   # outline heights in pathdata.hpd = ground + the soldier's height / 2
 PITCH = 0.8
 SECTOR = 100.0
 
 
-def coarse(f):
+@dataclass
+class RoofStats:
+    """ROOF_PRUNE: step-rule islands seen, islands dropped and their surfaces."""
+    islands: int = 0
+    dropped: int = 0
+    surfaces: int = 0
+
+
+@dataclass
+class ObjectiveStats:
+    """OBJECTIVE_FLOOR: order positions on a forbidden object that kept floor, and the surfaces added."""
+    points: int = 0
+    surfaces: int = 0
+
+
+@dataclass
+class SteepStats:
+    """STEEP_TERRAIN / LIP_WIDTH: steep terrain accepted of the candidates, and narrow lips accepted."""
+    accepted: int = 0
+    candidates: int = 0
+    lips: int = 0
+
+
+@dataclass
+class WalkStats:
+    """The counts of walkable's rules (for reports): walkable adds to them, so one object can sum several calls."""
+    roof: RoofStats = field(default_factory=RoofStats)
+    objective: ObjectiveStats = field(default_factory=ObjectiveStats)
+    steep: SteepStats = field(default_factory=SteepStats)
+
+
+def coarse(f: navsample.Samples) -> navsample.Samples:
     """Every (PITCH / f.pitch)-th column of a fine run, keeping all surfaces of the column."""
     step = int(round(PITCH / f.pitch))
     nx, nz = (f.nx - 1) // step + 1, (f.nz - 1) // step + 1
-    start, idx = [0], []
+    start: list[int] = [0]
+    sel: list[int] = []
     for j in range(nz):
         for i in range(nx):
             c = (j * step) * f.nx + i * step
-            idx.extend(range(f.start[c], f.start[c + 1]))
-            start.append(len(idx))
-    idx = np.array(idx, dtype=np.int64)
+            sel.extend(range(f.start[c], f.start[c + 1]))
+            start.append(len(sel))
+    idx = np.array(sel, dtype=np.int64)
     hit = f.hit[idx] if f.hit is not None and len(f.hit) else None
     return navsample.Samples(PITCH, f.min_x, f.min_z, nx, nz, f.y_top, f.y_bottom, f.radius, f.cap_bottom,
                              f.cap_top, f.ray_radius, np.array(start), f.y[idx], f.normal[idx], f.flags[idx], hit)
 
 
-def on_objects(s, tris, tol=0.2):
+def on_objects(s: navsample.Samples, tris: np.ndarray | None, tol: float = 0.2) -> np.ndarray:
     """Surfaces lying on one of the given world-space triangles (within tol metres vertically)."""
     out = np.zeros(len(s.y), bool)
     if tris is None or not len(tris):
@@ -148,7 +190,8 @@ def on_objects(s, tris, tol=0.2):
     return out
 
 
-def near_characters(s, character, grow=0.9, below=2.2, above=0.3):
+def near_characters(s: navsample.Samples, character: np.ndarray, grow: float = 0.9, below: float = 2.2,
+                    above: float = 0.3) -> np.ndarray:
     """Surfaces a capsule test would see blocked by a soldier: within `grow` metres (horizontally) of a character hit
     (CHARACTER_SHAPE_VTABLE) and from `below` metres under to `above` metres over it."""
     out = np.zeros(len(s.y), bool)
@@ -169,7 +212,7 @@ def near_characters(s, character, grow=0.9, below=2.2, above=0.3):
     return out
 
 
-def headroom(s, ignore=None):
+def headroom(s: navsample.Samples, ignore: np.ndarray | None = None) -> np.ndarray:
     """Per surface: the gap to the next sampled surface above it in its column (inf when none); surfaces flagged in
     `ignore` (soldiers) do not count as above."""
     y = s.y.astype(float)
@@ -190,13 +233,14 @@ def headroom(s, ignore=None):
     return out
 
 
-def low_headroom(s, ignore, lo, hi):
+def low_headroom(s: navsample.Samples, ignore: np.ndarray | None, lo: float, hi: float) -> np.ndarray:
     """Surfaces with the next surface above them between lo and hi metres higher (HEADROOM_BAND)."""
     h = headroom(s, ignore)
     return (h >= lo) & (h < hi)
 
 
-def near_points(s, points, grow=0.9, below=0.5, above=0.5):
+def near_points(s: navsample.Samples, points: Iterable[Point], grow: float = 0.9, below: float = 0.5,
+                above: float = 0.5) -> np.ndarray:
     """Surfaces within `grow` metres (horizontally) of a point and from `below` under to `above` over its height."""
     out = np.zeros(len(s.y), bool)
     y = s.y.astype(float)
@@ -217,7 +261,8 @@ def near_points(s, points, grow=0.9, below=0.5, above=0.5):
     return out
 
 
-def near_objects(s, tris, grow=0.5, below=2.2, above=0.3):
+def near_objects(s: navsample.Samples, tris: np.ndarray | None, grow: float = 0.5, below: float = 2.2,
+                 above: float = 0.3) -> np.ndarray:
     """Surfaces within `grow` metres (horizontally) of a triangle's bounding box and from `below` metres under
     to `above` metres over it - the ground a capsule test around an object would see as blocked."""
     out = np.zeros(len(s.y), bool)
@@ -239,7 +284,8 @@ def near_objects(s, tris, grow=0.5, below=2.2, above=0.3):
     return out
 
 
-def stair_slope(s, mask, r=1, tol=0.7):
+def stair_slope(s: navsample.Samples, mask: np.ndarray, r: int = 1,
+                tol: float = 0.7) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Slope (degrees) from neighbouring sample heights on the same layer (central differences, +-1 sample),
     for the surfaces in mask; 90 where a neighbour is missing. (Measured over +-0.8 m at pitch 0.2 it recognised far
     more stairs, but with a 0.5 m step on them it joined decks and ledges to streets - over-connection 2.2 -> 35.3 % on
@@ -249,11 +295,11 @@ def stair_slope(s, mask, r=1, tol=0.7):
     out = np.full(len(y), 90.0)
     gxo = np.zeros(len(y)); gzo = np.zeros(len(y))
 
-    def layer(i, j, yref):
+    def layer(i: int, j: int, yref: float) -> float | None:
         if not (0 <= i < s.nx and 0 <= j < s.nz):
             return None
         c = j * s.nx + i
-        best = None
+        best: float | None = None
         for k in range(s.start[c], s.start[c + 1]):
             if abs(y[k] - yref) <= tol and (best is None or abs(y[k] - yref) < abs(best - yref)):
                 best = y[k]
@@ -265,7 +311,8 @@ def stair_slope(s, mask, r=1, tol=0.7):
         if a is None and b is None and cc is None and d is None:
             continue
 
-        def diff(p, m):   # central difference, or one-sided where a neighbour is missing (narrow stairs)
+        def diff(p: float | None, m: float | None) -> float:
+            # central difference, or one-sided where a neighbour is missing (narrow stairs)
             if p is not None and m is not None:
                 return (p - m) / (2 * r * s.pitch)
             if p is not None:
@@ -279,7 +326,8 @@ def stair_slope(s, mask, r=1, tol=0.7):
     return out, gxo, gzo
 
 
-def narrow_lips(s, base, cand, slope, width, rise=None, flat=None):
+def narrow_lips(s: navsample.Samples, base: np.ndarray, cand: np.ndarray, slope: float, width: int,
+                rise: float | None = None, flat: float | None = None) -> np.ndarray:
     """The cand surfaces (steep terrain) with a base surface (walkable) within width samples on both opposite sides
     along an axis or a diagonal - same layer, each step within 0.7 m - and a slope within the limit between those two
     (LIP_WIDTH). rise: the candidate also within this height of both of those (LIP_OBJECT_RISE); flat: both of those
@@ -289,13 +337,13 @@ def narrow_lips(s, base, cand, slope, width, rise=None, flat=None):
     lim = math.tan(math.radians(slope))
     out = np.zeros(len(y), bool)
 
-    def side(i, j, yref, di, dj):
+    def side(i: int, j: int, yref: float, di: int, dj: int) -> tuple[int, int] | None:
         for t in range(1, width + 1):
             a, b = i + di * t, j + dj * t
             if not (0 <= a < s.nx and 0 <= b < s.nz):
                 return None
             c = b * s.nx + a
-            best = None
+            best: int | None = None
             for n in range(s.start[c], s.start[c + 1]):
                 if abs(y[n] - yref) <= 0.7 * t and (best is None or abs(y[n] - yref) < abs(y[best] - yref)):
                     best = n
@@ -325,7 +373,7 @@ def narrow_lips(s, base, cand, slope, width, rise=None, flat=None):
     return out
 
 
-def matched_flags(s, other):
+def matched_flags(s: navsample.Samples, other: navsample.Samples | None) -> np.ndarray:
     """Capsule flags of a second run over the same grid (e.g. a higher capsule), matched per column by height."""
     out = np.full(len(s.y), 1, dtype=np.uint8)
     if other is None:
@@ -340,7 +388,8 @@ def matched_flags(s, other):
     return out
 
 
-def step_fits(dy, gk, gn, sk, sn, di, dj, pitch, step):
+def step_fits(dy: float, gk: tuple[float, float], gn: tuple[float, float], sk: bool, sn: bool, di: int, dj: int,
+              pitch: float, step: float) -> bool:
     """Height change dy from surface k to its neighbour n (direction di, dj) fits the step rule: within step of the
     rise predicted by the mean local gradient - or, when one of them is a stair surface, by the stair's own
     incline (a stair sample next to a flat landing would otherwise halve the predicted rise of the last step)."""
@@ -357,16 +406,17 @@ LADDER_FOOT = (-1.0, 1.0)       # ... at the foot: from 1 m below to 1 m above t
 LADDER_TOP = (-1.5, 0.5)        # ... at the top: 1.5 m below to 0.5 m above its top (its rails stick out over the deck)
 
 
-def ladder_ends(s, ok, keep, lad, reach=LADDER_REACH):
+def ladder_ends(s: navsample.Samples, ok: np.ndarray, keep: np.ndarray, lad: Ladder,
+                reach: float = LADDER_REACH) -> tuple[int | None, int | None]:
     """(foot surface, top surface) of a ladder {'lo', 'hi'} (ladders.py): at each end the surface allowed by the rules
     (ok) nearest the ladder's box, within reach horizontally and the end's height band; kept ground first. None where
     there is none."""
     lo, hi = lad['lo'], lad['hi']
     i0, i1 = int(math.floor((lo[0] - reach - s.min_x) / s.pitch)), int(math.ceil((hi[0] + reach - s.min_x) / s.pitch))
     j0, j1 = int(math.floor((lo[2] - reach - s.min_z) / s.pitch)), int(math.ceil((hi[2] + reach - s.min_z) / s.pitch))
-    out = []
+    out: list[int | None] = []
     for y0, y1 in ((lo[1] + LADDER_FOOT[0], lo[1] + LADDER_FOOT[1]), (hi[1] + LADDER_TOP[0], hi[1] + LADDER_TOP[1])):
-        best = None
+        best: tuple[tuple[bool, float], int] | None = None
         for j in range(max(j0, 0), min(j1, s.nz - 1) + 1):
             for i in range(max(i0, 0), min(i1, s.nx - 1) + 1):
                 x, z = s.min_x + i * s.pitch, s.min_z + j * s.pitch
@@ -383,15 +433,18 @@ def ladder_ends(s, ok, keep, lad, reach=LADDER_REACH):
     return out[0], out[1]
 
 
-def objective_floor(s, onf, ok, character, slope_ok, points, reach=None):
-    """OBJECTIVE_FLOOR: the surfaces to add (bool per surface) for the AI order positions lying on a forbidden object."""
+def objective_floor(s: navsample.Samples, onf: np.ndarray, ok: np.ndarray, character: np.ndarray,
+                    slope_ok: np.ndarray, points: Iterable[Point], reach: float | None = None, *,
+                    stats: ObjectiveStats) -> np.ndarray:
+    """OBJECTIVE_FLOOR: the surfaces to add (bool per surface) for the AI order positions lying on a forbidden object.
+    stats: the ObjectiveStats the counts are added to."""
     reach = OBJECTIVE_REACH if reach is None else reach
     y = s.y.astype(float)
     add = np.zeros(len(y), bool)
     r = int(math.ceil(reach / s.pitch))
     for (px, py, pz) in points:
         i0, j0 = int(round((px - s.min_x) / s.pitch)), int(round((pz - s.min_z) / s.pitch))
-        cols = []
+        cols: list[range] = []
         for dj in range(-r, r + 1):
             for di in range(-r, r + 1):
                 i, j = i0 + di, j0 + dj
@@ -404,7 +457,7 @@ def objective_floor(s, onf, ok, character, slope_ok, points, reach=None):
         # the floor under it: surfaces near the position's height with a forbidden top 0.3..2 m above. They may count
         # as on the object themselves - an M-COM's collision has a bottom face on the ground, so the ground under it
         # lies on a forbidden triangle (ONS_MP_002 / 004: 9 of 14 targets missed until 2026-10-23)
-        def under_top(n, ns):
+        def under_top(n: int, ns: range) -> bool:
             return any(onf[m] and 0.3 <= y[m] - y[n] <= 2.0 for m in ns)
         under = [y[n] for ns in cols for n in ns if slope_ok[n] and abs(y[n] - py) <= 1.5 and under_top(n, ns)]
         if not under:
@@ -427,23 +480,76 @@ def objective_floor(s, onf, ok, character, slope_ok, points, reach=None):
                         and (not onf[n] or under_top(n, ns))):
                     add[n] = True
                     n_add += 1
-        OBJECTIVE_STATS['points'] = OBJECTIVE_STATS.get('points', 0) + 1
-        OBJECTIVE_STATS['surfaces'] = OBJECTIVE_STATS.get('surfaces', 0) + n_add
+        stats.points += 1
+        stats.surfaces += n_add
     return add
 
 
-def walkable(s, forbid_tris=None, slope=mohsoldier.SLOPE, step=mohsoldier.STEP, terrain_seeds_only=False, dynamic_tris=None,
-             high_capsule=None, stairs=True, return_gradients=False, narrow_capsule=None, raised_bars=False,
-             stair_tris=None, exclude_tris=None, exclude_footprint_tris=None, forbid_tol=0.08,
-             extra_seeds=None, return_stairs=False, force_walkable=None, force_unwalkable=None, unseeds=None,
-             soldier_points=None, ladders=None, anchors=None, objective_points=None):
+@overload
+def walkable(s: navsample.Samples, forbid_tris: np.ndarray | None = None, slope: float = mohsoldier.SLOPE,
+             step: float = mohsoldier.STEP, terrain_seeds_only: bool = False, dynamic_tris: np.ndarray | None = None,
+             high_capsule: navsample.Samples | None = None, stairs: bool = True, return_gradients: Literal[False] = False,
+             narrow_capsule: navsample.Samples | None = None, raised_bars: bool = False,
+             stair_tris: np.ndarray | None = None, exclude_tris: np.ndarray | None = None,
+             exclude_footprint_tris: np.ndarray | None = None, forbid_tol: float = 0.08,
+             extra_seeds: Iterable[Point] | None = None, return_stairs: bool = False,
+             force_walkable: np.ndarray | None = None, force_unwalkable: np.ndarray | None = None,
+             unseeds: Iterable[Point] | None = None, soldier_points: Sequence[Point] | None = None,
+             ladders: Sequence[Ladder] | None = None, anchors: Iterable[Point] | None = None,
+             objective_points: Iterable[Point] | None = None, stats: WalkStats | None = None) -> np.ndarray: ...
+
+
+@overload
+def walkable(s: navsample.Samples, forbid_tris: np.ndarray | None = None, slope: float = mohsoldier.SLOPE,
+             step: float = mohsoldier.STEP, terrain_seeds_only: bool = False, dynamic_tris: np.ndarray | None = None,
+             high_capsule: navsample.Samples | None = None, stairs: bool = True, return_gradients: Literal[True] = ...,
+             narrow_capsule: navsample.Samples | None = None, raised_bars: bool = False,
+             stair_tris: np.ndarray | None = None, exclude_tris: np.ndarray | None = None,
+             exclude_footprint_tris: np.ndarray | None = None, forbid_tol: float = 0.08,
+             extra_seeds: Iterable[Point] | None = None, return_stairs: Literal[False] = False,
+             force_walkable: np.ndarray | None = None, force_unwalkable: np.ndarray | None = None,
+             unseeds: Iterable[Point] | None = None, soldier_points: Sequence[Point] | None = None,
+             ladders: Sequence[Ladder] | None = None, anchors: Iterable[Point] | None = None,
+             objective_points: Iterable[Point] | None = None, stats: WalkStats | None = None
+             ) -> tuple[np.ndarray, np.ndarray, np.ndarray]: ...
+
+
+@overload
+def walkable(s: navsample.Samples, forbid_tris: np.ndarray | None = None, slope: float = mohsoldier.SLOPE,
+             step: float = mohsoldier.STEP, terrain_seeds_only: bool = False, dynamic_tris: np.ndarray | None = None,
+             high_capsule: navsample.Samples | None = None, stairs: bool = True, return_gradients: Literal[True] = ...,
+             narrow_capsule: navsample.Samples | None = None, raised_bars: bool = False,
+             stair_tris: np.ndarray | None = None, exclude_tris: np.ndarray | None = None,
+             exclude_footprint_tris: np.ndarray | None = None, forbid_tol: float = 0.08,
+             extra_seeds: Iterable[Point] | None = None, return_stairs: Literal[True] = ...,
+             force_walkable: np.ndarray | None = None, force_unwalkable: np.ndarray | None = None,
+             unseeds: Iterable[Point] | None = None, soldier_points: Sequence[Point] | None = None,
+             ladders: Sequence[Ladder] | None = None, anchors: Iterable[Point] | None = None,
+             objective_points: Iterable[Point] | None = None, stats: WalkStats | None = None
+             ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]: ...
+
+
+def walkable(s: navsample.Samples, forbid_tris: np.ndarray | None = None, slope: float = mohsoldier.SLOPE,
+             step: float = mohsoldier.STEP, terrain_seeds_only: bool = False, dynamic_tris: np.ndarray | None = None,
+             high_capsule: navsample.Samples | None = None, stairs: bool = True, return_gradients: bool = False,
+             narrow_capsule: navsample.Samples | None = None, raised_bars: bool = False,
+             stair_tris: np.ndarray | None = None, exclude_tris: np.ndarray | None = None,
+             exclude_footprint_tris: np.ndarray | None = None, forbid_tol: float = 0.08,
+             extra_seeds: Iterable[Point] | None = None, return_stairs: bool = False,
+             force_walkable: np.ndarray | None = None, force_unwalkable: np.ndarray | None = None,
+             unseeds: Iterable[Point] | None = None, soldier_points: Sequence[Point] | None = None,
+             ladders: Sequence[Ladder] | None = None, anchors: Iterable[Point] | None = None,
+             objective_points: Iterable[Point] | None = None, stats: WalkStats | None = None
+             ) -> np.ndarray | tuple[np.ndarray, ...]:
     """Kept walkable surfaces (bool per surface) by rules 1-4, plus the structure rules:
       dynamic props (dynamic_tris) are absent for path data - their tops are not floor, and the ground under and
       right beside them is not blocked by them;
       stairs: object surfaces whose slope over neighbouring samples is 12..40 deg count as walkable, with the
       clearance of the high_capsule run (capsule from 0.6 m) instead of the normal one.
     Hand edits (navedits.py): force_walkable / force_unwalkable (bool per surface) override the rules before
-    seeding; unseeds (points) drop the island each lies on after seeding."""
+    seeding; unseeds (points) drop the island each lies on after seeding. stats: a WalkStats the rules' counts are
+    added to (roof islands, objective floors, steep ground), or None."""
+    st = WalkStats() if stats is None else stats
     y = s.y.astype(float)
     ny = np.maximum(s.normal[:, 1], 0.05)
     gx_all, gz_all = -s.normal[:, 0] / ny, -s.normal[:, 2] / ny
@@ -451,9 +557,9 @@ def walkable(s, forbid_tris=None, slope=mohsoldier.SLOPE, step=mohsoldier.STEP, 
     terrain, clear, character = clearance(s, soldier_points, dynamic_tris, exclude_tris)
     ok = clear & (s.normal[:, 1] >= math.cos(math.radians(slope)) - 0.01) & ~character
     if STEEP_TERRAIN:
-        gx_all, gz_all = accept_steep_terrain(s, ok, terrain, clear, character, slope, gx_all, gz_all)
+        gx_all, gz_all = accept_steep_terrain(s, ok, terrain, clear, character, slope, gx_all, gz_all, st.steep)
     if LIP_WIDTH and s.pitch < 0.5:
-        gx_all, gz_all = accept_lips(s, ok, terrain, clear, character, slope, gx_all, gz_all)
+        gx_all, gz_all = accept_lips(s, ok, terrain, clear, character, slope, gx_all, gz_all, LIP_WIDTH, st.steep)
     on_stair = np.zeros(len(y), bool)
     if stair_tris is not None and len(stair_tris):
         # staircase objects: surfaces on / right beside them are not blocked by the staircase itself
@@ -467,7 +573,7 @@ def walkable(s, forbid_tris=None, slope=mohsoldier.SLOPE, step=mohsoldier.STEP, 
     ok &= ~character                    # last, before hand edits: the stair / landing / bar rules above re-added 68 of
                                         # sp_004_b's 468 soldier surfaces as floor (2026-10-19)
     if OBJECTIVE_FLOOR and objective_points and onf.any():
-        ok |= objective_floor(s, onf, ok, character, slope_ok, objective_points)
+        ok |= objective_floor(s, onf, ok, character, slope_ok, objective_points, stats=st.objective)
     if force_walkable is not None:
         ok |= force_walkable
     if force_unwalkable is not None:
@@ -476,14 +582,15 @@ def walkable(s, forbid_tris=None, slope=mohsoldier.SLOPE, step=mohsoldier.STEP, 
     drop_unseeded(s, keep, unseeds, gx_all, gz_all, stair, step)
     if ROOF_PRUNE:
         anchor_k = roof_anchors(s, ok, keep, anchors, ladders)
-        drop = roof_islands(s, keep, gx_all, gz_all, stair, step, terrain, anchor_k)
+        drop = roof_islands(s, keep, gx_all, gz_all, stair, step, terrain, anchor_k, st.roof)
         keep &= ~drop
     if return_gradients:
         return (keep, gx_all, gz_all, stair) if return_stairs else (keep, gx_all, gz_all)
     return keep
 
 
-def clearance(s, soldier_points, dynamic_tris, exclude_tris):
+def clearance(s: navsample.Samples, soldier_points: Sequence[Point] | None, dynamic_tris: np.ndarray | None,
+              exclude_tris: np.ndarray | None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """(terrain, clear, character) per surface: terrain hits, capsule clearance with absent things not blocking, soldiers."""
     n = len(s.y)
     terrain = (s.hit[:, 0] == TERRAIN_SHAPE_VTABLE) if s.hit is not None else np.ones(n, bool)
@@ -504,8 +611,11 @@ def clearance(s, soldier_points, dynamic_tris, exclude_tris):
     return terrain, clear, character
 
 
-def accept_steep_terrain(s, ok, terrain, clear, character, slope, gx_all, gz_all):
-    """STEEP_TERRAIN: adds steep terrain within the slope limit over its heights to ok (in place); returns the gradients."""
+def accept_steep_terrain(s: navsample.Samples, ok: np.ndarray, terrain: np.ndarray, clear: np.ndarray,
+                         character: np.ndarray, slope: float, gx_all: np.ndarray, gz_all: np.ndarray,
+                         stats: SteepStats) -> tuple[np.ndarray, np.ndarray]:
+    """STEEP_TERRAIN: adds steep terrain within the slope limit over its heights to ok (in place); returns the gradients.
+    Counts added to stats (SteepStats)."""
     steep = terrain & clear & ~character & ~ok & (s.normal[:, 1] >= math.cos(math.radians(STEEP_TERRAIN_MAX)))
     if steep.any():
         r = max(1, int(round(STEEP_TERRAIN_SPAN / s.pitch)))
@@ -515,35 +625,40 @@ def accept_steep_terrain(s, ok, terrain, clear, character, slope, gx_all, gz_all
         # the link rule predicts steps from these gradients: the heights', not the steep normals'
         gx_all = np.where(accept, tgx, gx_all)
         gz_all = np.where(accept, tgz, gz_all)
-        STEEP_STATS['accepted'] = STEEP_STATS.get('accepted', 0) + int(accept.sum())
-        STEEP_STATS['candidates'] = STEEP_STATS.get('candidates', 0) + int(steep.sum())
+        stats.accepted += int(accept.sum())
+        stats.candidates += int(steep.sum())
     return gx_all, gz_all
 
 
-def accept_lips(s, ok, terrain, clear, character, slope, gx_all, gz_all):
-    """LIP_WIDTH: adds narrow steep lips (terrain, sills on objects) to ok (in place); returns the gradients."""
+def accept_lips(s: navsample.Samples, ok: np.ndarray, terrain: np.ndarray, clear: np.ndarray, character: np.ndarray,
+                slope: float, gx_all: np.ndarray, gz_all: np.ndarray, width: int,
+                stats: SteepStats) -> tuple[np.ndarray, np.ndarray]:
+    """LIP_WIDTH: adds narrow steep lips (terrain, sills on objects) within width samples to ok (in place); returns the
+    gradients. Counts added to stats (SteepStats)."""
     steep_c = clear & ~character & ~ok & (s.normal[:, 1] >= math.cos(math.radians(STEEP_TERRAIN_MAX)))
-    lips = narrow_lips(s, ok, terrain & steep_c, slope, LIP_WIDTH)
+    lips = narrow_lips(s, ok, terrain & steep_c, slope, width)
     if LIP_OBJECT_RISE is not None:
         # on objects any steepness: the height limit alone keeps it to sills (an aircraft door sill's sides are
         # steeper than 55 deg - sp_009's aft cabin stayed cut off under the terrain cap)
         obj_c = ~terrain & clear & ~character & ~ok
-        lips |= narrow_lips(s, ok, obj_c & steep_c, slope, LIP_WIDTH, rise=LIP_OBJECT_RISE)
+        lips |= narrow_lips(s, ok, obj_c & steep_c, slope, width, rise=LIP_OBJECT_RISE)
         if not LIP_OBJECT_SLOPE_MAX:
             # steeper than STEEP_TERRAIN_MAX: only between flat floors (a door sill's sides; a rock mesh meeting
             # sloped terrain is not a sill - sp_007's cliff top joined the level through one, 2026-10-22)
-            lips |= narrow_lips(s, ok, obj_c & ~steep_c, slope, LIP_WIDTH, rise=LIP_OBJECT_RISE,
+            lips |= narrow_lips(s, ok, obj_c & ~steep_c, slope, width, rise=LIP_OBJECT_RISE,
                                 flat=LIP_OBJECT_FLAT)
     if lips.any():
         _gs, lgx, lgz = stair_slope(s, lips)
         ok |= lips
         gx_all = np.where(lips, lgx, gx_all)
         gz_all = np.where(lips, lgz, gz_all)
-    STEEP_STATS['lips'] = STEEP_STATS.get('lips', 0) + int(lips.sum())
+    stats.lips += int(lips.sum())
     return gx_all, gz_all
 
 
-def accept_stairs(s, ok, terrain, on_stair, slope, high_capsule, gx_all, gz_all):
+def accept_stairs(s: navsample.Samples, ok: np.ndarray, terrain: np.ndarray, on_stair: np.ndarray, slope: float,
+                  high_capsule: navsample.Samples | None, gx_all: np.ndarray,
+                  gz_all: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """The stair rule: adds stair and landing surfaces to ok (in place); returns (stair, gradients)."""
     cand = ~terrain & ((s.flags & 2) == 0)
     gs, hgx, hgz = stair_slope(s, cand)
@@ -560,7 +675,7 @@ def accept_stairs(s, ok, terrain, on_stair, slope, high_capsule, gx_all, gz_all)
     return stair, gx_all, gz_all
 
 
-def stair_landings(s, stair, cand):
+def stair_landings(s: navsample.Samples, stair: np.ndarray, cand: np.ndarray) -> np.ndarray:
     """Landings (bool per surface): candidate surfaces within two samples of a stair surface on the same level."""
     # landings: object surfaces within two samples of a stair surface on the same level also take the
     # high-capsule clearance (the normal capsule touches the top steps / rail ends there)
@@ -581,7 +696,7 @@ def stair_landings(s, stair, cand):
     return landing
 
 
-def same_layer(s, y, i, j, yref, tol=0.7):
+def same_layer(s: navsample.Samples, y: np.ndarray, i: int, j: int, yref: float, tol: float = 0.7) -> list[int]:
     """The surfaces of column (i, j) within tol of height yref ([] off the grid)."""
     if not (0 <= i < s.nx and 0 <= j < s.nz):
         return []
@@ -589,8 +704,10 @@ def same_layer(s, y, i, j, yref, tol=0.7):
     return [n for n in range(s.start[c], s.start[c + 1]) if abs(y[n] - yref) <= tol]
 
 
-def object_rules(s, ok, onf, slope_ok, terrain, character, dynamic_tris, exclude_tris, exclude_footprint_tris,
-                 raised_bars, narrow_capsule):
+def object_rules(s: navsample.Samples, ok: np.ndarray, onf: np.ndarray, slope_ok: np.ndarray, terrain: np.ndarray,
+                 character: np.ndarray, dynamic_tris: np.ndarray | None, exclude_tris: np.ndarray | None,
+                 exclude_footprint_tris: np.ndarray | None, raised_bars: bool,
+                 narrow_capsule: navsample.Samples | None) -> np.ndarray:
     """The object rules on ok: raised bars, narrow passages, forbidden / dynamic / excluded objects, headroom, dynamic floor."""
     y = s.y.astype(float)
     if raised_bars:
@@ -613,11 +730,11 @@ def object_rules(s, ok, onf, slope_ok, terrain, character, dynamic_tris, exclude
     if HEADROOM_BAND is not None:
         ok &= ~low_headroom(s, (character | ondyn) if DYNAMIC_ABSENT_HEADROOM else character, *HEADROOM_BAND)
     if DYNAMIC_FLOOR is not None and ondyn.any():
-        dynamic_floor(s, ok, ondyn, onf, slope_ok)
+        dynamic_floor(s, ok, ondyn, onf, slope_ok, DYNAMIC_FLOOR)
     return ok
 
 
-def raised_bar_floor(s, onf, terrain):
+def raised_bar_floor(s: navsample.Samples, onf: np.ndarray, terrain: np.ndarray) -> np.ndarray:
     """Surfaces 0.7 m..HEADROOM under a forbidden object's surface within one sample (bool per surface)."""
     # a forbidden object's raised bar (barrier arm, low overhang) 0.7..1.9 m above the ground within one
     # sample does not block clearance there; the bar itself stays forbidden (onf)
@@ -639,7 +756,8 @@ def raised_bar_floor(s, onf, terrain):
     return bar
 
 
-def narrow_passages(s, ok, onf, slope_ok, narrow_capsule):
+def narrow_passages(s: navsample.Samples, ok: np.ndarray, onf: np.ndarray, slope_ok: np.ndarray,
+                    narrow_capsule: navsample.Samples) -> None:
     """Adds to ok (in place) the narrow-capsule surfaces with walkable floor on opposite sides on the same level."""
     # narrow passages: blocked for the normal capsule, clear for the narrow one, with walkable floor on the
     # same level on opposite sides (left/right or front/back)
@@ -657,8 +775,10 @@ def narrow_passages(s, ok, onf, slope_ok, narrow_capsule):
                 break
 
 
-def dynamic_floor(s, ok, ondyn, onf, slope_ok):
-    """DYNAMIC_FLOOR: adds to ok (in place) the dynamic-prop surfaces next to walkable floor at their height."""
+def dynamic_floor(s: navsample.Samples, ok: np.ndarray, ondyn: np.ndarray, onf: np.ndarray,
+                  slope_ok: np.ndarray, floor: float) -> None:
+    """DYNAMIC_FLOOR: adds to ok (in place) the dynamic-prop surfaces next to walkable floor at their height (within
+    floor metres)."""
     y = s.y.astype(float)
     col_of_w = np.repeat(np.arange(s.nx * s.nz), np.diff(s.start))
     base = ok.copy()
@@ -666,21 +786,23 @@ def dynamic_floor(s, ok, ondyn, onf, slope_ok):
         c = col_of_w[k]
         i, j = c % s.nx, c // s.nx
         # not where the column has its own floor just under the prop
-        if any(not ondyn[n] and 0 < y[k] - y[n] <= DYNAMIC_FLOOR for n in range(s.start[c], s.start[c + 1])):
+        if any(not ondyn[n] and 0 < y[k] - y[n] <= floor for n in range(s.start[c], s.start[c + 1])):
             continue
         if any(base[n] for di in (-1, 0, 1) for dj in (-1, 0, 1) if di or dj
-               for n in same_layer(s, y, i + di, j + dj, y[k], DYNAMIC_FLOOR)):
+               for n in same_layer(s, y, i + di, j + dj, y[k], floor)):
             ok[k] = True
 
 
-def connected_floor(s, ok, terrain, terrain_seeds_only, extra_seeds, ladders, gx_all, gz_all, stair, step):
+def connected_floor(s: navsample.Samples, ok: np.ndarray, terrain: np.ndarray, terrain_seeds_only: bool,
+                    extra_seeds: Iterable[Point] | None, ladders: Sequence[Ladder] | None, gx_all: np.ndarray,
+                    gz_all: np.ndarray, stair: np.ndarray, step: float) -> np.ndarray:
     """The kept surfaces (bool per surface): ok surfaces the step rule joins to a seed, then across ladder links."""
     y = s.y.astype(float)
     col_of = np.repeat(np.arange(s.nx * s.nz), np.diff(s.start))
     per_i = {i for i in range(s.nx) if round((s.min_x + i * s.pitch) % SECTOR, 1) in (1.6, 98.4)}
     per_j = {j for j in range(s.nz) if round((s.min_z + j * s.pitch) % SECTOR, 1) in (1.6, 98.4)}
     keep = np.zeros(len(y), bool)
-    q = deque()
+    q: deque[int] = deque()
     for k in np.nonzero(ok & terrain if terrain_seeds_only else ok)[0]:
         c = col_of[k]
         if c % s.nx in per_i or c // s.nx in per_j:
@@ -699,7 +821,7 @@ def connected_floor(s, ok, terrain, terrain_seeds_only, extra_seeds, ladders, gx
                 keep[n] = True
                 q.append(n)
 
-    def flood():
+    def flood() -> None:
         flood_step_rule(s, y, col_of, q, keep, ok, gx_all, gz_all, stair, step)
     flood()
     if ladders:
@@ -707,7 +829,8 @@ def connected_floor(s, ok, terrain, terrain_seeds_only, extra_seeds, ladders, gx
     return keep
 
 
-def flood_step_rule(s, y, col_of, q, keep, ok, gx_all, gz_all, stair, step):
+def flood_step_rule(s: navsample.Samples, y: np.ndarray, col_of: np.ndarray, q: deque[int], keep: np.ndarray,
+                    ok: np.ndarray, gx_all: np.ndarray, gz_all: np.ndarray, stair: np.ndarray, step: float) -> None:
     """Grows keep (in place) from the queued surfaces to every ok neighbour the step rule joins."""
     while q:
         k = q.popleft()
@@ -728,12 +851,13 @@ def flood_step_rule(s, y, col_of, q, keep, ok, gx_all, gz_all, stair, step):
                         q.append(n)
 
 
-def ladder_links(s, ok, keep, q, ladders, flood):
+def ladder_links(s: navsample.Samples, ok: np.ndarray, keep: np.ndarray, q: deque[int], ladders: Sequence[Ladder],
+                 flood: Callable[[], None]) -> None:
     """Seeds (in place) the far end of every ladder with one end on kept ground, flooding from it, until none adds."""
     # ladder links: a ladder whose one end stands on kept ground seeds the walkable surface at its other end (a roof
     # or deck reached only by the ladder - no step joins it, so no seed reached it); repeated until no ladder adds
     # ground (ladders in a chain). ladder_ends gives the end surfaces.
-    done = set()
+    done: set[int] = set()
     changed = True
     while changed:
         changed = False
@@ -754,7 +878,8 @@ def ladder_links(s, ok, keep, q, ladders, flood):
             changed = True
 
 
-def drop_unseeded(s, keep, unseeds, gx_all, gz_all, stair, step):
+def drop_unseeded(s: navsample.Samples, keep: np.ndarray, unseeds: Iterable[Point] | None, gx_all: np.ndarray,
+                  gz_all: np.ndarray, stair: np.ndarray, step: float) -> None:
     """Hand edits: drops from keep (in place) the island each unseed point lies on."""
     y = s.y.astype(float)
     col_of = np.repeat(np.arange(s.nx * s.nz), np.diff(s.start))
@@ -791,10 +916,11 @@ def drop_unseeded(s, keep, unseeds, gx_all, gz_all, stair, step):
         keep[list(drop)] = False
 
 
-def roof_anchors(s, ok, keep, anchors, ladders):
+def roof_anchors(s: navsample.Samples, ok: np.ndarray, keep: np.ndarray, anchors: Iterable[Point] | None,
+                 ladders: Iterable[Ladder] | None) -> set[int]:
     """ROOF_PRUNE's anchor surfaces: the kept surface nearest each anchor point, and the kept ladder ends."""
     y = s.y.astype(float)
-    anchor_k = set()
+    anchor_k: set[int] = set()
     for (sx, sy, sz) in (anchors or ()):
         i, j = int(round((sx - s.min_x) / s.pitch)), int(round((sz - s.min_z) / s.pitch))
         if 0 <= i < s.nx and 0 <= j < s.nz:
@@ -809,7 +935,8 @@ def roof_anchors(s, ok, keep, anchors, ladders):
     return anchor_k
 
 
-def islands_of(s, keep, gx, gz, stair, step):
+def islands_of(s: navsample.Samples, keep: np.ndarray, gx: np.ndarray, gz: np.ndarray, stair: np.ndarray,
+               step: float) -> tuple[np.ndarray, int]:
     """Island id per kept surface (-1 elsewhere): surfaces joined by the step rule, as walkable's flood joins them."""
     y = s.y.astype(float)
     col_of = np.repeat(np.arange(s.nx * s.nz), np.diff(s.start))
@@ -841,7 +968,7 @@ def islands_of(s, keep, gx, gz, stair, step):
     return comp, cid
 
 
-def column_lowest(s):
+def column_lowest(s: navsample.Samples) -> np.ndarray:
     """Per surface: the height of the lowest surface in its column. minimum.at over the column index - reduceat over
     the columns' starts (clipped for empty columns at the grid's end) cut the last surface off the last column
     holding any, so a roof there was measured against itself (2026-10-31)."""
@@ -852,8 +979,9 @@ def column_lowest(s):
     return lowest[col_of]
 
 
-def roof_islands(s, keep, gx, gz, stair, step, terrain, anchor_k):
-    """The kept surfaces ROOF_PRUNE drops (bool per surface)."""
+def roof_islands(s: navsample.Samples, keep: np.ndarray, gx: np.ndarray, gz: np.ndarray, stair: np.ndarray,
+                 step: float, terrain: np.ndarray, anchor_k: Set[int], stats: RoofStats) -> np.ndarray:
+    """The kept surfaces ROOF_PRUNE drops (bool per surface). Counts added to stats (RoofStats)."""
     y = s.y.astype(float)
     comp, n = islands_of(s, keep, gx, gz, stair, step)
     out = np.zeros(len(y), bool)
@@ -870,13 +998,13 @@ def roof_islands(s, keep, gx, gz, stair, step, terrain, anchor_k):
     anchored[int(np.argmax(size))] = True
     cand = ~anchored & (rshare >= ROOF_SHARE)
     if not cand.any():
-        ROOF_STATS['islands'] = ROOF_STATS.get('islands', 0) + n
+        stats.islands += n
         return out
     # anchored ground near each candidate at its own height: buckets of ROOF_NEAR m; candidate surfaces every ~0.8 m
     ak = np.nonzero(keep & anchored[np.maximum(comp, 0)] & (comp >= 0))[0]
     ax = s.min_x + (col_of[ak] % s.nx) * s.pitch
     az = s.min_z + (col_of[ak] // s.nx) * s.pitch
-    buck = defaultdict(list)
+    buck: defaultdict[tuple[int, int], list[tuple[float, float, float]]] = defaultdict(list)
     for x_, z_, y_ in zip(ax.tolist(), az.tolist(), y[ak].tolist()):
         buck[(int(math.floor(x_ / ROOF_NEAR)), int(math.floor(z_ / ROOF_NEAR)))].append((x_, z_, y_))
     every = max(1, int(round(0.8 / s.pitch)))
@@ -903,13 +1031,13 @@ def roof_islands(s, keep, gx, gz, stair, step, terrain, anchor_k):
                 break
     drop_c = cand & ~near
     out = keep & (comp >= 0) & drop_c[np.maximum(comp, 0)]
-    ROOF_STATS['islands'] = ROOF_STATS.get('islands', 0) + n
-    ROOF_STATS['dropped'] = ROOF_STATS.get('dropped', 0) + int(drop_c.sum())
-    ROOF_STATS['surfaces'] = ROOF_STATS.get('surfaces', 0) + int(out.sum())
+    stats.islands += n
+    stats.dropped += int(drop_c.sum())
+    stats.surfaces += int(out.sum())
     return out
 
 
-def score(s, keep, hpd, tol=0.6):
+def score(s: navsample.Samples, keep: np.ndarray, hpd: str, tol: float = 0.6) -> dict[str, float]:
     """Against the reference: DICE layers (cells fully inside an area) found exactly / within one cell, and
     kept surfaces with no reference layer at that height in the cell or its neighbours."""
     ref = {c: [(lo - OUTLINE_Y_OFFSET, hi - OUTLINE_Y_OFFSET, cv) for lo, hi, cv in layers]
@@ -917,7 +1045,7 @@ def score(s, keep, hpd, tol=0.6):
     y = s.y.astype(float)
     col_of = np.repeat(np.arange(s.nx * s.nz), np.diff(s.start))
 
-    def kept_near(c, lo, hi, r):
+    def kept_near(c: int, lo: float, hi: float, r: int) -> bool:
         i, j = c % s.nx, c // s.nx
         for dj in range(-r, r + 1):
             for di in range(-r, r + 1):
@@ -953,7 +1081,7 @@ def score(s, keep, hpd, tol=0.6):
             'extra': extra / full * 100, 'extra_far': far / full * 100, 'within_one_cell': within}
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
     if len(argv) < 4 or argv[1] != 'score':
         print(__doc__)
         return 1

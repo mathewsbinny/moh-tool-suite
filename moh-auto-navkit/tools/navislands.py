@@ -21,12 +21,26 @@ SHADOW_OBJECTS_ONLY: only islands whose nodes stand mostly on objects (not terra
 terrain alone (objects have AllowPathdataSeeds false; spec section 3.7), so a small terrain island is one DICE has as
 well: on ONS_MP_004 all 12 small islands DICE also has are terrain, 64 of the 79 small NavKit-only ones objects, and
 every pocket that captured a failed route is on objects. Without it the 12 go too (DICE nodes near NavKit nodes
-61.15 -> 60.27 %, over-connection 8.32 -> 8.40). navbuild.stage records the terrain nodes (note_nodes); a node with
+61.15 -> 60.27 %, over-connection 8.32 -> 8.40). navbuild.stage records the terrain nodes (terrain_nodes); a node with
 no record counts as an object node.
+
+State: none at module level. The build keeps the terrain node ids (navbuild.BuildState.terrain_ids, from
+terrain_nodes) and passes them to prune, which fills an IslandStats the caller hands it.
 """
 import math
 from collections import defaultdict
+from collections.abc import Callable, Iterable, Sequence, Set
+from dataclasses import dataclass
+
+import kymesh  # noqa: E402
 import mohsoldier  # noqa: E402
+
+Vec3 = tuple[float, float, float]
+RouteNode = tuple[int, Vec3, int, int, int]     # (id, position, surface, local i, local j): navbuild.build_graph's pts
+Pair = tuple[int, int, float]                   # (node index, node index, distance) in a sector's pts
+Graph = tuple[int, tuple[float, ...], kymesh.Mesh, list[RouteNode], list[Pair], tuple[float, float]]
+                                                # a sector: (id, bounds, mesh, pts, pairs, origin (ox, oz))
+Point = Sequence[float]                         # (x, y, z): an anchor (soldier spawn, AI order / objective position)
 
 SHADOW_ISLANDS = True
 SHADOW_MIN_NODES = 25           # islands under this many nodes are candidates (as navbuild.ORDER_MIN_ISLAND)
@@ -43,32 +57,38 @@ ANCHOR_SERVED = True            # an anchor keeps a small island only when the i
                                 # was then their nearest node - cut off from the network (2026-10-30)
 SHADOW_OBJECTS_ONLY = True
 Y_OFFSET = mohsoldier.Y_OFFSET
-STATS = {}
-TERRAIN_IDS = set()             # ids of route nodes standing on terrain (note_nodes; navbuild.build clears it)
 
 
-def note_nodes(level, pts):
-    """Record which of a sector's route nodes (navbuild.build_graph's pts: (id, pos, surface, i, j)) stand on terrain
-    (level.terrain: the sampled hit is the terrain's shape)."""
+@dataclass
+class IslandStats:
+    """What prune did (for reports): islands and nodes dropped, route islands before and after."""
+    islands: int = 0
+    nodes: int = 0
+    before: int = 0
+    after: int = 0
+
+
+def terrain_nodes(level: object, pts: Iterable[RouteNode]) -> set[int]:
+    """The ids of a sector's route nodes (navbuild.build_graph's pts: (id, pos, surface, i, j)) that stand on terrain
+    (level.terrain: the sampled hit is the terrain's shape) - the build collects them for prune
+    (SHADOW_OBJECTS_ONLY)."""
     terrain = getattr(level, 'terrain', None)
     if terrain is None:
-        return
-    for p in pts:
-        if p[2] is not None and terrain[p[2]]:
-            TERRAIN_IDS.add(p[0])
+        return set()
+    return {p[0] for p in pts if p[2] is not None and terrain[p[2]]}
 
 
-def components(graphs):
+def components(graphs: Sequence[Graph]) -> tuple[dict[int, int], defaultdict[int, int], dict[int, Vec3]]:
     """{node id: root id}, {root id: node count}, {node id: position} over all sectors' (pts, pairs)."""
-    parent = {}
+    parent: dict[int, int] = {}
 
-    def find(x):
+    def find(x: int) -> int:
         parent.setdefault(x, x)
         while parent[x] != x:
             parent[x] = parent[parent[x]]
             x = parent[x]
         return x
-    pos = {}
+    pos: dict[int, Vec3] = {}
     for g in graphs:
         pts, pairs = g[3], g[4]
         for p in pts:
@@ -78,19 +98,19 @@ def components(graphs):
             ra, rb = find(pts[a][0]), find(pts[b][0])
             if ra != rb:
                 parent[ra] = rb
-    linked = set()                                 # nodes without an edge are dropped by finalize_graph anyway
+    linked: set[int] = set()                       # nodes without an edge are dropped by finalize_graph anyway
     for g in graphs:
         pts = g[3]
         for a, b, _d in g[4]:
             linked.update((pts[a][0], pts[b][0]))
     root = {i: find(i) for i in pos if i in linked}
-    size = defaultdict(int)
+    size: defaultdict[int, int] = defaultdict(int)
     for r in root.values():
         size[r] += 1
     return root, size, pos
 
 
-def _large_dy(grid, a, xz):
+def _large_dy(grid: dict[tuple[int, int], list[Vec3]], a: Point, xz: float) -> float:
     """The smallest height difference between the anchor and the ground of a large island's node within xz across
     (inf without one)."""
     best = math.inf
@@ -103,31 +123,35 @@ def _large_dy(grid, a, xz):
     return best
 
 
-def shadowing(graphs, anchors=(), min_nodes=None, xz=None, dy=None):
-    """The roots of the islands SHADOW_ISLANDS drops, and the components ({id: root}, {root: size}, {id: pos})."""
+def shadowing(graphs: Sequence[Graph], anchors: Iterable[Point] = (), min_nodes: int | None = None,
+              xz: float | None = None, dy: float | None = None, terrain_ids: Set[int] = frozenset()
+              ) -> tuple[set[int], dict[int, int], dict[int, int], dict[int, Vec3]]:
+    """The roots of the islands SHADOW_ISLANDS drops, and the components ({id: root}, {root: size}, {id: pos}).
+    terrain_ids: the ids of nodes standing on terrain (terrain_nodes; any other node counts as on an object)."""
     min_nodes = SHADOW_MIN_NODES if min_nodes is None else min_nodes
     xz = SHADOW_XZ if xz is None else xz
     dy = SHADOW_DY if dy is None else dy
     root, size, pos = components(graphs)
     small = {r for r, n in size.items() if n < min_nodes}
     if SHADOW_OBJECTS_ONLY and small:
-        on_terrain = defaultdict(int)
+        on_terrain: defaultdict[int, int] = defaultdict(int)
         for i, r in root.items():
-            if r in small and i in TERRAIN_IDS:
+            if r in small and i in terrain_ids:
                 on_terrain[r] += 1
         small = {r for r in small if 2 * on_terrain[r] < size[r]}
     if not small or len(size) < 2:
         return set(), root, size, pos
-    grid = defaultdict(list)                       # large islands' nodes in xz buckets
+    grid: defaultdict[tuple[int, int], list[Vec3]] = defaultdict(list)    # large islands' nodes in xz buckets
     for i, r in root.items():
         if size[r] >= min_nodes:
             p = pos[i]
             grid[(math.floor(p[0] / xz), math.floor(p[2] / xz))].append(p)
-    abucket = defaultdict(list)                    # anchors in buckets
+    abucket: defaultdict[tuple[int, int], list[tuple[Point, float]]] = defaultdict(list)   # anchors in buckets
     for a in anchors or ():
         served = _large_dy(grid, a, xz) if ANCHOR_SERVED else math.inf
         abucket[(math.floor(a[0] / ANCHOR_XZ), math.floor(a[2] / ANCHOR_XZ))].append((a, served))
-    anchored, near = set(), set()
+    anchored: set[int] = set()
+    near: set[int] = set()
     for i, r in root.items():
         if r not in small:
             continue
@@ -156,15 +180,18 @@ def shadowing(graphs, anchors=(), min_nodes=None, xz=None, dy=None):
     return near - anchored, root, size, pos
 
 
-def prune(graphs, anchors=(), log=None):
+def prune(graphs: list[Graph], anchors: Sequence[Point] = (), log: Callable[..., object] | None = None,
+          terrain_ids: Set[int] = frozenset(), stats: IslandStats | None = None) -> list[Graph]:
     """graphs [(sid, bounds, mesh, pts, pairs, origin)] with the shadowing islands' edges removed (SHADOW_ISLANDS).
-    anchors: (x, y, z) points (soldier spawns, AI order and objective positions) whose islands stay."""
-    STATS.clear()
+    anchors: (x, y, z) points (soldier spawns, AI order and objective positions) whose islands stay; terrain_ids: the
+    ids of nodes on terrain (terrain_nodes); stats: an IslandStats to fill (all zero when SHADOW_ISLANDS is off)."""
+    st = IslandStats() if stats is None else stats
+    st.islands = st.nodes = st.before = st.after = 0
     if not SHADOW_ISLANDS:
         return graphs
-    drop, root, size, _pos = shadowing(graphs, anchors)
+    drop, root, size, _pos = shadowing(graphs, anchors, terrain_ids=terrain_ids)
     ids = {i for i, r in root.items() if r in drop}
-    STATS.update(islands=len(drop), nodes=len(ids), before=len(size), after=len(size) - len(drop))
+    st.islands, st.nodes, st.before, st.after = len(drop), len(ids), len(size), len(size) - len(drop)
     if log:
         log(f'shadow islands: {len(drop)} of {len(size)} route islands ({len(ids)} nodes) under {SHADOW_MIN_NODES} nodes '
             f'within {SHADOW_XZ:g} m of a larger one lose their nodes')

@@ -141,9 +141,9 @@ def main(argv):
     s8 = ledge(extra=corner)
     k8 = np.ones(len(s8.y), bool)
     k8[np.isclose(s8.y, 2.5)] = False
-    navdrops.find(s8, k8, LINK_STEP, PITCH)
-    check(navdrops.STATS['candidates'] == 10, f"through an opening: straight candidates only "
-          f"({navdrops.STATS['candidates']}, 10 expected)")
+    st = navdrops.DropFindStats()
+    navdrops.find(s8, k8, LINK_STEP, PITCH, stats=st)
+    check(st.candidates == 10, f"through an opening: straight candidates only ({st.candidates}, 10 expected)")
 
     # a wall taller than the body range along the ledge (mp_09_overrun's facade, 2026-10-31): the sampler records its
     # top (5 m, above the head) and, at the ledge's height, floor too cramped for the capsule (flags BLOCKED) - nothing
@@ -163,9 +163,9 @@ def main(argv):
     check(navdrops.find(*tall_wall(tw), LINK_STEP, PITCH) == [], 'a wall taller than the body range at the ledge: no link')
     # ... with one opening at row 25: straight drops through it only (a diagonal would cut past the wall's corner)
     sw, kw = tall_wall({(10, j) for j in range(50) if j != 25})
-    navdrops.find(sw, kw, LINK_STEP, PITCH)
-    check(navdrops.STATS['candidates'] == 10, f"through an opening in a tall wall: straight candidates only "
-          f"({navdrops.STATS['candidates']}, 10 expected)")
+    navdrops.find(sw, kw, LINK_STEP, PITCH, stats=st)
+    check(st.candidates == 10, f"through an opening in a tall wall: straight candidates only "
+          f"({st.candidates}, 10 expected; the stats overwritten per call)")
 
     # DROP_REACH in metres at 0.8 m pitch (2026-10-31: a cell count, ceil(2.0 / 0.8) = 3 cells, let straight links
     # reach 2.4 m and diagonals 3.39 m): a 1.5 m ledge over a pit deeper than DROP_MAX, the ground beyond it
@@ -183,30 +183,19 @@ def main(argv):
     # - stage a's links in a sector the detailed stage b replaced are not counted (summed over both stages they were,
     # 2026-10-31). Sector 0x0101 from a only, 0x0102 built by a (2 links) and replaced by b (1 link)
     import navbuild
-    saved = (set(navbuild.DROP_IDS), dict(navbuild.DROP_STATS), dict(navbuild.LADDER_STATS))
-    try:
-        navbuild.DROP_IDS.clear()
-        navbuild.DROP_IDS.update({(1, 2), (10, 11), (12, 13), (20, 21)})      # a: 1-2 (0x0101), 10-11, 12-13 (0x0102)
-        navbuild.DROP_STATS.clear()
-        navbuild.DROP_STATS['sectors'] = {0x0101: 0, 0x0102: 4}
-        navbuild.DROP_STATS['sectors'][0x0102] = 2                          # b over a's entry
-        navbuild.LADDER_STATS.clear()
-        navbuild.LADDER_STATS['sectors'] = {0x0101: (1, 0), 0x0102: (0, 1)}
-        pts = lambda *ids: [(i, (0.0, 0.0, 0.0)) for i in ids]
-        graphs = [(0x0101, None, None, pts(1, 2, 3), [(0, 1, 1.0), (1, 2, 1.0)], (0, 0)),
-                  (0x0102, None, None, pts(20, 21, 22), [(0, 1, 1.0), (2, 1, 1.0)], (0, 100))]    # b's graph
-        navbuild.link_counts(graphs)
-        check((navbuild.DROP_STATS['linked'], navbuild.DROP_STATS['split']) == (2, 2) and
-              (navbuild.LADDER_STATS['linked'], navbuild.LADDER_STATS['split']) == (1, 1),
-              f"link counts of the sectors written: drops {navbuild.DROP_STATS['linked']} (2), split "
-              f"{navbuild.DROP_STATS['split']} (2), ladders {navbuild.LADDER_STATS['linked']} (1)")
-    finally:
-        navbuild.DROP_IDS.clear()
-        navbuild.DROP_IDS.update(saved[0])
-        navbuild.DROP_STATS.clear()
-        navbuild.DROP_STATS.update(saved[1])
-        navbuild.LADDER_STATS.clear()
-        navbuild.LADDER_STATS.update(saved[2])
+    state = navbuild.BuildState()
+    state.drop_ids.update({(1, 2), (10, 11), (12, 13), (20, 21)})      # a: 1-2 (0x0101), 10-11, 12-13 (0x0102)
+    state.drops.sectors.update({0x0101: 0, 0x0102: 4})
+    state.drops.sectors[0x0102] = 2                                     # b over a's entry
+    state.ladders.sectors.update({0x0101: (1, 0), 0x0102: (0, 1)})
+    pts = lambda *ids: [(i, (0.0, 0.0, 0.0)) for i in ids]
+    graphs = [(0x0101, None, None, pts(1, 2, 3), [(0, 1, 1.0), (1, 2, 1.0)], (0, 0)),
+              (0x0102, None, None, pts(20, 21, 22), [(0, 1, 1.0), (2, 1, 1.0)], (0, 100))]    # b's graph
+    navbuild.link_counts(graphs, state)
+    check((state.drops.linked, state.drops.split) == (2, 2) and (state.ladders.linked, state.ladders.split) == (1, 1),
+          f"link counts of the sectors written: drops {state.drops.linked} (2), split "
+          f"{state.drops.split} (2), ladders {state.ladders.linked} (1)")
+    check(navbuild.BuildState().drop_ids == set(), 'a new build state starts empty (nothing shared between builds)')
 
     print('all passed' if not failed else f'{failed} failed')
     return 1 if failed else 0
