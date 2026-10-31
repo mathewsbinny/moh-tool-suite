@@ -98,7 +98,8 @@ def main(argv):
         check(names == ['unwalkable', 'walkable', 'seed', 'unseed', 'note', 'link-areas', 'route-edge add', 'route-edge remove', 'traversal'],
               'every tool adds its operation')
         t = ed.tune.operations[-1]
-        check(t['kind'] == 'ladder' and t['two-way'] is False and t['top'][1] - t['bottom'][1] == 6.0, 'the traversal: a one-way ladder, 6 m')
+        check(t['kind'] == 'ladder' and t['two-way'] is False and abs(t['top'][1] - t['bottom'][1] - 6.0) < 0.002,
+              'the traversal: a one-way ladder, 6 m')                   # ends stored to the millimetre
         check(len(v.overlay) > 40, f'the edits are drawn ({len(v.overlay)} overlay lines)')
         ed.undo(v); ed.undo(v)
         check(len(ed.tune.operations) == 7, 'undo twice')

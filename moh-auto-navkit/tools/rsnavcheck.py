@@ -128,9 +128,10 @@ def main(argv):
     out = [check_level(root, navkit.Project(root).level(lv), rb, a.reference) for lv in a.levels]
     if a.json:
         json.dump(out, open(a.json, 'w'), indent=1)
-    # every pair routed at least one way (a drop link's ground is left one way only), no smoothing failure, the C search
-    # equal to the reference
-    return 0 if all(r['either_way'] == r['unordered'] and r['smooth_failed'] == 0 and
+    # at least two points placed (else there is nothing to route: a broken export would pass), every pair routed at
+    # least one way (a drop link's ground is left one way only), no smoothing failure, the C search equal to the
+    # reference
+    return 0 if all(r['placed'] >= 2 and r['either_way'] == r['unordered'] and r['smooth_failed'] == 0 and
                     r['reference_equal'][0] == r['reference_equal'][1] for r in out) else 1
 
 

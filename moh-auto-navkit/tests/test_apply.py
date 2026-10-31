@@ -43,10 +43,11 @@ def cells_in(nav, region, inset=0.0):
     return int(Path(np.asarray(region['polygon'])).contains_points(nav.cell_xz[m], radius=-2 * inset).sum())
 
 
-def walkable_box(root, lv, nav, g, main_nodes, half=5.0):
+def walkable_box(root, lv, nav, g, main_nodes, half=5.0, avoid=None):
     """A box on the edge of the main network (some walkable ground in it already) with the most sampled surfaces
     that are not walkable ground in the build (ground blocked by objects, steep spots): forcing it walkable must
-    add ground."""
+    add ground. avoid (x, z, r): no box reaching within r of that point horizontally (the unwalkable square: a later
+    walkable edit wins there, and its ground would stay)."""
     import navregress
     import navsample
     import navedits
@@ -56,6 +57,8 @@ def walkable_box(root, lv, nav, g, main_nodes, half=5.0):
     best = None
     for n in main_nodes[::max(1, len(main_nodes) // 300)]:
         p = g[n]
+        if avoid is not None and max(abs(p[0] - avoid[0]), abs(p[2] - avoid[1])) <= avoid[2] + half:
+            continue
         surf = (np.abs(sx - p[0]) <= half) & (np.abs(sz - p[2]) <= half) & (np.abs(sy - p[1]) <= 1.0)
         cells = (np.abs(nav.cell_xz[:, 0] - p[0]) <= half) & (np.abs(nav.cell_xz[:, 1] - p[2]) <= half) & \
             (np.abs(nav.cell_y - p[1]) <= 1.0)
@@ -92,7 +95,7 @@ def main(argv):
         c = g[main_nodes[len(main_nodes) // 3]]
         square = nt.polygon([(c[0] - 10, c[2] - 10), (c[0] + 10, c[2] - 10), (c[0] + 10, c[2] + 10), (c[0] - 10, c[2] + 10)],
                             c[1] - 3, c[1] + 3)
-        box, d = walkable_box(pr.root, lv, nav0, g, main_nodes)
+        box, d = walkable_box(pr.root, lv, nav0, g, main_nodes, avoid=(c[0], c[2], 10.0))
         other = np.nonzero(nav0.node_island == 1)[0]
         isl_pt = g[other[len(other) // 2]]
         island1_cells = nav0.islands[1].cells

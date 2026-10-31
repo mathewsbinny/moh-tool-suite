@@ -798,7 +798,8 @@ def build(samples_path, tris_path, xoff, zoff, out_path, step=mohsoldier.STEP, l
     else:
         graphs = a['graphs']
     if DROP_LINKS:
-        log(f'drop links made {DROP_STATS.get("linked", 0)} (counted per stage)')
+        log(f'drop links made {DROP_STATS.get("linked", 0)} (counted per stage), ends in two sectors '
+            f'{DROP_STATS.get("split", 0) // 2} (not linked)')
     if ladders:
         log(f'ladders: {len(ladders)}; links made {LADDER_STATS.get("linked", 0)} (counted per stage), ends in two '
             f'sectors {LADDER_STATS.get("split", 0)}')
@@ -1057,6 +1058,8 @@ def stage(samples_path, high_path, xoff, zoff, tris_path=None, step=mohsoldier.S
         lads = [(f_, t_) for f_, t_ in ladder_pairs if f_ in area_of and t_ in area_of]
         drops = [(f_, t_) for f_, t_ in drop_pairs if f_ in area_of and t_ in area_of]
         DROP_STATS['linked'] = DROP_STATS.get('linked', 0) + len(drops)
+        # a drop whose ledge and landing lie in two sectors is not linked (as for ladders: the graph is per sector)
+        DROP_STATS['split'] = DROP_STATS.get('split', 0) + sum(1 for f_, t_ in drop_pairs if (f_ in area_of) != (t_ in area_of))
         LADDER_STATS['linked'] = LADDER_STATS.get('linked', 0) + len(lads)
         LADDER_STATS['split'] = LADDER_STATS.get('split', 0) + sum(1 for f_, t_ in ladder_pairs if (f_ in area_of) != (t_ in area_of))
         pts, pairs = build_graph(level, areas, area_of, traced, border_nodes[(X, Y)], gi0, gj0, ox, oz, new_id, orders,
@@ -1507,7 +1510,11 @@ def build_graph(level, areas, area_of, traced, borders, gi0, gj0, ox, oz, new_id
     if ORDER_NODES and orders:
         ORDER_STATS['added'] = ORDER_STATS.get('added', 0) + add_order_nodes(level, pts, pairs, node_at, area_of, orders,
                                                                              gi0, gj0, ox, oz, new_id)
+    joined = {frozenset((a_, b_)) for a_, b_, _d in pairs}
     for u, l_ in drop_ends:
+        if frozenset((u, l_)) in joined:
+            continue                    # a walk pair joins the two nodes already: no drop (finalize_graph would take
+                                        # the walk's way back up)
         DROP_IDS.add((pts[u][0], pts[l_][0]))
         pairs.append((u, l_, math.dist(pts[u][1], pts[l_][1])))
     return pts, pairs

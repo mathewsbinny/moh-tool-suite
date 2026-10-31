@@ -1,7 +1,8 @@
 r"""NavKit's drop links (tools\navdrops.py) on samples built here (no game data): a ledge over larger ground gets links
 down (at most DROP_PER_PAIR, DROP_SPACING apart), none up; no link from a ledge higher than DROP_MAX, across a wall,
-onto a covered landing, or from a region smaller than DROP_MIN_AREA; the region labelling joins floors a link step
-apart and keeps a ledge's top apart from the ground below.
+onto a covered landing, through a column the sampler's cast stopped in (solid), to a landing farther out than a run off
+the ledge reaches, or from a region smaller than DROP_MIN_AREA; the region labelling joins floors a link step apart and
+keeps a ledge's top apart from the ground below.
 
   python test_navdrops.py
 """
@@ -103,6 +104,43 @@ def main(argv):
     # a small ledge (1 m x 1 m, under DROP_MIN_AREA) gets none
     s6 = samples({(i, j): [1.5 if (i < 5 and j < 5) else 0.0] for i in range(40) for j in range(40)}, 40, 40)
     check(navdrops.find(s6, np.ones(len(s6.y), bool), LINK_STEP, PITCH) == [], 'small ledge (1 m2): no link')
+
+    # a solid column next to the ledge (only a roof 5 m up: the cast stopped inside geometry): no link through it
+    solid = {(10, j): [5.0] for j in range(50)}
+    s7 = samples({**{(i, j): [1.5 if i < 10 else 0.0] for i in range(40) for j in range(50)}, **solid}, 40, 50)
+    k7 = np.ones(len(s7.y), bool)
+    k7[np.isclose(s7.y, 5.0)] = False
+    check(navdrops.find(s7, k7, LINK_STEP, PITCH) == [], 'a solid column on the way: no link')
+
+    # reach: a 0.6 m ledge over a pit (a floor 4 m down, deeper than DROP_MAX) with the landing r cells out - a run off it
+    # reaches run_reach(0.6) = 1.6 m
+    def over_pit(r):
+        cols = {(i, j): [0.6 if i < 10 else (-3.4 if i < 9 + r else 0.0)] for i in range(40) for j in range(50)}
+        sp = samples(cols, 40, 50)
+        kp = ~np.isclose(sp.y, -3.4)
+        return navdrops.find(sp, kp, LINK_STEP, PITCH)
+    check(round(navdrops.run_reach(0.6, PITCH), 2) == 1.6, f'run_reach(0.6 m) {navdrops.run_reach(0.6, PITCH):.2f} m')
+    check(over_pit(5) != [], 'a landing 1.0 m out over a pit, 0.6 m down: linked')
+    check(over_pit(10) == [], 'a landing 2.0 m out, 0.6 m down (beyond a run off the ledge): no link')
+    # a curb: 0.55 m down onto floor at its foot that is not walkable (too cramped for the capsule), walkable ground
+    # 1.8 m out - beyond a run off the curb, but the soldier lands at the foot and walks on: linked (mp_10's curbs)
+    sc = samples({(i, j): [0.55 if i < 10 else 0.0] for i in range(40) for j in range(50)}, 40, 50)
+    kc = np.ones(len(sc.y), bool)
+    for k in range(len(sc.y)):
+        if 10 <= surface_xy(sc, k)[0] < 18:
+            kc[k] = False
+    check(navdrops.find(sc, kc, LINK_STEP, PITCH) != [], 'a curb with cramped floor at its foot: linked')
+
+    # a diagonal past a wall corner: a wall along the ledge (x column 10) with one opening at z row 25 - the drops
+    # through the opening are straight ones (from the ledge's row 25, up to 10 cells back); a diagonal into it would cut
+    # past the wall's corner, so it is no candidate
+    corner = {(10, j): [2.5] for j in range(50) if j != 25}
+    s8 = ledge(extra=corner)
+    k8 = np.ones(len(s8.y), bool)
+    k8[np.isclose(s8.y, 2.5)] = False
+    navdrops.find(s8, k8, LINK_STEP, PITCH)
+    check(navdrops.STATS['candidates'] == 10, f"through an opening: straight candidates only "
+          f"({navdrops.STATS['candidates']}, 10 expected)")
 
     print('all passed' if not failed else f'{failed} failed')
     return 1 if failed else 0

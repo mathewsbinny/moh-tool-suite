@@ -7,6 +7,7 @@ the physics every MP kit uses (US / RU Assault, Demolition, Recon):
     PhysicalRadius 0.35        MaxAscendAngle 45          WaterDepthLimit 1.4 (SwimmingStateData BodyUnderWater 1.4)
     Stand: Height 1.8, StepHeight 0.3, eyes 1.6          Crouch: Height 1.15, StepHeight 0.3, eyes 1.0
     JumpStateData JumpHeight 0.65                         OnGroundStateData AllowedDistanceFromGround 0.5
+    OnGroundStateData Stand Velocity 4 (Crouch 2.7)       GravityScale 1
     LadderAcceptAngle 30, LadderAcceptAnglePitch -30
 
 (BFBC2, which NavKit was first written for, used Kynapse's infantry settings instead: radius 0.4, StepMax 0.28,
@@ -27,6 +28,8 @@ STEP = 0.3                 # StepHeight (both poses)
 SLOPE = 45.0               # MaxAscendAngle (deg): steeper ground is not climbed
 JUMP = 0.65                # JumpHeight: what a jump clears
 WATER_DEPTH = 1.4          # WaterDepthLimit: deeper water is swum, not walked
+RUN = 4.0                  # m/s: OnGroundStateData's standing Velocity, the run (no sprint)
+GRAVITY = 9.81             # m/s2 (GravityScale 1)
 
 # Derived (NavKit's conventions; every tool takes them from here so files stay consistent)
 Y_OFFSET = HEIGHT / 2      # path-data outline and node heights: ground + half the soldier's height

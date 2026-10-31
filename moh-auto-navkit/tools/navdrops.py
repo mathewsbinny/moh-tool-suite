@@ -11,9 +11,16 @@ Rules (on the build's kept surfaces, per stage and pitch):
   - regions: kept surfaces joined to their 8 neighbours by a height step of at most navbuild.LINK_STEP (components;
     numpy labelling, no recursion);
   - a candidate: a kept surface k of any region but the largest and at least DROP_MIN_AREA, a column up to DROP_REACH
-    away in one of 8 directions holding a kept surface n of a larger region DROP_MIN .. DROP_MAX below k, with no surface in between from k's
-    height + mohsoldier.STEP up to k's height + the soldier's height (no wall at the ledge), and nothing above n in its
-    own column below k's height + the soldier's height (the landing is open);
+    away in one of 8 directions holding a kept surface n of a larger region DROP_MIN .. DROP_MAX below k, with no surface
+    in between from k's height + mohsoldier.STEP up to k's height + the soldier's height (no wall at the ledge), every
+    column on the way holding a surface at or below k's height + mohsoldier.STEP (a column with none is one the
+    sampler's cast stopped in: inside solid geometry, 2026-10-30), and nothing above n in its own column below k's
+    height + the soldier's height (the landing is open);
+  - floor within reach of a run off the ledge: the first column on the way with a surface DROP_MIN .. DROP_MAX below
+    k (kept or not: floor too cramped for the capsule at a curb's foot is still floor to land on, mp_10's 0.5 m curbs)
+    no farther out than the soldier runs (mohsoldier.RUN) while it falls that far, plus one cell; from there it walks
+    to n (mp_09_overrun had a 1 m drop to a landing 2.8 m out with no floor before it, through a wall);
+  - a diagonal step blocked by a wall in either of the two straight columns beside it (a corner);
   - at most DROP_PER_PAIR links per pair of regions, DROP_SPACING apart, the shortest first.
 """
 import math
@@ -32,6 +39,11 @@ DROP_MIN_AREA = 4.0       # m2: an upper region smaller than this (a rock top, a
 DROP_SPACING = 4.0        # m
 DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]
 STATS = {}
+
+
+def run_reach(drop, pitch):
+    """How far out a landing drop metres down can be: the run (mohsoldier.RUN) for the time of the fall, plus a cell."""
+    return mohsoldier.RUN * math.sqrt(2.0 * drop / mohsoldier.GRAVITY) + pitch
 
 
 def components(s, keep, link_step):
@@ -70,7 +82,7 @@ def components(s, keep, link_step):
     u = np.concatenate(us) if us else np.zeros(0, np.int64)
     v = np.concatenate(vs) if vs else np.zeros(0, np.int64)
     lab[ks] = ks
-    for _ in range(200):
+    while True:                                      # until no label changes (each pass only lowers labels: it ends)
         lu, lv = lab[u], lab[v]
         mn = np.minimum(lu, lv)
         before = lab.copy()
@@ -110,22 +122,37 @@ def find(s, keep, link_step, pitch):
         c = int(col[k])
         i, j = c % s.nx, c // s.nx
         yk = y[k]
+
+        def wall(a, b):
+            cc = b * s.nx + a
+            return any(yk + mohsoldier.STEP < y[m] < yk + head for m in range(s.start[cc], s.start[cc + 1]))
         for di, dj in DIRS:
+            land = None                                     # how far out the first floor at drop height lies
             for r in range(1, reach + 1):
                 a, b = i + di * r, j + dj * r
                 if not (0 <= a < s.nx and 0 <= b < s.nz):
                     break
                 cc = b * s.nx + a
                 rng = range(s.start[cc], s.start[cc + 1])
+                if not any(y[m] <= yk + mohsoldier.STEP for m in rng):
+                    break                                   # no floor under the way: inside solid geometry
+                dist = r * pitch * math.hypot(di, dj)
+                if land is None and any(DROP_MIN <= yk - y[m] <= DROP_MAX for m in rng):
+                    land = (dist, max(y[m] for m in rng if DROP_MIN <= yk - y[m] <= DROP_MAX))
                 hit = None
                 for n in rng:
                     if (keep[n] and lab[n] != lab[k] and size[int(lab[n])] > size[int(lab[k])] and
-                            DROP_MIN <= yk - y[n] <= DROP_MAX):
+                            DROP_MIN <= yk - y[n] <= DROP_MAX and land is not None and
+                            land[0] <= run_reach(yk - land[1], pitch)):
                         if not any(y[n] + 0.1 < y[m] < yk + head for m in rng):   # the landing is open
                             hit = n
                             break
+                # a diagonal step passes the corner between two straight neighbours: a wall in either side column
+                # blocks it (the soldier's 0.35 m radius does not pass a corner between 0.2 m columns)
+                if di and dj and (wall(a - di, b) or wall(a, b - dj)):
+                    break
                 if hit is not None:
-                    cands[(int(lab[k]), int(lab[hit]))].append((r * pitch * math.hypot(di, dj), k, hit))
+                    cands[(int(lab[k]), int(lab[hit]))].append((dist, k, hit))
                     break
                 # the path out over this column: nothing from the ledge's step up to the soldier's height
                 if any(yk + mohsoldier.STEP < y[m] < yk + head for m in rng):

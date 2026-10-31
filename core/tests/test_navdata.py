@@ -23,9 +23,9 @@ from mohcore import navdata, navpath  # noqa: E402
 import navkit  # noqa: E402
 import ordercheck  # noqa: E402
 
-# NavKit's exports as of 2026-10-30 (all 26 MP levels built offline; moh-tool-suite cbff4d9). A new export of
+# NavKit's exports as of 2026-10-30 (all 26 MP levels built offline, drop links within a run's reach). A new export of
 # one of these levels can change its count: check the islands in the Navigation Studio, then record the new one.
-ISLANDS = {'mp_07_koth': 6, 'mp_03_elimination': 13}
+ISLANDS = {'mp_07_koth': 8, 'mp_03_elimination': 16}
 
 
 def reach(nav, k, back=False):
