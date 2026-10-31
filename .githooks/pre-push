@@ -1,0 +1,12 @@
+#!/bin/sh
+# MOH Tool Suite: the quick tier before every push (there is no CI server - the game tier needs this PC's game copy,
+# so run `python run_tests.py game` yourself before pushing a change to a tool that reads the game's files).
+# Turned on per clone with:  git config core.hooksPath .githooks      (README "Tests")
+# A push that must go out with a failing test: git push --no-verify (say why in the commit).
+cd "$(git rev-parse --show-toplevel)" || exit 1
+PY="${PYTHON:-python}"
+echo "pre-push: python run_tests.py quick (about a minute)"
+if ! "$PY" run_tests.py quick; then
+    echo "pre-push: the quick tier failed - the push is stopped (fix it, or git push --no-verify with a reason)"
+    exit 1
+fi

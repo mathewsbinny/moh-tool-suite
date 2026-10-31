@@ -59,7 +59,7 @@ def _adjacency(nav: navdata.NavData) -> tuple[np.ndarray, np.ndarray, np.ndarray
         src = nav.edges[order, 0] if len(order) else np.zeros(0, int)
         start = np.searchsorted(src, np.arange(len(nav.node_pos) + 1))
         cache = (start, nav.edges[order, 1] if len(order) else np.zeros(0, int), nav.edge_cost[order] if len(order) else np.zeros(0))
-        nav._adj = cache
+        setattr(nav, '_adj', cache)       # a cache on the object, not a NavData field
     return cache
 
 

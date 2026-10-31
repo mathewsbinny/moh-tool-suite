@@ -187,6 +187,25 @@ class Report:
 
 def verify(orig_members, new_members, rep, named=None, label='movie'):
     """Compares a patched movie's members with the original's (module doc); adds to the report."""
+    lower, changed = member_changes(orig_members, new_members, rep)
+    om, nm = mc.movie_from_members(orig_members, 'the original'), mc.movie_from_members(new_members, 'the patched movie')
+    if om.big != nm.big:
+        rep.add('error', 'the byte order differs between the two movies')
+        return
+    oc, nc = Code(om), Code(nm)
+    aptk = next(k for k in orig_members if k.lower().endswith('.apt'))
+    constk = next(k for k in orig_members if k.lower() == aptk[:-4].lower() + '.const')
+    total = sum(len(v) for v in changed.values())
+    rep.add('info', f'{total} byte(s) changed: ' + ', '.join(f'{k} {len(v)}' for k, v in changed.items() if v) if total else 'no byte changed in place')
+    describe_ranges(rep, changed, orig_members, new_members, lower, aptk, constk, (om, nm), (oc, nc))
+    decode_shifts(rep, oc, nc, changed.get(aptk, set()))
+    compare_findings(rep, oc, nc)
+    if named is not None:
+        check_named(rep, changed, named)
+
+
+def member_changes(orig_members, new_members, rep):
+    """(patched member name by lower-case name, changed offsets by original member); member and size problems reported."""
     lower = {k.lower(): k for k in new_members}
     changed = {}
     for k, ob in orig_members.items():
@@ -205,50 +224,56 @@ def verify(orig_members, new_members, rep, named=None, label='movie'):
     for k in new_members:
         if k.lower() not in {x.lower() for x in orig_members}:
             rep.add('error', f'member {k} is new in the patched movie')
+    return lower, changed
 
-    om, nm = mc.movie_from_members(orig_members, 'the original'), mc.movie_from_members(new_members, 'the patched movie')
-    if om.big != nm.big:
-        rep.add('error', 'the byte order differs between the two movies')
-        return
-    oc, nc = Code(om), Code(nm)
-    aptk = next(k for k in orig_members if k.lower().endswith('.apt'))
-    constk = next(k for k in orig_members if k.lower() == aptk[:-4].lower() + '.const')
-    total = sum(len(v) for v in changed.values())
-    rep.add('info', f'{total} byte(s) changed: ' + ', '.join(f'{k} {len(v)}' for k, v in changed.items() if v) if total else 'no byte changed in place')
 
-    # the changed ranges, named
+def describe_ranges(rep, changed, orig_members, new_members, lower, aptk, constk, movies, codes):
+    """The changed ranges, named: code (the instructions before and after), constants, or data."""
     for k, diff in changed.items():
         for a, b in ranges(diff):
             ob, nb = orig_members[k][a:b], new_members[lower[k.lower()]][a:b]
             head = f'{k} {a:X}: {ob.hex(" ").upper()} -> {nb.hex(" ").upper()}'
             if k == aptk:
-                before = sorted({oc.containing(o).at for o in range(a, b) if oc.containing(o)})
-                after = sorted({nc.containing(o).at for o in range(a, b) if nc.containing(o)})
-                if before or after:
-                    rep.add('info', f'{head}  in {nc.fname(a)}', True)
-                    for at in before:
-                        rep.add('info', f'      was {at:06X}  {oc.text(oc.by_at[at][0])}', True)
-                    for at in after:
-                        rep.add('info', f'      now {at:06X}  {nc.text(nc.by_at[at][0])}', True)
-                else:
-                    rep.add('info', f'{head}  (data, not code)', True)
-                for o in sorted(o for o in diff if a <= o < b):
-                    if new_members[aptk][o] == 0 and o in nc.by_at:
-                        rep.add('error', f'zero-opcode: {aptk} {o:X} is now opcode 00 (End) in {nc.fname(o)} - use 59 17 '
-                                         '(push 0 / pop) as filler')
+                describe_code_range(rep, head, diff, a, b, codes, aptk, new_members[aptk])
             elif k == constk:
-                lo, hi = const_layout(om)
-                desc = []
-                for idx, field in sorted({((o - lo) // 8, (o - lo) % 8 // 4) for o in diff if a <= o < b and lo <= o < hi}):
-                    old = om.const[idx] if idx < len(om.const) else '?'
-                    new = nm.const[idx] if idx < len(nm.const) else '?'
-                    desc.append(f'constant {idx} {("type", "value")[field]}: {old} -> {new}')
-                rep.add('info', head + ('  ' + '; '.join(desc) if desc else '  (constant data)'), True)
+                describe_const_range(rep, head, diff, a, b, movies)
             else:
                 rep.add('info', head, True)
 
-    # every instruction outside the changed bytes decodes as before
-    cset = changed.get(aptk, set())
+
+def describe_code_range(rep, head, diff, a, b, codes, aptk, new_apt):
+    """A changed range of the .apt: the instructions it held and holds; a changed byte now opcode 00 is an error."""
+    oc, nc = codes
+    before = sorted({oc.containing(o).at for o in range(a, b) if oc.containing(o)})
+    after = sorted({nc.containing(o).at for o in range(a, b) if nc.containing(o)})
+    if before or after:
+        rep.add('info', f'{head}  in {nc.fname(a)}', True)
+        for at in before:
+            rep.add('info', f'      was {at:06X}  {oc.text(oc.by_at[at][0])}', True)
+        for at in after:
+            rep.add('info', f'      now {at:06X}  {nc.text(nc.by_at[at][0])}', True)
+    else:
+        rep.add('info', f'{head}  (data, not code)', True)
+    for o in sorted(o for o in diff if a <= o < b):
+        if new_apt[o] == 0 and o in nc.by_at:
+            rep.add('error', f'zero-opcode: {aptk} {o:X} is now opcode 00 (End) in {nc.fname(o)} - use 59 17 '
+                             '(push 0 / pop) as filler')
+
+
+def describe_const_range(rep, head, diff, a, b, movies):
+    """A changed range of the .const: each constant entry's field it changes, old and new text."""
+    om, nm = movies
+    lo, hi = const_layout(om)
+    desc = []
+    for idx, field in sorted({((o - lo) // 8, (o - lo) % 8 // 4) for o in diff if a <= o < b and lo <= o < hi}):
+        old = om.const[idx] if idx < len(om.const) else '?'
+        new = nm.const[idx] if idx < len(nm.const) else '?'
+        desc.append(f'constant {idx} {("type", "value")[field]}: {old} -> {new}')
+    rep.add('info', head + ('  ' + '; '.join(desc) if desc else '  (constant data)'), True)
+
+
+def decode_shifts(rep, oc, nc, cset):
+    """Every instruction outside the changed bytes (cset, the .apt's) decodes as before; else a decode-shift error."""
     cs = sorted(cset)
 
     def touched(ins, code):
@@ -272,7 +297,9 @@ def verify(orig_members, new_members, rep, named=None, label='movie'):
     else:
         rep.add('info', f'{len(nc.by_at)} instructions decode; every one away from the changed bytes as before')
 
-    # the rules, on the patched movie, against the original's own
+
+def compare_findings(rep, oc, nc):
+    """The rules, on the patched movie, against the original's own: new findings are errors, old ones notes."""
     of, nf = oc.findings(), nc.findings()
     for key, f in sorted(nf.items(), key=lambda x: (x[0][0], x[0][1])):
         if key not in of or (f.kind == 'shared-list' and f.text != of[key].text):
@@ -284,13 +311,14 @@ def verify(orig_members, new_members, rep, named=None, label='movie'):
         if key not in nf:
             rep.add('info', f'gone in the patched movie ({f.kind}): {f.text}')
 
-    # only the bytes the patch names
-    if named is not None:
-        for k, diff in changed.items():
-            want = named.get(k, set())
-            extra = sorted(diff - want)
-            if extra:
-                rep.add('error', f'unexpected-change: {k} differs at {len(extra)} byte(s) the patch does not name, first at {extra[0]:X}')
+
+def check_named(rep, changed, named):
+    """Only the bytes the patch names (named: offsets by member) may differ; others are unexpected-change errors."""
+    for k, diff in changed.items():
+        want = named.get(k, set())
+        extra = sorted(diff - want)
+        if extra:
+            rep.add('error', f'unexpected-change: {k} differs at {len(extra)} byte(s) the patch does not name, first at {extra[0]:X}')
 
 
 # ------------------------------------------------------------------------------------------------ commands

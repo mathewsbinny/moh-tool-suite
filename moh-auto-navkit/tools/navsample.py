@@ -80,7 +80,7 @@ def load(path: str) -> tuple[Samples, int]:
     normals: list[tuple[float, float, float]] = []
     flags: list[int] = []
     hits: list[tuple[int, ...]] = []
-    rec = 8 if version == 1 else 20
+    rec_size = 8 if version == 1 else 20
     c = 0
     while c < cols and pos < len(data):
         n = data[pos]
@@ -89,7 +89,7 @@ def load(path: str) -> tuple[Samples, int]:
             y, a, b, d, f = struct.unpack_from('<f3bB', data, pos)
             if version == 2:
                 hits.append(struct.unpack_from('<3I', data, pos + 8))
-            pos += rec
+            pos += rec_size
             ys.append(y)
             normals.append((a / 127.0, b / 127.0, d / 127.0))
             flags.append(f)

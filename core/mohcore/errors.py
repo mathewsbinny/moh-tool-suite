@@ -51,7 +51,7 @@ CAUSES = [
      lambda e: 'The PC ran out of memory.',
      lambda e: 'Close other programs, or open a smaller level.'),
 ]
-PIP_NAMES = {'imgui_bundle': 'imgui-bundle', 'PIL': 'pillow', 'capstone': 'capstone', 'pefile': 'pefile'}
+PIP_NAMES: dict[str, str] = {'imgui_bundle': 'imgui-bundle', 'PIL': 'pillow', 'capstone': 'capstone', 'pefile': 'pefile'}
 
 
 def log_dir() -> str:
@@ -86,15 +86,23 @@ def setup(tool: str, gui: bool = True, level: int = logging.INFO) -> logging.Log
         log.addHandler(h)
     logging.captureWarnings(True)
     wlog = logging.getLogger('py.warnings')
-    for h in log.handlers:
-        if h not in wlog.handlers:
-            wlog.addHandler(h)
+    for handler in log.handlers:
+        if handler not in wlog.handlers:
+            wlog.addHandler(handler)
     warnings.simplefilter('default')
     sys.excepthook = lambda t, v, tb: report(v, tb=tb)
-    threading.excepthook = lambda a: report(a.exc_value, tb=a.exc_traceback, where=f'thread {a.thread.name if a.thread else "?"}')
+    threading.excepthook = _thread_excepthook
     log.info(f'--- {tool} started (Python {sys.version.split()[0]}, {sys.platform}) ---')
     _prune(tool)
     return log
+
+
+def _thread_excepthook(a: threading.ExceptHookArgs) -> None:
+    """An uncaught error in another thread: logged and reported (the default hook for one without a value)."""
+    if a.exc_value is None:
+        threading.__excepthook__(a)
+        return
+    report(a.exc_value, tb=a.exc_traceback, where=f'thread {a.thread.name if a.thread else "?"}')
 
 
 def _prune(tool: str) -> None:
@@ -139,7 +147,7 @@ def _window(title: str, text: str, kind: str = 'error') -> None:
     try:
         import tkinter as tk
         from tkinter import messagebox
-        root = tk._default_root
+        root = getattr(tk, '_default_root')    # tkinter's own root window, if one is open
         own = root is None
         if own:
             root = tk.Tk()

@@ -92,8 +92,10 @@ class Packfile:
             nmembers = struct.unpack_from('<i', self.d, off + 28)[0]
             members = []
             for k in range(nmembers):
+                assert members_p is not None, f'{name}: {nmembers} members and no member table'
                 mo = members_p + k * 24
-                mname = self.cstr(self.deref(mo))
+                mname_p = self.deref(mo)
+                mname = self.cstr(mname_p) if mname_p is not None else '?'
                 mclass = self.deref(mo + 4)
                 mtype, msub, carr, flags, moff = struct.unpack_from('<BBhHH', self.d, mo + 12)
                 members.append({'name': mname, 'class': mclass, 'type': mtype, 'subtype': msub,
@@ -101,7 +103,7 @@ class Packfile:
             self.classes[off] = {'name': name, 'parent': parent, 'size': size, 'members': members}
         self.class_by_name = {c['name']: off for off, c in self.classes.items()}
 
-    def all_members(self, cname: str) -> list[dict[str, Any]]:
+    def all_members(self, cname: str | None) -> list[dict[str, Any]]:
         """Members of a class including inherited ones, as (name, member)."""
         off = self.class_by_name.get(cname)
         chain: list[dict[str, Any]] = []
@@ -124,6 +126,8 @@ class Packfile:
         d = self.d
         if carray:
             size = self.elem_size(mtype, mclass_name)
+            if size is None:
+                return [('?', carray)]
             return [self.read_value(at + i * size, mtype, sub, mclass_name) for i in range(carray)]
         if mtype in SIMPLE:
             return struct.unpack_from(SIMPLE[mtype][0], d, at)[0]
@@ -162,7 +166,7 @@ class Packfile:
             return self.struct_size(mclass_name)
         return None
 
-    def read_object(self, at: int, cname: str) -> dict[str, Any]:
+    def read_object(self, at: int, cname: str | None) -> dict[str, Any]:
         out: dict[str, Any] = {}
         for m in self.all_members(cname):
             if m['type'] in (T_ZERO, T_VOID, T_FUNCTIONPOINTER):

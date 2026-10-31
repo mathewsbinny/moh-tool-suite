@@ -53,7 +53,7 @@ class DbxFile:
 
     @property
     def instances(self) -> list[Element]:
-        return [e for e in self.roots[0].children if e.tag == 'instance']
+        return [e for e in self.roots[0].children or () if e.tag == 'instance']
 
     def instance(self, guid: str) -> Element | None:
         g = guid.lower()
@@ -151,7 +151,7 @@ def parse(data: bytes) -> DbxFile:
             _byte(data, pos)
             pos += 1
             e.children = []
-            (stack[-1].children if stack else roots).append(e)
+            _siblings(stack, roots).append(e)
             stack.append(e)
             continue
         if e.kind == TEXT:
@@ -171,12 +171,21 @@ def parse(data: bytes) -> DbxFile:
                 raise ValueError('truncated file: value cut short')
             e.raw = data[pos:pos + 2]
             pos += 2
-        (stack[-1].children if stack else roots).append(e)
+        _siblings(stack, roots).append(e)
     if stack:
         raise ValueError('truncated file: unclosed container(s)')
     if not roots:
         raise ValueError('truncated file: no elements after the string table')
     return DbxFile(strings, roots)
+
+
+def _siblings(stack: list[Element], roots: list[Element]) -> list[Element]:
+    """The list a new element joins: the open container's children (set when it opened), else the roots."""
+    if not stack:
+        return roots
+    children = stack[-1].children
+    assert children is not None
+    return children
 
 
 def read(path: str) -> DbxFile:
@@ -214,7 +223,9 @@ def _net_g(value: float, precision: int) -> str:
     if r.adjusted() != exp:                # 9.99... rounded up to 10.0...
         exp = r.adjusted()
         r = d.quantize(Decimal(1).scaleb(exp - precision + 1), rounding=ROUND_HALF_UP)
-    digits = str(abs(r.scaleb(-r.as_tuple().exponent))).rstrip('0') or '0'
+    exponent = r.as_tuple().exponent
+    assert isinstance(exponent, int)       # a finite value (not 'n', 'N' or 'F')
+    digits = str(abs(r.scaleb(-exponent))).rstrip('0') or '0'
     digits = digits[:precision]
     sign = '-' if r < 0 else ''
     if exp < -4 or exp >= precision:

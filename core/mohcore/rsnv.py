@@ -160,7 +160,7 @@ def write(path: str, sections: dict[str, list[tuple] | bytes | bytearray], heade
     """Writes the file. sections: tag -> list of tuples (by SCHEMA) or bytes (BMAP, META). header: level, sea_level,
     radius, height, step, water_depth, hpd_sha256 (hex)."""
     e = '>' if big_endian else '<'
-    order = [t for t in ('SECT', 'NODE', 'NAUX', 'EDGE', 'AREA', 'PORT', 'BMAP', 'HGHT', 'GBKT', 'GLST', 'ANOD', 'LADR',
+    order: list[str] = [t for t in ('SECT', 'NODE', 'NAUX', 'EDGE', 'AREA', 'PORT', 'BMAP', 'HGHT', 'GBKT', 'GLST', 'ANOD', 'LADR',
                          'OFFM', 'ISLD', 'OBJT', 'CEDG', 'OREF', 'META') if t in sections]
     blobs: list[tuple[str, bytes, int, int]] = []
     for t in order:
@@ -252,6 +252,32 @@ class World:
     sectors: list[tuple] = field(default_factory=list)
     areas: list[Area] = field(default_factory=list)
     meta: dict[str, Any] = field(default_factory=dict)
+    # the sections load() reads: declared for the type checker only (not constructor arguments, not in repr or ==,
+    # and unset until load() sets them - as before they were declared)
+    node_pos: np.ndarray = field(init=False, repr=False, compare=False)
+    node_first_edge: np.ndarray = field(init=False, repr=False, compare=False)
+    node_area: np.ndarray = field(init=False, repr=False, compare=False)
+    node_sector: np.ndarray = field(init=False, repr=False, compare=False)
+    node_island: np.ndarray = field(init=False, repr=False, compare=False)
+    node_flags: np.ndarray = field(init=False, repr=False, compare=False)
+    edge_target: np.ndarray = field(init=False, repr=False, compare=False)
+    edge_kind: np.ndarray = field(init=False, repr=False, compare=False)
+    edge_cost: np.ndarray = field(init=False, repr=False, compare=False)
+    edge_flags: np.ndarray = field(init=False, repr=False, compare=False)
+    bmap: bytes | bytearray = field(init=False, repr=False, compare=False)
+    hght: np.ndarray = field(init=False, repr=False, compare=False)
+    gbkt: np.ndarray = field(init=False, repr=False, compare=False)
+    glst: np.ndarray = field(init=False, repr=False, compare=False)
+    anod: np.ndarray = field(init=False, repr=False, compare=False)
+    ladders: list[tuple] = field(init=False, repr=False, compare=False)
+    offmesh: list[tuple] = field(init=False, repr=False, compare=False)
+    islands: list[tuple] = field(init=False, repr=False, compare=False)
+    ports: list[tuple] = field(init=False, repr=False, compare=False)
+    min_pitch: float = field(init=False, repr=False, compare=False)
+    objects: list[tuple] = field(init=False, repr=False, compare=False)
+    cond: dict[int, list[int]] = field(init=False, repr=False, compare=False)     # edge -> [object indices]
+    cedg_rows: list[tuple] = field(init=False, repr=False, compare=False)
+    oref: list[int] = field(init=False, repr=False, compare=False)
 
     # -- bitmaps and heights
     def walkable(self, a: Area, i: int, j: int) -> bool:
@@ -627,7 +653,7 @@ class World:
         return list(dict.fromkeys(out))
 
 
-def _array(raw: bytes, e: str, off: int, count: int, fmt: str) -> list[tuple]:
+def _array(raw: bytes | bytearray, e: str, off: int, count: int, fmt: str) -> list[tuple]:
     st = struct.Struct(e + fmt)
     return [st.unpack_from(raw, off + k * st.size) for k in range(count)]
 

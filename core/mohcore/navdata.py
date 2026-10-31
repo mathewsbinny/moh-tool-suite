@@ -21,7 +21,7 @@ import pickle
 import sys
 import zipfile
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, BinaryIO
 
@@ -104,7 +104,7 @@ def _terrain_id(heightfield: Heightfield | None) -> str:
         h.update(np.ascontiguousarray(heightfield.raw).tobytes())
         fp = 'hf-' + h.hexdigest()[:16]
         try:
-            heightfield._navdata_id = fp
+            setattr(heightfield, '_navdata_id', fp)       # a cache on the object, not a Heightfield field
         except AttributeError:
             pass
     return fp
@@ -137,7 +137,7 @@ def _write_atomic(path: str, write: Callable[[BinaryIO], object]) -> None:
             os.remove(tmp)
 
 
-def _cells(f: Any, heightfield: Heightfield | None, cache_dir: str | None,
+def _cells(f: hpdtool.HpdFile, heightfield: Heightfield | None, cache_dir: str | None,
            path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     if cache_dir:
         cp = os.path.join(cache_dir, _key(path) + '.npz')
@@ -150,18 +150,20 @@ def _cells(f: Any, heightfield: Heightfield | None, cache_dir: str | None,
                 return xz, _ground(xz, est, heightfield), area, est
             except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
                 pass
-    xz, ys, area_of = [], [], []
+    xzs: list[np.ndarray] = []
+    ys: list[np.ndarray] = []
+    area_of: list[np.ndarray] = []
     k = 0
     for s in f.sectors:
         for a in kymesh.parse_mesh(s.mesh).areas:
             c = navdiff.area_cells(a)
             if c:
                 ij = np.array(list(c.keys()), dtype=np.float64)
-                xz.append(ij * GRID)
+                xzs.append(ij * GRID)
                 ys.append(np.array(list(c.values()), dtype=np.float64))
                 area_of.append(np.full(len(c), k, dtype=np.int32))
             k += 1
-    xz = np.concatenate(xz) if xz else np.zeros((0, 2))
+    xz = np.concatenate(xzs) if xzs else np.zeros((0, 2))
     est = np.concatenate(ys) if ys else np.zeros(0)
     area = np.concatenate(area_of) if area_of else np.zeros(0, np.int32)
     y = _ground(xz, est, heightfield)
@@ -195,7 +197,28 @@ def load(path: str, heightfield: Heightfield | None = None, cache_dir: str | Non
 
 
 def _load(path: str, heightfield: Heightfield | None, cache_dir: str | None) -> NavData:
+    """The file read into NavData: areas, cells, the route graph, its islands and ladder ground."""
     f = hpdtool.parse(open(path, 'rb').read())
+    areas = _areas(f)
+    xz, y, cell_area, _ = _cells(f, heightfield, cache_dir, path)
+    counts = _count_cells(areas, cell_area)
+    pos, sec, edges, costs = _route_graph(f)
+    roots = _components(len(pos), edges)
+    # ladder links, and the walking parts of each island (its components without them): ground on any walking
+    # part but the island's largest is reached through a ladder - ladder ground
+    ladder_edge = _ladder_edges(pos, edges)
+    walk_root = _components(len(pos), (e for e, lad in zip(edges, ladder_edge) if not lad))
+    base = _ladder_base(roots, walk_root, ladder_edge)
+    order, node_island = _island_order(roots)
+    centre = _area_centres(len(areas), xz, y, cell_area, counts)
+    _area_islands(areas, centre, pos, sec, node_island, roots, walk_root, base)
+    islands = _islands(areas, order, node_island, pos)
+    return NavData(path, areas, xz, y, cell_area, pos, np.array(sec), edges, np.array(costs, dtype=np.float64),
+                   node_island, islands, ladder_edge)
+
+
+def _areas(f: hpdtool.HpdFile) -> list[NavArea]:
+    """Every sector's mesh areas in file order, with their outline, portals and border portals."""
     areas = []
     for s in f.sectors:
         for n, a in enumerate(kymesh.parse_mesh(s.mesh).areas):
@@ -203,13 +226,25 @@ def _load(path: str, heightfield: Heightfield | None, cache_dir: str | None) -> 
                                  [np.asarray(l, dtype=np.float32) for l in a.outline if len(l) >= 2],
                                  [(np.asarray(p.p0), np.asarray(p.p1), p.target) for p in a.portals],
                                  [(np.asarray(b.p0), np.asarray(b.p1)) for b in a.border_portals]))
-    xz, y, cell_area, _ = _cells(f, heightfield, cache_dir, path)
+    return areas
+
+
+def _count_cells(areas: list[NavArea], cell_area: np.ndarray) -> np.ndarray:
+    """The cell count of each area, also kept on the area (cells)."""
     counts = np.bincount(cell_area, minlength=len(areas)) if len(cell_area) else np.zeros(len(areas), int)
     for a, n in zip(areas, counts):
         a.cells = int(n)
+    return counts
 
+
+def _route_graph(f: hpdtool.HpdFile) -> tuple[np.ndarray, list[int], np.ndarray, list[float]]:
+    """The route graph: node positions, each node's sector, edges as node index pairs, edge costs (metres)."""
     # route graph: border nodes repeat in both sectors with the same id - one node per id
-    index, pos, sec, edges, costs = {}, [], [], [], []
+    index: dict[int, int] = {}
+    pos: list[tuple[float, float, float]] = []
+    sec: list[int] = []
+    edges: list[tuple[int, int]] = []
+    costs: list[float] = []
     for s in f.sectors:
         local = []
         for nd in s.nodes:
@@ -221,64 +256,76 @@ def _load(path: str, heightfield: Heightfield | None, cache_dir: str | None) -> 
         for e in s.edges:
             edges.append((local[e.src], local[e.dst]))
             costs.append((e.tag & 0x7FFFFFFF) / 16.0)
-    pos = np.array(pos, dtype=np.float64).reshape(-1, 3)
-    edges = np.array(edges, dtype=np.int64).reshape(-1, 2)
-    parent = np.arange(len(pos))
+    return (np.array(pos, dtype=np.float64).reshape(-1, 3), sec, np.array(edges, dtype=np.int64).reshape(-1, 2),
+            costs)
+
+
+def _components(n: int, pairs: Iterable[Any]) -> np.ndarray:
+    """Union-find over n nodes joined by the (a, b) pairs: each node's component root."""
+    parent = np.arange(n)
 
     def find(a: int) -> int:
         while parent[a] != a:
             parent[a] = parent[parent[a]]
             a = parent[a]
         return a
-    for a, b in edges:
+    for a, b in pairs:
         ra, rb = find(a), find(b)
         if ra != rb:
             parent[ra] = rb
-    roots = np.array([find(k) for k in range(len(pos))], dtype=np.int64)
-    # ladder links, and the walking parts of each island (its components without them): ground on any walking
-    # part but the island's largest is reached through a ladder - ladder ground
+    return np.array([find(k) for k in range(n)], dtype=np.int64)
+
+
+def _ladder_edges(pos: np.ndarray, edges: np.ndarray) -> np.ndarray:
+    """Per edge: a ladder link (climbs more than LADDER_DY, and more than LADDER_SLOPE metres per metre across)."""
     if len(edges):
         d = pos[edges[:, 1]] - pos[edges[:, 0]]
         dy, h = np.abs(d[:, 1]), np.hypot(d[:, 0], d[:, 2])
-        ladder_edge = (dy > LADDER_DY) & (dy > LADDER_SLOPE * h)
-    else:
-        ladder_edge = np.zeros(0, bool)
-    walk = np.arange(len(pos))
+        return (dy > LADDER_DY) & (dy > LADDER_SLOPE * h)
+    return np.zeros(0, bool)
 
-    def wfind(a: int) -> int:
-        while walk[a] != a:
-            walk[a] = walk[walk[a]]
-            a = walk[a]
-        return a
-    for (a, b), lad in zip(edges, ladder_edge):
-        if not lad:
-            ra, rb = wfind(a), wfind(b)
-            if ra != rb:
-                walk[ra] = rb
-    walk_root = np.array([wfind(k) for k in range(len(pos))], dtype=np.int64)
-    base = {}
+
+def _ladder_base(roots: np.ndarray, walk_root: np.ndarray, ladder_edge: np.ndarray) -> dict[int, int]:
+    """Island root -> its largest walking part (walk root); empty when the file has no ladder links."""
+    base: dict[int, int] = {}
     if ladder_edge.any():
         wsize = Counter(walk_root.tolist())
-        for k in range(len(pos)):
+        for k in range(len(roots)):
             r, w = roots[k], walk_root[k]
             if r not in base or wsize[w] > wsize[base[r]]:
                 base[r] = w
+    return base
+
+
+def _island_order(roots: np.ndarray) -> tuple[list[int], np.ndarray]:
+    """The islands' roots, largest first, and each node's island (index into that order)."""
     sizes = Counter(roots.tolist())
     order = [r for r, _ in sizes.most_common()]
     rank = {r: k for k, r in enumerate(order)}
     node_island = np.array([rank[r] for r in roots], dtype=np.int32)
+    return order, node_island
 
-    # each area's island: the graph node of its sector nearest to the area's cells (an area has its own node,
-    # near its centre; tiny areas without one take their neighbour's)
-    sec_nodes = {}
-    for k, s in enumerate(sec):
-        sec_nodes.setdefault(s, []).append(k)
-    sec_nodes = {s: np.array(v) for s, v in sec_nodes.items()}
-    centre = np.zeros((len(areas), 3))
+
+def _area_centres(n_areas: int, xz: np.ndarray, y: np.ndarray, cell_area: np.ndarray,
+                  counts: np.ndarray) -> np.ndarray:
+    """Each area's centre (n_areas, 3): the mean of its cells (0 for an area without cells)."""
+    centre = np.zeros((n_areas, 3))
     if len(cell_area):
         for d in range(2):
-            centre[:, [0, 2][d]] = np.bincount(cell_area, weights=xz[:, d], minlength=len(areas)) / np.maximum(counts, 1)
-        centre[:, 1] = np.bincount(cell_area, weights=y, minlength=len(areas)) / np.maximum(counts, 1)
+            centre[:, [0, 2][d]] = np.bincount(cell_area, weights=xz[:, d], minlength=n_areas) / np.maximum(counts, 1)
+        centre[:, 1] = np.bincount(cell_area, weights=y, minlength=n_areas) / np.maximum(counts, 1)
+    return centre
+
+
+def _area_islands(areas: list[NavArea], centre: np.ndarray, pos: np.ndarray, sec: list[int], node_island: np.ndarray,
+                  roots: np.ndarray, walk_root: np.ndarray, base: dict[int, int]) -> None:
+    """Sets each area's island and ladder flag from the graph node of its sector nearest to its centre."""
+    # each area's island: the graph node of its sector nearest to the area's cells (an area has its own node,
+    # near its centre; tiny areas without one take their neighbour's)
+    sec_lists: dict[int, list[int]] = {}
+    for k, s in enumerate(sec):
+        sec_lists.setdefault(s, []).append(k)
+    sec_nodes = {s: np.array(v) for s, v in sec_lists.items()}
     for k, a in enumerate(areas):
         cand = sec_nodes.get(a.sector)
         if cand is None or not len(cand):
@@ -288,15 +335,18 @@ def _load(path: str, heightfield: Heightfield | None, cache_dir: str | None) -> 
         kn = cand[int(np.argmin(d))]
         a.island = int(node_island[kn])
         a.ladder = bool(base) and walk_root[kn] != base[roots[kn]]
-    island_cells = Counter()
+
+
+def _islands(areas: list[NavArea], order: list[int], node_island: np.ndarray, pos: np.ndarray) -> list[Island]:
+    """The islands, largest first: group id, node count, cell count and the centre of their nodes."""
+    island_cells: Counter[int] = Counter()
     for a in areas:
         island_cells[a.island] += a.cells
     islands = []
     for k, r in enumerate(order):
         sel = node_island == k
         islands.append(Island(int(r), int(sel.sum()), int(island_cells.get(k, 0)), pos[sel].mean(axis=0)))
-    return NavData(path, areas, xz, y, cell_area, pos, np.array(sec), edges, np.array(costs, dtype=np.float64),
-                   node_island, islands, ladder_edge)
+    return islands
 
 
 def compare_cells(cand: NavData, ref: NavData) -> tuple[np.ndarray, np.ndarray]:

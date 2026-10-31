@@ -17,6 +17,7 @@ The root is: the given folder, else OPFOR_ROOT, else project-opfor-moh next to t
 parent folders, else any folder found walking up from the suite that holds game\MP\MoHMPGame.exe.
 """
 import os
+from typing import TypeGuard
 
 OPFOR_NAME = 'project-opfor-moh'
 MP_EXE = os.path.join('game', 'MP', 'MoHMPGame.exe')
@@ -28,8 +29,10 @@ class GameNotFound(Exception):
     pass
 
 
-def is_root(folder: str | None) -> bool:
-    return bool(folder) and os.path.isfile(os.path.join(folder, MP_EXE))
+def is_root(folder: str | None) -> TypeGuard[str]:
+    if not folder:
+        return False
+    return os.path.isfile(os.path.join(folder, MP_EXE))
 
 
 def find_root(given: str | None = None) -> str:

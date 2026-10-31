@@ -283,13 +283,13 @@ def main(argv: list[str]) -> int:
                 if out == s.mesh:
                     same += 1
                 else:
-                    n = min(len(out), len(s.mesh))
-                    first = next((i for i in range(n) if out[i] != s.mesh[i]), n)
-                    key = f'len {len(out) - len(s.mesh):+d}, first diff at word {first // 4 * 4:#x}'
+                    common = min(len(out), len(s.mesh))
+                    diff_at = next((i for i in range(common) if out[i] != s.mesh[i]), common)
+                    reason = f'len {len(out) - len(s.mesh):+d}, first diff at word {diff_at // 4 * 4:#x}'
                     if not reasons:
-                        print(f'first mismatch: {p} sector {s.id:#x}: {key}; '
-                              f'orig {s.mesh[first // 4 * 4:first // 4 * 4 + 16].hex(" ")} new {out[first // 4 * 4:first // 4 * 4 + 16].hex(" ")}')
-                    reasons[key] = reasons.get(key, 0) + 1
+                        print(f'first mismatch: {p} sector {s.id:#x}: {reason}; '
+                              f'orig {s.mesh[diff_at // 4 * 4:diff_at // 4 * 4 + 16].hex(" ")} new {out[diff_at // 4 * 4:diff_at // 4 * 4 + 16].hex(" ")}')
+                    reasons[reason] = reasons.get(reason, 0) + 1
         print(f'mesh round trip: {same}/{total} identical')
         for k, v in sorted(reasons.items(), key=lambda kv: -kv[1])[:8]:
             print(f'  {v:6} x {k}')

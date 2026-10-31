@@ -1,0 +1,2 @@
+# hooks run under sh: LF line endings in every checkout
+.githooks/* text eol=lf

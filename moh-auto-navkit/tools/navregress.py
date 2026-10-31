@@ -358,11 +358,7 @@ def main(argv):
         return 2
     opt = lambda k, d=None: args[args.index(k) + 1] if k in args else d
     root = navparity.opfor_root(opt('--opfor'))
-    levels = opt('--levels').split(',') if opt('--levels') else [
-        lv for lv in navparity.LEVELS + navparity.ONSLAUGHT if os.path.isfile(navparity.reference_of(root, lv))]
-    if not levels:                              # MOH: no DICE path data - every level NavKit has prepared
-        d = os.path.join(root, 'work', 'navkit')
-        levels = sorted(lv for lv in os.listdir(d) if os.path.isfile(os.path.join(d, lv, 'navkit.json')))
+    levels = levels_to_run(root, opt('--levels'))
     reference = opt('--reference', 'regression')
     tol = float(opt('--tolerance', 0.05))
     ref_path = navparity.save_path(root, reference)
@@ -372,6 +368,24 @@ def main(argv):
     elif '--save' not in args:
         print(f'no reference run "{reference}" ({ref_path}); make one with: navregress.py --save {reference}')
         return 2
+    rows, failed, start = run_levels(root, levels, reference, tol, ref_rows)
+    save_runs(root, rows, opt('--save') if '--save' in args else None, reference, ref_rows)
+    print(('all passed' if not failed else f'{failed} level(s) worse or failed') + f' ({duration(time.time() - start)})')
+    return 1 if failed else 0
+
+
+def levels_to_run(root, named):
+    """The levels to build: the --levels list, else those with DICE path data, else (MOH) every prepared level."""
+    levels = named.split(',') if named else [
+        lv for lv in navparity.LEVELS + navparity.ONSLAUGHT if os.path.isfile(navparity.reference_of(root, lv))]
+    if not levels:                              # MOH: no DICE path data - every level NavKit has prepared
+        d = os.path.join(root, 'work', 'navkit')
+        levels = sorted(lv for lv in os.listdir(d) if os.path.isfile(os.path.join(d, lv, 'navkit.json')))
+    return levels
+
+
+def run_levels(root, levels, reference, tol, ref_rows):
+    """Builds and measures each level against its reference row, with progress: (rows, levels failed, start time)."""
     outdir = os.path.join(root, 'work', 'navkit', 'regress')
     os.makedirs(outdir, exist_ok=True)
     rows, failed = [], 0
@@ -384,22 +398,10 @@ def main(argv):
     start, done_est, timed = time.time(), 0.0, {}
     for n, lv in enumerate(levels, 1):
         t0 = time.time()
-        elapsed = t0 - start
-        left = max(total - done_est, 0) * (elapsed / done_est if done_est else 1.0)   # scaled by the pace so far
-        print(f'[{n}/{len(levels)}] {lv}: building (about {duration(est[lv])}); run {100 * done_est / total:.0f} % done, '
-              f'{duration(elapsed)} so far, about {duration(left)} left')
+        print_progress(n, len(levels), lv, est[lv], total, done_est, t0 - start)
         out = os.path.join(outdir, f'{lv}.hpd')
         try:
-            build_level(root, lv, out, lambda m: print(f'      {m}'))
-            structure = {k: v for k, v in hpdcheck.check(out).items() if v}    # what DICE's files always satisfy
-            for k, v in structure.items():
-                print(f'      structure: {k}: {len(v)} - {v[0]}')
-            if os.path.isfile(navparity.reference_of(root, lv)):
-                print(f'      measuring parity against DICE ({duration(time.time() - t0)} in)')
-                row = navparity.run_level(root, lv, out, lambda *a: None)
-            else:
-                print(f'      self-check: no DICE path data ({duration(time.time() - t0)} in)')
-                row = self_check(root, lv, out)
+            row, structure = build_and_measure(root, lv, out, t0)
         except Exception as e:  # noqa: BLE001 - batch boundary: a level whose build or measure fails is counted FAIL
             failed += 1
             done_est += est[lv]
@@ -410,47 +412,79 @@ def main(argv):
         row['structure_problems'] = sum(len(v) for v in structure.values())
         rows.append(row)
         timed[lv] = {'seconds': row['seconds']}         # re-estimate the levels to come with this run's times
-        rest = levels[n:]
-        if rest:
-            new = estimates(root, rest, timed, last_rows, ref_rows)
-            total += sum(new[x] - est[x] for x in rest)
-            est.update(new)
-        ref = ref_rows.get(lv)
-        if ref is None:
-            failed += bool(structure)
-            print(f'{"FAIL" if structure else "new "} {lv}: not in the reference run ({time.time() - t0:.0f} s)')
-            continue
-        worse, better, counts = compare(ref, row, tol)
-        if structure:
-            worse.append(('structure (hpdcheck)', ref.get('structure_problems', 0), row['structure_problems']))
-        failed += bool(worse)
-        if 'ground' in row:
-            print(f'{"FAIL" if worse else "ok  "} {lv:9s} ground {row["ground"]:6.2f}  extra {row["extra_ground"]:6.2f}  '
-                  f'nodes {row["nodes_same"]:5.2f}  connect {row["connectivity"]:6.2f}  over {row["over_connection"]:6.2f}  '
-                  f'AI {row["ai_coverage"]:5.1f}  ({time.time() - t0:.0f} s)')
-        else:
-            same = 'the reference build' if row['self_digest'] == ref.get('self_digest') else 'changed from the reference'
-            print(f'{"FAIL" if worse else "ok  "} {lv:9s} AI on areas {row["self_on_area"]:5.1f}  joined {row["self_pairwise"]:5.1f}  '
-                  f'routed {row["self_directed"]:5.1f}  strong {row["self_strong"]:5.1f}  nodes {row["self_nodes"]}  '
-                  f'islands {row["self_islands"]}; sectors: {same}  ({time.time() - t0:.0f} s)')
-        for k, a, b in worse:
-            print(f'       worse:  {k} {a} -> {b}')
-        for k, a, b in better:
-            print(f'       better: {k} {a} -> {b}')
-        for k, a, b in counts:
-            print(f'       count:  {k} {a} -> {b}')
+        total = reestimate(root, levels[n:], est, total, timed, last_rows, ref_rows)
+        failed += report_level(lv, row, structure, ref_rows.get(lv), tol, t0)
+    return rows, failed, start
+
+
+def print_progress(n, count, lv, expected, total, done_est, elapsed):
+    """The line before level n's build: its expected time, the run's share done, the time so far and left."""
+    left = max(total - done_est, 0) * (elapsed / done_est if done_est else 1.0)   # scaled by the pace so far
+    print(f'[{n}/{count}] {lv}: building (about {duration(expected)}); run {100 * done_est / total:.0f} % done, '
+          f'{duration(elapsed)} so far, about {duration(left)} left')
+
+
+def build_and_measure(root, lv, out, t0):
+    """Builds the level into out, checks its structure, measures it (parity with DICE, else self-check): (row, structure)."""
+    build_level(root, lv, out, lambda m: print(f'      {m}'))
+    structure = {k: v for k, v in hpdcheck.check(out).items() if v}    # what DICE's files always satisfy
+    for k, v in structure.items():
+        print(f'      structure: {k}: {len(v)} - {v[0]}')
+    if os.path.isfile(navparity.reference_of(root, lv)):
+        print(f'      measuring parity against DICE ({duration(time.time() - t0)} in)')
+        row = navparity.run_level(root, lv, out, lambda *a: None)
+    else:
+        print(f'      self-check: no DICE path data ({duration(time.time() - t0)} in)')
+        row = self_check(root, lv, out)
+    return row, structure
+
+
+def reestimate(root, rest, est, total, timed, last_rows, ref_rows):
+    """The levels still to come re-estimated with this run's times (est updated in place): the new expected total."""
+    if rest:
+        new = estimates(root, rest, timed, last_rows, ref_rows)
+        total += sum(new[x] - est[x] for x in rest)
+        est.update(new)
+    return total
+
+
+def report_level(lv, row, structure, ref, tol, t0):
+    """Prints the level's result against its reference row (ref, or None) and the changes: whether it failed."""
+    if ref is None:
+        print(f'{"FAIL" if structure else "new "} {lv}: not in the reference run ({time.time() - t0:.0f} s)')
+        return bool(structure)
+    worse, better, counts = compare(ref, row, tol)
+    if structure:
+        worse.append(('structure (hpdcheck)', ref.get('structure_problems', 0), row['structure_problems']))
+    if 'ground' in row:
+        print(f'{"FAIL" if worse else "ok  "} {lv:9s} ground {row["ground"]:6.2f}  extra {row["extra_ground"]:6.2f}  '
+              f'nodes {row["nodes_same"]:5.2f}  connect {row["connectivity"]:6.2f}  over {row["over_connection"]:6.2f}  '
+              f'AI {row["ai_coverage"]:5.1f}  ({time.time() - t0:.0f} s)')
+    else:
+        same = 'the reference build' if row['self_digest'] == ref.get('self_digest') else 'changed from the reference'
+        print(f'{"FAIL" if worse else "ok  "} {lv:9s} AI on areas {row["self_on_area"]:5.1f}  joined {row["self_pairwise"]:5.1f}  '
+              f'routed {row["self_directed"]:5.1f}  strong {row["self_strong"]:5.1f}  nodes {row["self_nodes"]}  '
+              f'islands {row["self_islands"]}; sectors: {same}  ({time.time() - t0:.0f} s)')
+    for k, a, b in worse:
+        print(f'       worse:  {k} {a} -> {b}')
+    for k, a, b in better:
+        print(f'       better: {k} {a} -> {b}')
+    for k, a, b in counts:
+        print(f'       count:  {k} {a} -> {b}')
+    return bool(worse)
+
+
+def save_runs(root, rows, name, reference, ref_rows):
+    """Writes the run as regression_last, and with --save (name, else None) as that reference run too."""
     run = {'name': 'regression_last', 'date': time.strftime('%Y-%m-%d %H:%M'), 'levels': rows}
     json.dump(run, open(navparity.save_path(root, 'regression_last'), 'w'), indent=1)
-    if '--save' in args:
-        name = opt('--save')
+    if name is not None:
         run['name'] = name
         if name == reference and ref_rows:                 # a subset run keeps the other levels' reference rows
             done = {r['level'] for r in rows}
             run['levels'] = rows + [r for lv, r in ref_rows.items() if lv not in done]
         json.dump(run, open(navparity.save_path(root, name), 'w'), indent=1)
         print(f'saved as reference run "{name}"')
-    print(('all passed' if not failed else f'{failed} level(s) worse or failed') + f' ({duration(time.time() - start)})')
-    return 1 if failed else 0
 
 
 if __name__ == '__main__':

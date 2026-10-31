@@ -12,7 +12,7 @@ import math
 import os
 import time
 from collections.abc import Callable, Iterable, Sequence
-from typing import Any
+from typing import Any, cast
 
 import moderngl
 import numpy as np
@@ -191,18 +191,23 @@ def perspective(fov_y: float, aspect: float, near: float, far: float) -> np.ndar
 
 def look_at(eye: Sequence[float] | np.ndarray, target: Sequence[float] | np.ndarray,
             up: Sequence[float] = (0, 1, 0)) -> np.ndarray:
-    eye, target, up = (np.asarray(v, dtype=np.float64) for v in (eye, target, up))
-    f = target - eye
+    eye_a, target_a, up_a = (np.asarray(v, dtype=np.float64) for v in (eye, target, up))
+    f = target_a - eye_a
     f /= np.linalg.norm(f)
-    s = np.cross(f, up)
+    s = np.cross(f, up_a)
     if np.linalg.norm(s) < 1e-9:
         s = np.array([1.0, 0, 0])
     s /= np.linalg.norm(s)
     u = np.cross(s, f)
     m = np.identity(4)
     m[0, :3], m[1, :3], m[2, :3] = s, u, -f
-    m[:3, 3] = -m[:3, :3] @ eye
+    m[:3, 3] = -m[:3, :3] @ eye_a
     return m.astype(np.float32)
+
+
+def _uniform(prog: moderngl.Program, name: str) -> moderngl.Uniform:
+    """A uniform of a shader program (moderngl types prog[name] as any of its members: uniform, block, attribute)."""
+    return cast(moderngl.Uniform, prog[name])
 
 
 class Camera:
@@ -294,7 +299,8 @@ class Viewer:
         # batches ordered by layer, so each layer is one range of the buffer and hidden layers are not drawn at all
         b = self.scene.batches
         order = sorted(range(len(b)), key=lambda k: int(b[k][1][0] >> 24) if len(b[k][1]) else 0)
-        self.layer_ranges, start = {}, 0
+        self.layer_ranges: dict[int, tuple[int, int]] = {}
+        start = 0
         new_ranges = list(self.scene.ranges)
         for k in order:
             n = len(b[k][0])
@@ -313,9 +319,10 @@ class Viewer:
         self.vbo_col = self.ctx.buffer(col.tobytes())
         self.vao = self.ctx.vertex_array(self.prog, [(self.vbo_pos, '3f', 'in_pos'), (self.vbo_tag, 'u', 'in_tag'),
                                                      (self.vbo_col, '4f1', 'in_col')])
-        self.line_vao = None
+        self.line_vao: moderngl.VertexArray | None = None
         lb = sorted(self.scene.line_batches, key=lambda x: int(x[1][0] >> 24) if len(x[1]) else 0)
-        self.line_ranges, start = {}, 0
+        self.line_ranges: dict[int, tuple[int, int]] = {}
+        start = 0
         for x in lb:
             lay = int(x[1][0] >> 24) if len(x[1]) else 0
             first, count = self.line_ranges.get(lay, (start, 0))
@@ -330,19 +337,26 @@ class Viewer:
         self.overlay_vao = self.ctx.vertex_array(self.overlay_prog, [(self.overlay_vbo, '3f 3f', 'in_pos', 'in_col')])
         self._overlay_count = 0
         palette = [c for _, c in self.scene.layers] + [(0.5, 0.5, 0.5)] * (MAX_LAYERS - len(self.scene.layers))
-        self.prog['palette'].value = [tuple(float(x) for x in c) for c in palette]
+        _uniform(self.prog, 'palette').value = [tuple(float(x) for x in c) for c in palette]
         light = np.array([0.4, 0.8, 0.3])
-        self.prog['light'].value = tuple(light / np.linalg.norm(light))
-        self.pick_fbo = None
+        _uniform(self.prog, 'light').value = tuple(light / np.linalg.norm(light))
+        self.pick_fbo: moderngl.Framebuffer | None = None
         self.scene.batches = []           # uploaded; free the CPU copy
         self.scene.line_batches = []
 
-    def _ensure_pick_fbo(self, w: int, h: int) -> None:
+    def _gl(self) -> moderngl.Context:
+        """The OpenGL context (set by _init when the window opens; the drawing code runs only after)."""
+        assert self.ctx is not None
+        return self.ctx
+
+    def _ensure_pick_fbo(self, w: int, h: int) -> moderngl.Framebuffer:
         if self.pick_fbo is None or self.pick_fbo.size != (w, h):
             if self.pick_fbo is not None:
                 self.pick_fbo.release()
-            self.pick_fbo = self.ctx.framebuffer(color_attachments=[self.ctx.texture((w, h), 4)],
-                                                 depth_attachment=self.ctx.depth_texture((w, h)))
+            ctx = self._gl()
+            self.pick_fbo = ctx.framebuffer(color_attachments=[ctx.texture((w, h), 4)],
+                                            depth_attachment=ctx.depth_texture((w, h)))
+        return self.pick_fbo
 
     def _mvp(self, w: int, h: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         proj, view = self.camera.matrices(w / max(h, 1))
@@ -352,18 +366,19 @@ class Viewer:
         w, h = self._window_size()
         if w <= 0 or h <= 0:
             return
-        self.ctx.viewport = (0, 0, w, h)
-        self.ctx.clear(0.13, 0.14, 0.16, depth=1.0)
-        self.ctx.enable(moderngl.DEPTH_TEST)
+        ctx = self._gl()
+        ctx.viewport = (0, 0, w, h)
+        ctx.clear(0.13, 0.14, 0.16, depth=1.0)
+        ctx.enable(moderngl.DEPTH_TEST)
         mvp, _, _ = self._mvp(w, h)
-        self.prog['mvp'].write(mvp.T.astype(np.float32).tobytes())
-        self.prog['hidden'].value = self.hidden
-        self.prog['selected'].value = self.selected
-        self.prog['hovered'].value = self.hovered
-        self.prog['pick'].value = 0
-        self.prog['lines'].value = 0
+        _uniform(self.prog, 'mvp').write(mvp.T.astype(np.float32).tobytes())
+        _uniform(self.prog, 'hidden').value = self.hidden
+        _uniform(self.prog, 'selected').value = self.selected
+        _uniform(self.prog, 'hovered').value = self.hovered
+        _uniform(self.prog, 'pick').value = 0
+        _uniform(self.prog, 'lines').value = 0
         self._render_layers()
-        self.ctx.disable(moderngl.DEPTH_TEST)
+        ctx.disable(moderngl.DEPTH_TEST)
         self._draw_overlay(mvp)
 
     def _render_layers(self) -> None:
@@ -372,12 +387,12 @@ class Viewer:
             if count and self.layer_visible(lay):
                 self.vao.render(moderngl.TRIANGLES, vertices=count, first=first)
         if self.line_vao is not None:
-            lines = self.prog['lines'].value
-            self.prog['lines'].value = 1
+            lines = _uniform(self.prog, 'lines').value
+            _uniform(self.prog, 'lines').value = 1
             for lay, (first, count) in self.line_ranges.items():
                 if count and self.layer_visible(lay):
                     self.line_vao.render(moderngl.LINES, vertices=count, first=first)
-            self.prog['lines'].value = lines
+            _uniform(self.prog, 'lines').value = lines
 
     def _draw_overlay(self, mvp: np.ndarray) -> None:
         if not self.overlay:
@@ -388,7 +403,7 @@ class Viewer:
             data = np.array([[*a, *c, *b, *c] for a, b, c in seg], dtype=np.float32)
             self.overlay_vbo.write(data.tobytes())
             self._overlay_count, self._overlay_key = 2 * len(seg), key
-        self.overlay_prog['mvp'].write(mvp.T.astype(np.float32).tobytes())
+        _uniform(self.overlay_prog, 'mvp').write(mvp.T.astype(np.float32).tobytes())
         self.overlay_vao.render(moderngl.LINES, vertices=self._overlay_count)
 
     def set_colors(self, batch: int, colors: np.ndarray | None) -> None:
@@ -423,23 +438,24 @@ class Viewer:
         px, py = int(x), int(h - 1 - y)
         if not (0 <= px < w and 0 <= py < h):
             return None, None
-        self._ensure_pick_fbo(w, h)
-        self.pick_fbo.use()
-        self.ctx.viewport = (0, 0, w, h)
-        self.pick_fbo.clear(1.0, 1.0, 1.0, 1.0, depth=1.0)
-        self.ctx.enable(moderngl.DEPTH_TEST)
-        self.ctx.scissor = (px, py, 1, 1)           # only the pixel under the mouse is drawn
+        fbo = self._ensure_pick_fbo(w, h)
+        ctx = self._gl()
+        fbo.use()
+        ctx.viewport = (0, 0, w, h)
+        fbo.clear(1.0, 1.0, 1.0, 1.0, depth=1.0)
+        ctx.enable(moderngl.DEPTH_TEST)
+        ctx.scissor = (px, py, 1, 1)           # only the pixel under the mouse is drawn
         mvp, proj, view = self._mvp(w, h)
-        self.prog['mvp'].write(mvp.T.astype(np.float32).tobytes())
-        self.prog['hidden'].value = self.hidden
-        self.prog['pick'].value = 1
+        _uniform(self.prog, 'mvp').write(mvp.T.astype(np.float32).tobytes())
+        _uniform(self.prog, 'hidden').value = self.hidden
+        _uniform(self.prog, 'pick').value = 1
         self._render_layers()
-        self.prog['pick'].value = 0
-        self.ctx.scissor = None
-        rgba = self.pick_fbo.read(viewport=(px, py, 1, 1), components=4)
-        depth = np.frombuffer(self.pick_fbo.read(viewport=(px, py, 1, 1), attachment=-1, dtype='f4'), dtype=np.float32)[0]
-        self.ctx.screen.use()
-        self.ctx.disable(moderngl.DEPTH_TEST)
+        _uniform(self.prog, 'pick').value = 0
+        ctx.scissor = None
+        rgba = fbo.read(viewport=(px, py, 1, 1), components=4)
+        depth = np.frombuffer(fbo.read(viewport=(px, py, 1, 1), attachment=-1, dtype='f4'), dtype=np.float32)[0]
+        ctx.screen.use()
+        ctx.disable(moderngl.DEPTH_TEST)
         oid = rgba[0] | (rgba[1] << 8) | (rgba[2] << 16)
         if oid == NO_ID:
             return None, None
@@ -508,8 +524,8 @@ class Viewer:
                     self._guarded('a click', self.on_pick, oid)
         # hover: once the mouse has moved and then rests for a moment (a pick re-renders the scene)
         if abs(dx) + abs(dy) > 0:
-            self._hover_due = time.time() + 0.12
-        elif getattr(self, '_hover_due', None) and time.time() >= self._hover_due:
+            self._hover_due: float | None = time.time() + 0.12
+        elif (due := getattr(self, '_hover_due', None)) and time.time() >= due:
             self._hover_due = None
             oid, point = self.pick(mx, my)
             self.hovered = oid if oid is not None else NO_ID

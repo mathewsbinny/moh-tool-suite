@@ -72,6 +72,16 @@ def op_segments(o):
     return [(a, b, col)] + post(a - [0, 0.5, 0], 1.5, col) + post(b - [0, 0.5, 0], 1.5, col)
 
 
+def op_focus(o):
+    """Where the camera flies to for an edit: its point, its first end, or the middle of its region's bottom."""
+    at = o.get('at') or o.get('a') or o.get('bottom')
+    if at is None:
+        r = o['region']
+        at = ([np.mean([p[0] for p in r['polygon']]), r['y'][0], np.mean([p[1] for p in r['polygon']])]
+              if 'polygon' in r else [(r['box'][0] + r['box'][3]) / 2, r['box'][1], (r['box'][2] + r['box'][5]) / 2])
+    return at
+
+
 class Editor:
     def __init__(self, studio, root, lv, level_name):
         self.st, self.root, self.lv = studio, root, lv
@@ -311,6 +321,7 @@ class Editor:
 
     # --- panel --------------------------------------------------------------------------------------
     def panel(self, v):
+        """The edit panel, drawn each frame: header, tools, the tool's options, actions, the build, the edits."""
         self.keys(v)
         if not self.open:
             return
@@ -318,6 +329,22 @@ class Editor:
         imgui.set_next_window_pos((io.display_size.x - 580, 440), imgui.Cond_.first_use_ever)
         imgui.set_next_window_size((570, 520), imgui.Cond_.first_use_ever)
         imgui.begin('Edit (E)')
+        self.panel_header()
+        self.panel_tools(v)
+        self.panel_tool_options(v)
+        if self.message:
+            imgui.text_wrapped(self.message)
+        imgui.separator()
+        self.panel_actions(v)
+        self.panel_build(v)
+        if self.install_msg:
+            imgui.text_wrapped(self.install_msg)
+        imgui.separator()
+        self.panel_operations(v)
+        imgui.end()
+
+    def panel_header(self):
+        """The panel's top: the side file's warning, what is edited and where, the author field."""
         kind = self.tune.kind
         if self.warning:
             imgui.push_style_color(imgui.Col_.text, (1.0, 0.45, 0.3, 1.0))
@@ -328,6 +355,9 @@ class Editor:
                             'links and route edges into its route graph. Traversals are recorded (a later step).')
         changed, self.by = imgui.input_text('recorded as', self.by)
         imgui.separator()
+
+    def panel_tools(self, v):
+        """The tool buttons (a second click turns the tool off); region tools disabled on a graph-only base."""
         for key, label in TOOLS:
             base_op = key.split()[0]
             allowed = self.tune.allowed(base_op)
@@ -343,6 +373,9 @@ class Editor:
                 if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
                     imgui.set_tooltip('region edits need a NavKit base (DESIGN.md 5.1)')
         imgui.separator()
+
+    def panel_tool_options(self, v):
+        """The chosen tool's options and what to click next."""
         t = self.tool
         if t in ('walkable', 'unwalkable'):
             for s in ('polygon', 'box'):
@@ -370,9 +403,9 @@ class Editor:
             imgui.text('click a point on the ground')
         else:
             imgui.text_disabled('choose a tool; clicks then add to the drawing instead of selecting')
-        if self.message:
-            imgui.text_wrapped(self.message)
-        imgui.separator()
+
+    def panel_actions(self, v):
+        """Undo, redo, save and reload (a second click to discard unsaved edits)."""
         if imgui.button('undo (Ctrl+Z)'):
             self.undo(v)
         imgui.same_line()
@@ -387,6 +420,9 @@ class Editor:
         imgui.same_line()
         if imgui.button('reload: click again to discard the edits' if self.reload_armed else 'reload'):
             self.reload(v)
+
+    def panel_build(self, v):
+        """The build button (navkit apply in the background, disabled while it runs) and its output file."""
         state = self.job_state()
         if self.tune.kind == 'dice' and os.path.basename(self.job_out) == 'pathdata.hpd':
             self.job_out = os.path.join(os.path.dirname(self.job_out), 'pathdata_dice_edited.hpd')   # never over NavKit's
@@ -401,34 +437,33 @@ class Editor:
         imgui.same_line()
         imgui.text_disabled(f'-> {os.path.relpath(self.job_out, self.root)}')
         if state is not None:
-            imgui.text({'running': 'building ...', 'done': 'built.', 'failed': 'the build failed:'}[state])
-            for line in self.job_log[-6:]:
-                imgui.text_disabled(line[:110])
-            if state == 'done':
-                if imgui.button('open the result'):
-                    self.reopen_on_result(v)
-                imgui.same_line()
-                if imgui.button('install into the game'):
-                    self.run_navkit(['install', self.lv, '--from', self.job_out])
-                imgui.same_line()
-                if imgui.button('restore DICE\'s original'):
-                    self.run_navkit(['restore', self.lv])
-                imgui.text_disabled(f'report: {os.path.relpath(self.job_out + ".report.txt", self.root)}')
-        if self.install_msg:
-            imgui.text_wrapped(self.install_msg)
-        imgui.separator()
+            self.panel_build_result(v, state)
+
+    def panel_build_result(self, v, state):
+        """The build's state and last log lines; once built: open the result, install it, restore DICE's file."""
+        imgui.text({'running': 'building ...', 'done': 'built.', 'failed': 'the build failed:'}[state])
+        for line in self.job_log[-6:]:
+            imgui.text_disabled(line[:110])
+        if state == 'done':
+            if imgui.button('open the result'):
+                self.reopen_on_result(v)
+            imgui.same_line()
+            if imgui.button('install into the game'):
+                self.run_navkit(['install', self.lv, '--from', self.job_out])
+            imgui.same_line()
+            if imgui.button('restore DICE\'s original'):
+                self.run_navkit(['restore', self.lv])
+            imgui.text_disabled(f'report: {os.path.relpath(self.job_out + ".report.txt", self.root)}')
+
+    def panel_operations(self, v):
+        """The list of edits: fly to one, delete one (Ctrl+Z puts it back)."""
         imgui.text(f'{len(self.tune.operations)} edit(s)')
         imgui.begin_child('ops', (0, 0))
         drop = None
         for k in range(len(self.tune.operations)):
             o = self.tune.operations[k]
             if imgui.small_button(f'fly##op{k}'):
-                at = o.get('at') or o.get('a') or o.get('bottom')
-                if at is None:
-                    r = o['region']
-                    at = ([np.mean([p[0] for p in r['polygon']]), r['y'][0], np.mean([p[1] for p in r['polygon']])]
-                          if 'polygon' in r else [(r['box'][0] + r['box'][3]) / 2, r['box'][1], (r['box'][2] + r['box'][5]) / 2])
-                v.camera.focus(np.asarray(at, float), 30.0)
+                v.camera.focus(np.asarray(op_focus(o), float), 30.0)
             imgui.same_line()
             if imgui.small_button(f'x##op{k}'):
                 drop = k
@@ -440,4 +475,3 @@ class Editor:
             self.reload_armed = False
             self.message = f'removed: {o["op"]} (Ctrl+Z puts it back)'
             self.refresh(v)
-        imgui.end()

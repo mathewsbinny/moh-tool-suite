@@ -186,12 +186,12 @@ def load(level: str, opfor: str | None = None, terrain_stride: int = 2, log: Cal
     LV = os.path.splitext(os.path.basename(part))[0]
     lvl = Level(LV, lv, root)
     log(f'{LV}: reading {os.path.relpath(part, root)}')
-    f = dbx.read(part)
+    part_dbx = dbx.read(part)
     pname = 'levels/' + LV
-    for el in f.instances:
+    for el in part_dbx.instances:
         t = el.attr('type') or ''
         lvl.entities.append(Entity(len(lvl.entities), el.attr('guid') or '', t, t.rsplit('.', 1)[-1], category_of(t), el.attr('id'),
-                                   (el.child('Name').text if el.child('Name') is not None and el.child('Name').kind == dbx.TEXT else None),
+                                   (nm.text if (nm := el.child('Name')) is not None and nm.kind == dbx.TEXT else None),
                                    pname, transform_of(el), blueprint_of(el), el))
     # static model groups: one entity per member placement. Each group file once: the patch's copy wins over
     # the base one, as in the game (and levels\ / Levels\ are the same folder on Windows)
@@ -229,26 +229,26 @@ def load(level: str, opfor: str | None = None, terrain_stride: int = 2, log: Cal
         lvl.notes.append(f'blueprint mesh aliases not read: {e}')
     cache: dict[str, np.ndarray | None] = {}
     missing: set[str] = set()
-    for e in lvl.entities:
-        if e.blueprint is None or e.matrix is None:
+    for ent in lvl.entities:
+        if ent.blueprint is None or ent.matrix is None:
             continue
-        if e.blueprint not in cache:
-            cache[e.blueprint] = levelobjects.triangles(havok[e.blueprint]) if e.blueprint in havok else None
-        t = cache[e.blueprint]
-        if t is None:
-            missing.add(e.blueprint)
+        if ent.blueprint not in cache:
+            cache[ent.blueprint] = levelobjects.triangles(havok[ent.blueprint]) if ent.blueprint in havok else None
+        tris = cache[ent.blueprint]
+        if tris is None:
+            missing.add(ent.blueprint)
             continue
-        m = e.matrix
-        lvl.meshes.append(Mesh(e.index, (t @ m[:3, :3] + m[3, :3]).astype(np.float32)))
+        m = ent.matrix
+        lvl.meshes.append(Mesh(ent.index, (tris @ m[:3, :3] + m[3, :3]).astype(np.float32)))
     lvl.missing_collision = sorted(missing)
     source = 'none'
     try:
-        lvl.heightfield = heightfield_of(root, lv, log, terrain_name(f.instances))
+        lvl.heightfield = heightfield_of(root, lv, log, terrain_name(part_dbx.instances))
     except (OSError, ValueError, struct.error, RuntimeError, navkit.NavKitError) as e:
         # no terrain bundle, FbrbTool missing (NavKitError) or failing (RuntimeError), unexpected layout
         lvl.notes.append(f'terrain height field not read: {e}')
     try:
-        lvl.water = water_in(root, lv, terrain_name(f.instances) or lv)
+        lvl.water = water_in(root, lv, terrain_name(part_dbx.instances) or lv)
     except (OSError, ValueError, struct.error) as e:   # unreadable or unexpected water files
         lvl.notes.append(f'water not read: {e}')
     if lvl.heightfield is not None:

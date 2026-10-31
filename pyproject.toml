@@ -27,6 +27,7 @@ dependencies = [
 dev = [
     "ruff==0.17.3",
     "coverage==7.17.0",
+    "mypy==2.4.1",
 ]
 
 [tool.ruff]
@@ -43,6 +44,39 @@ select = ["F", "E9", "BLE"]
 [tool.ruff.lint.per-file-ignores]
 # the scripts put their own folders on sys.path before importing the suite's modules
 "**/*.py" = ["E402"]
+
+[tool.mypy]
+# the typed modules (python -m mypy, run from the suite's folder; tests\test_types.py runs it in the quick tier).
+# The modules import each other the way they run: core\ and the NavKit folders are on sys.path, so `from mohcore
+# import x`, `import hpdtool`, `import navkit` resolve through mypy_path; the other suite modules they import are
+# analysed for their types but not reported (follow_imports = silent) until they are annotated too.
+files = [
+    "core/mohcore/*.py",
+    "moh-auto-navkit/tools/hpdtool.py",
+    "moh-auto-navkit/tools/kymesh.py",
+    "moh-auto-navkit/tools/hkpack.py",
+    "moh-auto-navkit/tools/navsample.py",
+]
+mypy_path = ["core", "moh-auto-navkit/tools", "moh-auto-navkit"]
+explicit_package_bases = true
+python_version = "3.13"
+follow_imports = "silent"
+# every function annotated, and its body checked; not yet: disallow_any_generics (bare tuple / np.ndarray),
+# disallow_untyped_calls (the NavKit modules these call are not annotated), warn_return_any (numpy returns Any),
+# warn_unreachable (a false positive in rsnv's line-of-sight loop)
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+strict_equality = true
+extra_checks = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[[tool.mypy.overrides]]
+# third-party packages without type stubs
+module = ["moderngl", "moderngl.*", "imgui_bundle", "imgui_bundle.*", "pefile", "capstone", "glfw", "glfw.*"]
+ignore_missing_imports = true
 
 [tool.coverage.run]
 branch = true

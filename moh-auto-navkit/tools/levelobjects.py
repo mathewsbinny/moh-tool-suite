@@ -181,14 +181,8 @@ def triangles(path):
     return np.concatenate(tris).astype(np.float32) if tris else None
 
 
-def main(argv):
-    if len(argv) < 3:
-        print(__doc__)
-        return 1
-    level_dir, level = argv[1], argv[2]
-    bases = [os.path.join(level_dir, 'pkg'), os.path.join(level_dir, 'dist')] + argv[3:]
-    flags = blueprint_flags(bases)
-    x = open(os.path.join(level_dir, 'dist', 'levels', level + '.xml'), encoding='utf-8', errors='replace').read()
+def placed_objects(x, flags):
+    """The level's individually placed objects (Entity.ReferenceObjectData): blueprint, its flags, matrix."""
     objs = []
     for _typ, _guid, body in xmlinst.instances(x, 'Entity.ReferenceObjectData'):
         t = re.search(r'<complex name="Transform">([^<]*)</complex>', body)
@@ -196,6 +190,11 @@ def main(argv):
         if t and r is not None:
             bp = r.rsplit('/', 1)[0].lower()
             objs.append({'bp': bp, 'flags': flags.get(bp), 'm': xmlinst.transform(t.group(1))})
+    return objs
+
+
+def group_instances(level_dir, level, flags):
+    """The members of the level's static-model groups (Physics.CompositeHavokAsset): group, blueprint, flags, matrix."""
     groups = []
     for f in glob.glob(os.path.join(level_dir, 'dist', 'levels', level, '*_HavokAsset.xml')):
         t = open(f, encoding='utf-8').read()
@@ -208,6 +207,11 @@ def main(argv):
             bp = re.sub(r'_havok$', '', a.rsplit('/', 1)[0].lower())
             groups.append({'group': os.path.basename(f), 'bp': bp, 'flags': flags.get(bp),
                            'm': tr[i * 16:(i + 1) * 16]})
+    return groups
+
+
+def write_points(level_dir, x, objs, groups):
+    """Writes soldier_spawns.json, order_points.json, area_orders.json, objects.json and group_instances.json."""
     # soldier spawn points (seed points of the path data): MOH places its soldiers at the AlternateSpawnEntityData
     # points (MP_01: 92, 93 % on the terrain); its SoldierSpawnEntityData are the spawners, their positions markers
     # (spawn_marker: not seeds - a marker over a roof kept the roof as a route island)
@@ -218,75 +222,131 @@ def main(argv):
     json.dump(objs, open(os.path.join(level_dir, 'objects.json'), 'w'))
     json.dump(groups, open(os.path.join(level_dir, 'group_instances.json'), 'w'))
 
+
+def collision_index(bases):
+    """lower-case blueprint path -> its Havok packfile, mesh aliases included (havok_index, mesh_aliases)."""
     havok = havok_index(bases)
     # blueprints without their own collision asset use the one of the object their Mesh reference names
     for bp, target in mesh_aliases(bases).items():
         if bp not in havok and target in havok:
             havok[bp] = havok[target]
-    cache, missing = {}, set()
+    return havok
 
-    def tris_of(o):
-        if o['bp'] not in cache:
-            cache[o['bp']] = triangles(havok[o['bp']]) if o['bp'] in havok else None
-        t = cache[o['bp']]
+
+class Collision:
+    """World-space collision of placed objects, each blueprint's triangles read once; missing: blueprints without."""
+
+    def __init__(self, havok):
+        self.havok, self.cache, self.missing = havok, {}, set()
+
+    def tris_of(self, o):
+        """Object o's collision triangles in world space (float32), or None (its blueprint noted as missing)."""
+        if o['bp'] not in self.cache:
+            self.cache[o['bp']] = triangles(self.havok[o['bp']]) if o['bp'] in self.havok else None
+        t = self.cache[o['bp']]
         if t is None:
-            missing.add(o['bp'])
+            self.missing.add(o['bp'])
             return None
         m = np.array(o['m']).reshape(4, 4)        # rows: right, up, forward, translation
         return (t @ m[:3, :3] + m[3, :3]).astype(np.float32)
-    # dynamic objects, and objects with DisablePathfinding = PdtWhenAlive (doors ...): path data ignores them
-    def barrier_arm(o):
+
+    def barrier_arm(self, o):
         """Whole collision is one thin raised bar (boom barrier): >= 0.7 m above the object's origin, <= 0.5 m
         thick, >= 2 m long. Path data treats it as passable (DICE's routes cross closed checkpoint poles)."""
-        if o['bp'] not in havok:
+        if o['bp'] not in self.havok:
             return False
-        if o['bp'] not in cache:
-            cache[o['bp']] = triangles(havok[o['bp']])
-        t = cache[o['bp']]
+        if o['bp'] not in self.cache:
+            self.cache[o['bp']] = triangles(self.havok[o['bp']])
+        t = self.cache[o['bp']]
         if t is None:
             return False
         v = t.reshape(-1, 3)
         lo, hi = v.min(0), v.max(0)
         return lo[1] >= 0.7 and hi[1] - lo[1] <= 0.5 and max(hi[0] - lo[0], hi[2] - lo[2]) >= 2.0
-    dyn = [w for w in (tris_of(o) for o in objs + groups
-                       if o['flags'] and ((len(o['flags']) > 3 and o['flags'][3]) or
-                                          (len(o['flags']) > 4 and o['flags'][4] == 'PdtWhenAlive') or
-                                          (o['flags'][0] and barrier_arm(o)))) if w is not None]
+
+
+def save_tris(level_dir, name, tris):
+    """Saves a list of triangle arrays as one (N x 3 x 3) .npy in the level folder (an empty one for none)."""
+    np.save(os.path.join(level_dir, name), np.concatenate(tris) if tris else np.zeros((0, 3, 3)))
+
+
+def dynamic_tris(items, col):
+    """Collision of the objects path data ignores: dynamic ones, DisablePathfinding = PdtWhenAlive, barrier arms."""
+    # dynamic objects, and objects with DisablePathfinding = PdtWhenAlive (doors ...): path data ignores them
+    return [w for w in (col.tris_of(o) for o in items
+                        if o['flags'] and ((len(o['flags']) > 3 and o['flags'][3]) or
+                                           (len(o['flags']) > 4 and o['flags'][4] == 'PdtWhenAlive') or
+                                           (o['flags'][0] and col.barrier_arm(o)))) if w is not None]
+
+
+def stair_tris(items, col):
+    """Collision of staircases and ramps (blueprint names with stair / ramp / steps)."""
     # staircases and ramps (DICE blueprint names): their own collision is floor, not an obstacle to clearance
     stair_like = re.compile(r'stair|ramp|steps', re.I)
-    stairs = [w for w in (tris_of(o) for o in objs + groups if stair_like.search(o['bp'].rsplit('/', 1)[-1]))
-              if w is not None]
-    np.save(os.path.join(level_dir, 'stair_tris.npy'), np.concatenate(stairs) if stairs else np.zeros((0, 3, 3)))
+    return [w for w in (col.tris_of(o) for o in items if stair_like.search(o['bp'].rsplit('/', 1)[-1]))
+            if w is not None]
+
+
+def write_stair_and_dynamic_tris(level_dir, items, col):
+    """Writes stair_tris.npy and dynamic_tris.npy, and prints what they hold and the barrier arms found."""
+    dyn = dynamic_tris(items, col)
+    stairs = stair_tris(items, col)
+    save_tris(level_dir, 'stair_tris.npy', stairs)
     print(f'{sum(len(w) for w in stairs)} stair triangles from {len(stairs)} staircases / ramps')
-    print('barrier arms:', sorted({o['bp'].split('/')[-1] for o in objs + groups if o['flags'] and o['flags'][0] and barrier_arm(o)}))
-    np.save(os.path.join(level_dir, 'dynamic_tris.npy'), np.concatenate(dyn) if dyn else np.zeros((0, 3, 3)))
+    print('barrier arms:', sorted({o['bp'].split('/')[-1] for o in items if o['flags'] and o['flags'][0] and col.barrier_arm(o)}))
+    save_tris(level_dir, 'dynamic_tris.npy', dyn)
     print(f'{sum(len(w) for w in dyn)} dynamic-object triangles from {len(dyn)} instances')
+
+
+def write_exclude_tris(level_dir, items, col):
+    """Writes exclude_tris.npy and exclude_footprint_tris.npy (objects excluded from path finding)."""
     # objects excluded from path finding (fences, sandbags, palm trees): their collision does not block clearance
     # (added to the dynamic set); only their footprint at ground level - parts reaching within 0.5 m of the
     # object's origin height - stays a barrier (exclude_footprint_tris.npy) instead of the whole object
-    excluded = [o for o in objs + groups if o['flags'] and o['flags'][1]]
+    excluded = [o for o in items if o['flags'] and o['flags'][1]]
     ex_all, ex_foot = [], []
     for o in excluded:
-        w = tris_of(o)
+        w = col.tris_of(o)
         if w is None:
             continue
         ex_all.append(w)
         base = o['m'][13]
         ex_foot.append(w[w[:, :, 1].min(1) <= base + 0.5])
-    np.save(os.path.join(level_dir, 'exclude_tris.npy'), np.concatenate(ex_all) if ex_all else np.zeros((0, 3, 3)))
-    np.save(os.path.join(level_dir, 'exclude_footprint_tris.npy'),
-            np.concatenate(ex_foot) if ex_foot else np.zeros((0, 3, 3)))
+    save_tris(level_dir, 'exclude_tris.npy', ex_all)
+    save_tris(level_dir, 'exclude_footprint_tris.npy', ex_foot)
     print(f'{len(ex_all)} excluded objects: {sum(len(w) for w in ex_all)} triangles, footprint {sum(len(w) for w in ex_foot)}')
+
+
+def forbid_tris(items, col):
+    """Collision of the ForbidPathfinding objects that are not also excluded from path finding."""
     world = []
-    for o in objs + groups:
+    for o in items:
         if not (o['flags'] and o['flags'][0]) or o['flags'][1]:
             continue
-        w = tris_of(o)
+        w = col.tris_of(o)
         if w is not None:
             world.append(w)
-    np.save(os.path.join(level_dir, 'forbid_tris.npy'), np.concatenate(world) if world else np.zeros((0, 3, 3)))
+    return world
+
+
+def main(argv):
+    if len(argv) < 3:
+        print(__doc__)
+        return 1
+    level_dir, level = argv[1], argv[2]
+    bases = [os.path.join(level_dir, 'pkg'), os.path.join(level_dir, 'dist')] + argv[3:]
+    flags = blueprint_flags(bases)
+    x = open(os.path.join(level_dir, 'dist', 'levels', level + '.xml'), encoding='utf-8', errors='replace').read()
+    objs = placed_objects(x, flags)
+    groups = group_instances(level_dir, level, flags)
+    write_points(level_dir, x, objs, groups)
+    col = Collision(collision_index(bases))
+    write_stair_and_dynamic_tris(level_dir, objs + groups, col)
+    write_exclude_tris(level_dir, objs + groups, col)
+    world = forbid_tris(objs + groups, col)
+    save_tris(level_dir, 'forbid_tris.npy', world)
     print(f'{len(objs)} placed objects, {len(groups)} group instances, {len(flags)} blueprints with flags; '
-          f'{sum(len(w) for w in world)} forbid triangles from {len(world)} instances; no collision: {sorted(missing)}')
+          f'{sum(len(w) for w in world)} forbid triangles from {len(world)} instances; no collision: {sorted(col.missing)}')
     return 0
 
 

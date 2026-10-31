@@ -115,11 +115,16 @@ python -m ruff check .         the lint policy alone (the quick tier runs it too
 The lint policy (`pyproject.toml` `[tool.ruff]`, 2026-10-31): pyflakes' rules (unused imports and variables,
 undefined names, f-strings without fields), syntax errors, and no blind `except Exception` - except at a real
 boundary (a GUI's or command line's top level that reports any failure, an optional side file, a test turning any
-failure into a check), marked `# noqa: BLE001` with the reason beside it. There is no CI server (the game tier
-needs the game copy on this PC): run `quick` before every commit and `game` before every push.
+failure into a check), marked `# noqa: BLE001` with the reason beside it. The typed modules (`core\mohcore`, the
+format readers) are checked by mypy (`pyproject.toml` `[tool.mypy]`; `python -m mypy`, also in the quick tier).
+
+There is no CI server (the game tier needs the game copy on this PC). A pre-push hook runs the quick tier and stops
+a push that fails it - turn it on once per clone with `git config core.hooksPath .githooks` (`git push --no-verify`
+skips it; say why in the commit). Run `game` yourself before pushing a change to a tool that reads the game's files.
 
 | Test | Tier | Checks |
 |---|---|---|
+| `tests/test_types.py` | quick | mypy over the typed modules (`core\mohcore`, hpdtool, kymesh, hkpack, navsample; `pyproject.toml` `[tool.mypy]`): every function annotated and its body checked (skipped, and said so, when mypy is not installed) |
 | `tests/test_lint.py` | quick | the lint policy: ruff over every Python file (skipped, and said so, when ruff is not installed) |
 | `tests/test_repo.py` | quick | no game files or large files in the history, no co-author lines, no build output tracked, READMEs, LICENSE, every Python file compiles |
 | `tests/test_review_fixes.py` | quick | four defects from a code review (2026-10-26): NavKit's apply builds with the normal build's inputs (detailed zones, ladders); the stock-MP installer reinstalls a rebuilt file and keeps the original as its backup; the Navigation Studio's `--edit` is a flag; the navigation cache key follows the terrain's content |
