@@ -129,7 +129,11 @@ def level_report(root, lv, candidate, log=print):
         return None
     D, N = cells(ref), cells(candidate)
     fn, fd = floors(N), floors(D)
-    dn, dd = depths(fn, hf, w), depths(fd, hf, w)
+    return compare(lv, fn, fd, depths(fn, hf, w), depths(fd, hf, w), len(w))
+
+
+def compare(lv, fn, fd, dn, dd, water_triangles):
+    """The report of level_report from NavKit's and DICE's floors (floors) and their water depths (depths)."""
     # the same ground, as navdiff pairs cells: one floor on each side is the same; stacked floors pair by
     # height, up to navdiff's STACK_TOL apart (the height estimates are rough on sloped areas)
     floors_d = defaultdict(list)
@@ -140,7 +144,7 @@ def level_report(root, lv, candidate, log=print):
         count_n[ij] += 1
     has = np.array([bool(floors_d.get(ij)) and ((count_n[ij] == 1 and len(floors_d[ij]) == 1)
                                                  or any(abs(y - yd) <= navdiff.STACK_TOL for yd in floors_d[ij]))
-                    for ij, y in fn])
+                    for ij, y in fn], dtype=bool)        # bool when empty too: ~ of an empty float array fails
     bn = np.array([band_of(x) for x in dn])
     bd = np.array([band_of(x) for x in dd])
     rows = []
@@ -157,7 +161,8 @@ def level_report(root, lv, candidate, log=print):
             'extra_under_water': int(wet.sum()), 'extra_under_water_pct': round(100.0 * wet.sum() / max(extra.sum(), 1), 1),
             'dice_under_water': int(len(dice_wet)), 'dice_depth_limit': None if limit is None else round(limit, 2),
             'navkit_deeper_than_dice': int(deep.sum()),
-            'navkit_deeper_pct_of_extra': round(100.0 * deep.sum() / max(extra.sum(), 1), 1), 'water_triangles': len(w)}
+            'navkit_deeper_pct_of_extra': round(100.0 * deep.sum() / max(extra.sum(), 1), 1),
+            'water_triangles': water_triangles}
 
 
 def main(argv):

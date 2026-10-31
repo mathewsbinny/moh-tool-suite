@@ -30,7 +30,9 @@ LevelDiff <a.dbx> <b.dbx> [options]
 
 The exit code is 0 if the files have no differences, 1 if they do, 2 for bad input.
 
-Instances are matched by GUID. Each changed instance lists its fields as `path: old  ->  new`. Lists of
+Instances are matched by GUID. Each changed instance lists its fields as `path: old  ->  new`. Fields are
+compared by what they hold (attributes, kind and value bytes), not by their text: two values that print the
+same, like the decimal 2.0 and the integer 2, are shown with their kind and bytes in `[...]`. Lists of
 references (like a level's `Objects`) are compared as sets: `-` for entries only in A, `+` for entries only
 in B. A list with the same entries in another order is reported as such.
 

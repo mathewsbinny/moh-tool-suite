@@ -12,9 +12,12 @@ by `install --apply`, which is for the user to run (never run by the build).
                                                         copy out\game into the game with backups (default: --plan)
   common options: --variant <name> (a second build, e.g. exp0: work\stockmp\<lv>-<name>), --work <folder>
 
---pathdata names a folder under the game's Output\win32\ai\levels (default: the level's own, else the DICE folder of
-the same world known for it: mp_005 -> ons_mp_005gr). The output keeps the game's own paths, so an install is a plain
-copy of out\game over the game folder.
+--pathdata names a folder under the game's MP\Output\win32\ai\levels (default: the level's own, else the DICE folder
+of the same world known for it: mp_005 -> ons_mp_005gr). The output keeps the game's own paths (MOH's layout, from
+mohcore.gamecopy: MP\dist\win32, its patch layer, MP\Output\win32), so an install is a plain copy of out\game over the
+game folder; install --apply / --revert checks every file first and changes nothing when one was changed after the
+install. A level without a level bundle of its own (MOH's DLC modes mp_03_elimination, mp_07_koth) is refused with
+the reason. MOH's MoHMPGame.exe has no AI types, so a build reads MOH's files but the layer cannot run in MOH.
 """
 import json
 import os
@@ -44,7 +47,7 @@ def opt(argv, name, default=None):
 
 
 def pathdata_for(paths, folder=None):
-    base = os.path.join(paths.game, 'Output', 'win32', 'ai', 'levels')
+    base = os.path.join(paths.gc.ai_dir(), 'levels')             # MOH: game\MP\Output\win32\ai\levels
     for f in [folder] if folder else [paths.lv, SAME_WORLD.get(paths.lv)]:
         if f and os.path.isfile(os.path.join(base, f, 'infantry', 'pathdata.hpd')):
             src = 'the level\'s own path data' if f == paths.lv else f'path data of {f} (the same world)'
@@ -55,7 +58,7 @@ def pathdata_for(paths, folder=None):
 
 
 def summary(paths):
-    v, b = paths.bundles()[-1]
+    v, b = paths.loaded_bundle()                  # a level without a bundle of its own: a BuildError that says so
     d = pipeline.unpacked(b, paths.src(v))
     m = levelmodel.Model(dbxbin.read(pipeline.find_entry(d, pipeline.level_entry(d, pipeline._level_name(d, paths.lv)))))
     print(f'{m.name}: mode {m.mode}, factions {m.factions}, attacker {m.attacker}, HasAI {m.has_ai}')
@@ -83,6 +86,12 @@ def installed_files(game, lv):
     return rels
 
 
+def changed_after_install(dst):
+    """Whether a file --apply installed was changed since (its marker holds the installed file's sha256)."""
+    with_marker = os.path.isfile(dst + APPLIED) and os.path.isfile(dst)
+    return with_marker and open(dst + APPLIED).read().strip() != pipeline.sha(dst)
+
+
 def install(paths, argv):
     game = opt(argv, '--game', paths.game)
     out = os.path.join(paths.root, 'out', 'game')
@@ -97,6 +106,14 @@ def install(paths, argv):
         files = [os.path.relpath(os.path.join(dp, f), out) for dp, _d, fs in os.walk(out) for f in fs]
         if not files:
             raise SystemExit(f'nothing built in {out} (run build first)')
+    if mode != '--plan':
+        # every target is checked before anything is copied or restored: a file changed after the install stops the
+        # whole step, so the game is never left with some files new and the others old (dist new, patch old)
+        changed = [rel for rel in sorted(files) if changed_after_install(os.path.join(game, rel))]
+        if changed:
+            raise SystemExit(f'{", ".join(changed)} changed after the install - nothing '
+                             f'{"installed" if mode == "--apply" else "reverted"} (revert by hand, or delete the '
+                             f'{APPLIED} marker beside each)')
     for rel in sorted(files):
         dst = os.path.join(game, rel)
         src = os.path.join(out, rel)
@@ -104,16 +121,8 @@ def install(paths, argv):
             state = 'replace' if os.path.isfile(dst) else 'new'
             print(f'{state:8s} {rel}')
         elif mode == '--apply':
-            marker = dst + APPLIED
-            installed = False
-            if os.path.isfile(marker):
-                if not os.path.isfile(dst):
-                    installed = False          # deleted after the install: install the new build again
-                else:
-                    installed = open(marker).read().strip() == pipeline.sha(dst)
-                    if not installed:
-                        raise SystemExit(f'{rel} changed after the install - not overwriting it '
-                                         f'(revert it first, or delete {marker})')
+            # ours and unchanged (checked above); a marker without the file: deleted after the install, install again
+            installed = os.path.isfile(dst + APPLIED) and os.path.isfile(dst)
             if installed and pipeline.sha(dst) == pipeline.sha(src):
                 print(f'already   {rel}')
                 continue
@@ -124,9 +133,6 @@ def install(paths, argv):
             open(dst + APPLIED, 'w').write(pipeline.sha(dst))
             print(f'installed {rel}')
         else:
-            if os.path.isfile(dst) and os.path.isfile(dst + APPLIED) and \
-                    open(dst + APPLIED).read().strip() != pipeline.sha(dst):
-                raise SystemExit(f'{rel} changed after the install - not reverting it')
             if os.path.isfile(dst + BACKUP):
                 os.replace(dst + BACKUP, dst)
                 print(f'restored  {rel}')
@@ -142,6 +148,13 @@ def install(paths, argv):
 
 
 def main(argv):
+    try:
+        return _main(argv)
+    except pipeline.NoLevelBundle as e:             # a plain message and exit 1, not a report for the tool's author
+        raise SystemExit(f'stockmp: {e}')
+
+
+def _main(argv):
     if len(argv) < 3 or argv[1] not in ('summary', 'generate', 'build', 'validate', 'all', 'install'):
         print(__doc__)
         return 1

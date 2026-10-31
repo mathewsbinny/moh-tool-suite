@@ -81,6 +81,16 @@ def _stat_key(path):
     return hashlib.sha1(f'{os.path.abspath(path).lower()}|{st.st_size}|{st.st_mtime_ns}'.encode()).hexdigest()[:16]
 
 
+def _save(cp, data):
+    """A cache entry written whole or not at all (a temporary file, then os.replace, as runs.save): entries are keyed
+    on the bundle's state, so a cut-off one would otherwise be read for as long as the bundle is unchanged."""
+    os.makedirs(os.path.dirname(cp), exist_ok=True)
+    tmp = cp + '.tmp'
+    with open(tmp, 'wb') as fh:
+        fh.write(data if isinstance(data, bytes) else json.dumps(data).encode())
+    os.replace(tmp, cp)
+
+
 def bundle_names(path, cache_dir):
     from mohcore import fbrb
     if cache_dir:
@@ -89,8 +99,7 @@ def bundle_names(path, cache_dir):
             return set(json.load(open(cp)))
     names = set(fbrb.names(path))
     if cache_dir:
-        os.makedirs(os.path.dirname(cp), exist_ok=True)
-        json.dump(sorted(names), open(cp, 'w'))
+        _save(cp, sorted(names))
     return names
 
 
@@ -110,9 +119,7 @@ def bundle_read(path, wanted, cache_dir):
         for n, b in got.items():
             out[n] = b
             if cache_dir:
-                d = os.path.join(cache_dir, 'bundles', key)
-                os.makedirs(d, exist_ok=True)
-                open(os.path.join(d, n.replace('/', '__')), 'wb').write(b)
+                _save(os.path.join(cache_dir, 'bundles', key, n.replace('/', '__')), b)
     return out
 
 
@@ -249,8 +256,7 @@ def _real_names(path, cache_dir):
             return json.load(open(cp))
     names = [e.name for e in fbrb.entries(path) if not e.deleted]
     if cache_dir:
-        os.makedirs(os.path.dirname(cp), exist_ok=True)
-        json.dump(names, open(cp, 'w'))
+        _save(cp, names)
     return names
 
 

@@ -6,7 +6,10 @@ cost is the sum of its edges' stored costs and each step is an edge of the file,
 not walked back up, routes are refused between islands (with the gap) and for points far from the graph, and
 the cache gives the same data as a fresh read.
 
-  python test_navdata.py [level]
+Without game data (run first; --quick runs only these): a cache entry made from a relative path, read from another
+folder, gives this caller's absolute path; a truncated .npz cells entry is rebuilt, and no temporary file is left.
+
+  python test_navdata.py [level] [--quick]
 """
 import os
 import shutil
@@ -25,7 +28,7 @@ import ordercheck  # noqa: E402
 
 # NavKit's exports as of 2026-10-30 (all 26 MP levels built offline, drop links within a run's reach). A new export of
 # one of these levels can change its count: check the islands in the Navigation Studio, then record the new one.
-ISLANDS = {'mp_07_koth': 8, 'mp_03_elimination': 16}
+ISLANDS = {'mp_07_koth': 8, 'mp_03_elimination': 14}
 
 
 def reach(nav, k, back=False):
@@ -42,9 +45,49 @@ def reach(nav, k, back=False):
     return seen
 
 
+def cache_checks(check):
+    """The cache without game data (2026-10-31): _load stands in for the file's reader."""
+    tmp = tempfile.mkdtemp(prefix='navdata_cache_test_')
+    cwd, real_load = os.getcwd(), navdata._load
+    try:
+        a, b = os.path.join(tmp, 'a'), os.path.join(tmp, 'b')
+        os.makedirs(os.path.join(a, 'lv'))
+        os.makedirs(b)
+        hpd = os.path.join(a, 'lv', 'pathdata.hpd')
+        open(hpd, 'wb').write(b'stand-in')
+        cache = os.path.join(tmp, 'cache')
+        e = np.zeros(0)
+        navdata._load = lambda path, hf, cd: navdata.NavData(path, [], np.zeros((0, 2)), e, e, np.zeros((0, 3)), e,
+                                                             np.zeros((0, 2), np.int64), e, e, [])
+        os.chdir(a)
+        first = navdata.load(os.path.join('lv', 'pathdata.hpd'), cache_dir=cache)
+        os.chdir(b)
+        second = navdata.load(os.path.join('..', 'a', 'lv', 'pathdata.hpd'), cache_dir=cache)
+        check(os.path.isabs(first.path) and os.path.samefile(second.path, hpd) and os.path.isabs(second.path),
+              'a cache entry made from a relative path, read from another folder: the path is absolute and resolves')
+        navdata._load = real_load
+
+        class NoSectors:
+            sectors = []
+        cp = os.path.join(cache, navdata._key(hpd) + '.npz')
+        navdata._cells(NoSectors(), None, cache, hpd)
+        good = open(cp, 'rb').read()
+        open(cp, 'wb').write(good[:len(good) // 2])                      # an interrupted write of an old version
+        try:
+            xz, y, area, est = navdata._cells(NoSectors(), None, cache, hpd)
+            ok = len(xz) == 0 and open(cp, 'rb').read() == good
+        except Exception as ex:
+            ok = f'{type(ex).__name__}: {ex}'
+        check(ok is True, f'a truncated cells cache entry is rebuilt, not an error ({ok})')
+        check(not [f for f in os.listdir(cache) if f.endswith('.tmp')], 'cache entries leave no temporary file')
+    finally:
+        navdata._load = real_load
+        os.chdir(cwd)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main(argv):
-    lv = argv[1] if len(argv) > 1 else 'mp_07_koth'
-    path = os.path.join(navkit.find_opfor(None), 'work', 'navkit', lv, 'pathdata.hpd')
+    lv = next((a for a in argv[1:] if not a.startswith('--')), 'mp_07_koth')
     failed = 0
 
     def check(ok, what):
@@ -52,6 +95,11 @@ def main(argv):
         failed += not ok
         print(f'{"ok  " if ok else "FAIL"} {what}')
 
+    cache_checks(check)
+    if '--quick' in argv:
+        print('all passed' if not failed else f'{failed} check(s) failed')
+        return 1 if failed else 0
+    path = os.path.join(navkit.find_opfor(None), 'work', 'navkit', lv, 'pathdata.hpd')
     if not os.path.isfile(path):
         print(f'FAIL no NavKit build of {lv} ({path}): run navkit.py build {lv}')
         return 1

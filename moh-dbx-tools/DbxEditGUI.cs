@@ -45,6 +45,7 @@ namespace MohDbx.Gui
         string path;
         bool modified, backedUp;
         readonly Stack<byte[]> undo = new Stack<byte[]>();
+        int savedDepth;            // undo.Count when the file was opened or last saved (-1: that state can no longer be undone to)
         readonly List<string> script = new List<string>();   // the edits as DbxEdit commands
 
         readonly TreeView tree = new TreeView();
@@ -376,8 +377,16 @@ namespace MohDbx.Gui
 
         void Snapshot()
         {
+            if (undo.Count < savedDepth) savedDepth = -1;     // an edit after undoing past the save: the saved state is gone
             undo.Push(doc.Serialize());
             modified = true;
+        }
+
+        // An edit that changed nothing after all: its snapshot goes again.
+        void DropSnapshot()
+        {
+            undo.Pop();
+            modified = undo.Count != savedDepth;
         }
 
         void Undo()
@@ -385,7 +394,7 @@ namespace MohDbx.Gui
             if (undo.Count == 0) { Log("Nothing to undo."); return; }
             doc = new DbxFile(undo.Pop());
             if (script.Count > 0) script.RemoveAt(script.Count - 1);
-            modified = undo.Count > 0;
+            modified = undo.Count != savedDepth;
             Rebuild(null);
             Log("Undone.");
         }
@@ -397,27 +406,46 @@ namespace MohDbx.Gui
             var before = doc.Serialize();
             try
             {
-                bool changed = false;
+                bool valueChanged = false;
+                string nameBefore = doc.Get(e, "name");
+                var attributeChanges = new List<string>();
                 for (int i = 0; i < e.Attributes.Count && i < attributes.Rows.Count; i++)
                 {
                     string v = Convert.ToString(attributes.Rows[i].Cells[1].Value) ?? "";
-                    if (v != doc.Table[e.Attributes[i].Value]) { e.Attributes[i].Value = doc.Intern(v); changed = true; }
+                    if (v != doc.Table[e.Attributes[i].Value])
+                    {
+                        e.Attributes[i].Value = doc.Intern(v);
+                        attributeChanges.Add(doc.Table[e.Attributes[i].Name] + "=\"" + v + "\"");
+                    }
                 }
                 if (!e.IsContainer && value.Text != XmlExport.ValueText(doc, e))
                 {
                     bool rounded;
                     e.Payload = XmlImport.EncodeValue(doc, e, value.Text, out rounded);
-                    changed = true;
+                    valueChanged = true;
                     if (rounded) Log("Rounded to the nearest 4-byte value: " + XmlExport.ValueText(doc, e));
                 }
-                if (!changed) return;
+                if (!valueChanged && attributeChanges.Count == 0) return;
+                if (undo.Count < savedDepth) savedDepth = -1;
                 undo.Push(before);
                 modified = true;
                 var inst = InstanceOf(tree.SelectedNode);
-                string name = doc.Get(e, "name");
-                if (inst != null && inst.Children.Contains(e) && name != null && !e.IsContainer)
-                    script.Add("setfield=" + doc.Get(inst, "guid") + "|" + name + "|" + XmlExport.ValueText(doc, e));
-                else script.Add("# edited " + Label(e) + " in " + (inst == null ? "partition" : doc.Get(inst, "guid")) + " (no command form)");
+                string where = inst == null ? "partition" : doc.Get(inst, "guid");
+                // one script entry per edit (Undo takes back one): setfield replays a value change of the instance's
+                // field that setfield finds (the first non-container child of that name); attribute changes (a
+                // reference, a name) have no command form and are noted as a comment
+                var lines = new List<string>();
+                if (attributeChanges.Count > 0)
+                    lines.Add("# edited " + Label(e) + " in " + where + ": " + string.Join(", ", attributeChanges) + " (no command form)");
+                if (valueChanged)
+                {
+                    string name = doc.Get(e, "name");
+                    bool replayable = inst != null && name != null && name == nameBefore
+                                      && inst.Children.FirstOrDefault(c => doc.Get(c, "name") == name && !c.IsContainer && c.Payload != null) == e;
+                    lines.Add(replayable ? "setfield=" + doc.Get(inst, "guid") + "|" + name + "|" + XmlExport.ValueText(doc, e)
+                                         : "# edited the value of " + Label(e) + " in " + where + " (no command form)");
+                }
+                script.Add(string.Join(Environment.NewLine, lines));
                 tree.SelectedNode.Text = Label(e);
                 ShowElement(tree.SelectedNode);
                 UpdateState();
@@ -511,7 +539,7 @@ namespace MohDbx.Gui
             Snapshot();
             string guid = doc.Get(target, "guid");
             bool ok = new Editor(doc).CopyField(src, srcGuid, field, guid);
-            if (!ok) { undo.Pop(); Log("copyfield " + field + ": NOT FOUND"); return; }
+            if (!ok) { DropSnapshot(); Log("copyfield " + field + ": NOT FOUND"); return; }
             script.Add("copyfield=" + srcPath + "|" + srcGuid + "|" + field + "|" + guid);
             Log("copyfield " + field + ": copied into " + guid);
             Rebuild(target);
@@ -530,7 +558,7 @@ namespace MohDbx.Gui
             if (string.IsNullOrEmpty(r)) return;
             Snapshot();
             string guid = doc.Get(inst, "guid"), array = doc.Get(e, "name");
-            if (!new Editor(doc).AddItem(guid, array, r, null)) { undo.Pop(); Log("additem: the array has no item to copy the shape from"); return; }
+            if (!new Editor(doc).AddItem(guid, array, r, null)) { DropSnapshot(); Log("additem: the array has no item to copy the shape from"); return; }
             script.Add("additem=" + guid + "|" + array + "|" + r);
             Log("additem " + r + " -> " + array);
             Rebuild(e);
@@ -544,7 +572,7 @@ namespace MohDbx.Gui
             if (to == null) return;
             Snapshot();
             int n = new Editor(doc).Replace(from, to);
-            if (n == 0) { undo.Pop(); Log("replace: not found: " + from); return; }
+            if (n == 0) { DropSnapshot(); Log("replace: not found: " + from); return; }
             script.Add("replace=" + from + "|" + to);
             Log("replace " + from + " -> " + to + ": " + n + " string(s)");
             Rebuild(Selected);
@@ -587,7 +615,7 @@ namespace MohDbx.Gui
             if (v == "true") b = 1; else if (v == "false") b = 0; else if (!byte.TryParse(v, out b)) { Log("set: not true, false or 0-255"); return; }
             Snapshot();
             int n = new Editor(doc).SetByte(name, b);
-            if (n == 0) { undo.Pop(); Log("set: no bool/byte field " + name); return; }
+            if (n == 0) { DropSnapshot(); Log("set: no bool/byte field " + name); return; }
             script.Add("set=" + name + "|" + v);
             Log("set " + name + " = " + v + ": " + n + " field(s)");
             Rebuild(Selected);
@@ -631,7 +659,7 @@ namespace MohDbx.Gui
             if (from == null) return;
             Snapshot();
             var r = SlotFixer.Fix(doc, from);
-            if (r.Changed == 0) undo.Pop();
+            if (r.Changed == 0) DropSnapshot();
             else script.Add("# fixslots --from " + fromPath + " (DbxEdit fixslots)");
             Log("fixslots: " + r.Changed + " slot(s) changed; by guid " + r.ByGuid + ", by blueprint and position " + r.ByPosition
                 + ", nearest within 50 m " + r.ByNearest + ", no counterpart (slot 0) " + r.NoCounterpart);
@@ -699,6 +727,7 @@ namespace MohDbx.Gui
                 path = file;
                 modified = backedUp = false;
                 undo.Clear();
+                savedDepth = 0;
                 script.Clear();
                 found.Clear();
                 Rebuild(null);
@@ -725,6 +754,7 @@ namespace MohDbx.Gui
                 backedUp = true;
                 File.WriteAllBytes(target, doc.Serialize());
                 path = target;
+                savedDepth = undo.Count;
                 modified = false;
                 Log("saved " + target);
                 UpdateState();

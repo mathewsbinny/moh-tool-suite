@@ -118,6 +118,11 @@ def main(argv):
                 'dis command: from the function start (the window capped), the address marked', out)
         code, out = run('refs', f'{at["f2"]:#x}', '--exe', path)
         c.check(code == 0 and '1 place(s)' in out, 'refs command', out)
+        code, out = run('refs', '--dis', f'{at["f2"]:#x}', '--exe', path)
+        c.check(code == 0 and '1 place(s)' in out and f'> {at["call"]:08X}' in out,
+                'refs --dis <address>: the address is not taken as N (the default window)', out)
+        code, out = run('refs', f'{at["f2"]:#x}', '--dis', '2', '--exe', path)
+        c.check(code == 0 and '1 place(s)' in out and f'> {at["call"]:08X}' in out, 'refs <address> --dis 2: a plain decimal is N', out)
         code, out = run('dis', f'{at["s_va"]:#x}', '--exe', path)
         c.check(code == 1 and 'not in the exe\'s code' in out and 'what to do' in out, 'an address outside the code is refused', out)
 

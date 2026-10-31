@@ -36,7 +36,7 @@ What an in-game sample is (navsample.cpp), and how it is reproduced here:
     Here: for every triangle near the column, the height interval of the vertical line inside (triangle + radius ball)
     is computed exactly (face slab, edge cylinders, vertex spheres); a surface is blocked when its capsule axis
     (CAPSULE_AXIS: y + bottom + radius .. y + height - radius) meets one. The height field: its height under the capsule's lower
-    hemisphere, sampled on rings (0, 0.1 .. 0.4 m, 16 directions).
+    hemisphere, sampled on rings (0, 0.1 m .. the capsule radius, 16 directions).
   * hit info (the record's three words): the shape vtables the in-game file has - terrain TERRAIN_SHAPE_VTABLE,
     mesh MESH_SHAPE_VTABLE, convex / box CONVEX_SHAPE_VTABLE - then RAY_SHAPE_VTABLE, then 0. No soldiers are in this
     world (navwalk treats them as absent anyway).
@@ -610,9 +610,15 @@ def terrain_at(hf, x, z, normals=True):
     return y, nrm
 
 
-def _rings():
+def _rings(radius=RADIUS):
+    """Points under the capsule's lower hemisphere: its axis, rings every 0.1 m and one at its radius. Up to the
+    radius only: a ring outside it (BFBC2's 0.4 m ring under MOH's 0.35 m capsule) tested terrain the hemisphere does
+    not reach, at its full lowest height (2026-10-31)."""
     pts = [(0.0, 0.0)]
-    for r in (0.1, 0.2, 0.3, 0.35, 0.4):
+    rs = [round(0.1 * k, 6) for k in range(1, int(math.floor(radius / 0.1 + 1e-6)) + 1)]
+    if not rs or radius - rs[-1] > 1e-6:
+        rs.append(float(radius))
+    for r in rs:
         n = 8 if r < 0.25 else 16
         for k in range(n):
             a = 2 * math.pi * k / n
@@ -635,11 +641,12 @@ def terrain_blocks(hf, x, z, y, bottom, radius=RADIUS, chunk=100_000, height=HEI
     out = np.zeros(len(y), bool)
     if hf is None or not len(y):
         return out
-    d = np.hypot(RINGS[:, 0], RINGS[:, 1])
+    rings = RINGS if abs(radius - RADIUS) < 1e-9 else _rings(radius)
+    d = np.hypot(rings[:, 0], rings[:, 1])
     lift = capsule_axis(bottom, radius, height)[0] - np.sqrt(np.maximum(radius * radius - d * d, 0))     # hemisphere surface above y
     for s in range(0, len(y), chunk):
         e = min(len(y), s + chunk)
-        h, _ = terrain_at(hf, x[s:e, None] + RINGS[None, :, 0], z[s:e, None] + RINGS[None, :, 1], normals=False)
+        h, _ = terrain_at(hf, x[s:e, None] + rings[None, :, 0], z[s:e, None] + rings[None, :, 1], normals=False)
         out[s:e] = np.nanmax(np.where(np.isnan(h), -np.inf, h) - (y[s:e, None] + lift[None, :]), axis=1) > 1e-4
     return out
 
@@ -746,6 +753,9 @@ def cast_columns(grid, hits_col, hits_y, hits_n, hits_kind, terrain_y, solid=Non
         if long.any():
             s = act[long]
             start[s] = np.minimum(start[s], inside_set.bottom(cols[s], st[long]) - SKIP)
+            # ... as a new cast: the run inside solid starts over there (a floor just under the piece, hit at once,
+            # gave the column up with the run still over the limit - the floors below it lost, 2026-10-31)
+            solid_run[s] = 0
         done = stop.copy()
         done[skip] = (solid_run[act[skip]] > MAX_SOLID) & ~inside[skip]
         done[rec] = count[act[rec]] >= MAX_LAYERS
@@ -927,16 +937,17 @@ def sample_grid(grid, geom, hf, log=print, bottoms=(mohsoldier.STEP, mohsoldier.
     if len(cc):
         # inside a convex piece (between its faces in the column, by the faces the line passes through): solid
         face = np.isnan(cen[:, 0])
-        sid = geom.solid[ct[face]]
-        key = cc[face] * (int(sid.max()) + 1) + sid
-        u, inv = np.unique(key, return_inverse=True)
-        lo = np.full(len(u), np.inf)
-        hi = np.full(len(u), -np.inf)
-        np.minimum.at(lo, inv, cy[face])
-        np.maximum.at(hi, inv, cy[face])
-        sc.append(u // (int(sid.max()) + 1))
-        slo.append(lo - RAY_RADIUS)
-        shi.append(hi + RAY_RADIUS)
+        if face.any():                           # none when every convex hit is an edge contact (2026-10-31)
+            sid = geom.solid[ct[face]]
+            key = cc[face] * (int(sid.max()) + 1) + sid
+            u, inv = np.unique(key, return_inverse=True)
+            lo = np.full(len(u), np.inf)
+            hi = np.full(len(u), -np.inf)
+            np.minimum.at(lo, inv, cy[face])
+            np.maximum.at(hi, inv, cy[face])
+            sc.append(u // (int(sid.max()) + 1))
+            slo.append(lo - RAY_RADIUS)
+            shi.append(hi + RAY_RADIUS)
         up = (tri_n[ct, 1] > 0) | ~face
         cc, cy, ct, cen = cc[up], cy[up], ct[up], cen[up]
     solid = (np.concatenate(sc), np.concatenate(slo), np.concatenate(shi))
@@ -1134,10 +1145,19 @@ def detailed_rects(root, lv, ids, margin=1.0):
     return rects, box
 
 
+def box_covers(outer, inner):
+    """(minX, minZ, maxX, maxZ) inner lies inside outer: geometry read for outer (level_geometry's cut) holds all
+    of inner's."""
+    return outer[0] <= inner[0] and outer[1] <= inner[1] and inner[2] <= outer[2] and inner[3] <= outer[3]
+
+
 def sample_level(root, lv, log=print, bodies=None):
     """What navkit.py sample does in game, offline: the 0.8 m pair over the level's box, then - when the level has
     detailed sectors (chosen from those samples, detailed.py) - the 0.2 m pair over their squares. The geometry is
-    read once. Returns {'p08': paths, 'p02': paths or None, 'detailed': ids}."""
+    read once, cut to the level's box (level_geometry), and read again for the 0.2 m pair when the detailed squares
+    reach past that box: they are whole 100 m sectors, and the houses and walls past the box were missing - their
+    ground sampled as bare terrain and built walkable (mp_09_tdm: 4,166 triangles never loaded, 2026-10-31).
+    Returns {'p08': paths, 'p02': paths or None, 'detailed': ids}."""
     import navkit
     s = navkit.ensure_settings(navkit.Project(root), lv)
     loaded = load_level(root, lv, box=s['box'], log=log, bodies=bodies)
@@ -1150,6 +1170,9 @@ def sample_level(root, lv, log=print, bodies=None):
             os.remove(old)
     if ids:
         rects, box = detailed_rects(root, lv, ids)
+        if not box_covers(s['box'], box):
+            log(f'  {lv}: the detailed squares {box} reach past the box {s["box"]}: geometry read again for them')
+            loaded = load_level(root, lv, box=box, log=log, bodies=bodies)
         out['p02'] = run_level(root, lv, 0.2, box=box, log=log, rects=rects, loaded=loaded)
     else:
         log(f'  {lv}: no detailed sectors - no 0.2 m runs')

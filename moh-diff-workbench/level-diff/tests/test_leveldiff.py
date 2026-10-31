@@ -1,7 +1,8 @@
 r"""LevelDiff on two small levels built here (XML written by the test, made binary with DbxEdit import), with
 known differences: a changed field, a placed object re-created under a new GUID (paired only with
 --match-objects), reference lists with entries added, removed or only reordered, instances added and
-removed. Also: --ignore, --type, the exit codes, the JSON output, and bad input.
+removed; a decimal 2.0 against an integer 2 (the same text), and a list reordered after another list of the
+instance gained an entry. Also: --ignore, --type, the exit codes, the JSON output, and bad input.
 
   python test_leveldiff.py            no game data (builds LevelDiff.exe and DbxEdit.exe if missing)
   python test_leveldiff.py --game     also MOH's mp_01 against itself and its Package (patch) copy against its Dist
@@ -86,6 +87,41 @@ def guids(items):
     return {i['guid'].lower() for i in items}
 
 
+def two_lists(first, second):
+    """An instance with a decimal Scale (2.5) and two reference lists."""
+    lists = ''.join(f'\t\t<array name="{name}">\n' + ''.join(f'\t\t\t<item ref="{r}" />\n' for r in refs) + '\t\t</array>\n'
+                    for name, refs in (('First', first), ('Second', second)))
+    return (f'\t<instance guid="{g(0x90)}" type="Entity.Thing">\n\t\t<field name="Scale">2.5</field>\n{lists}\t</instance>\n'
+            + plain(g(0x40), ALT) + plain(g(0x50), ALT))
+
+
+def hidden_checks(c, work):
+    """Differences the XML text does not show: the decimal 2.0 against the integer 2 (both print "2"); and a list
+    reordered after another list of the same instance gained an entry."""
+    files = {}
+    for name, first, second in (('c', [g(0x40)], [g(0x40), g(0x50)]), ('d', [g(0x40), g(0x50)], [g(0x50), g(0x40)])):
+        x = os.path.join(work, name + '.xml')
+        open(x, 'w', encoding='utf-8').write(partition([two_lists(first, second)]))
+        files[name] = os.path.join(work, name + '.dbx')
+        subprocess.run([DBX, 'import', x, files[name]], capture_output=True, text=True)
+    scale = b'\x01\x04\x40\x20\x00\x00'                       # one 4-byte number: the decimal 2.5
+    for name, value in (('c', b'\x40\x00\x00\x00'), ('d', b'\x00\x00\x00\x02')):   # decimal 2.0 / integer 2
+        data = open(files[name], 'rb').read()
+        if data.count(scale) != 1:
+            c.check(False, 'test levels: the Scale field found once in the binary file')
+            return
+        open(files[name], 'wb').write(data.replace(scale, scale[:2] + value))
+    code, d, out = leveldiff(files['c'], files['d'], work=work)
+    thing = next((i for i in (d or {}).get('changed', []) if i['guid'].lower() == g(0x90)), {'fields': [], 'removed': [], 'added': []})
+    sc = next((f for f in thing['fields'] if f['path'] == 'Scale'), None)
+    c.check(code == 1 and sc is not None and sc['a'].startswith('2  [numbers') and sc['b'].startswith('2  [numbers')
+            and sc['a'] != sc['b'], 'the decimal 2.0 against the integer 2: a change, shown with the value bytes')
+    c.check(thing['added'] == [f'First: {g(0x50)}'] and any(f['path'] == 'Second' and f['b'] == 'in another order' for f in thing['fields']),
+            'a list reordered after another list gained an entry: still reported as an order change')
+    code, d, _ = leveldiff(files['c'], files['c'], work=work)
+    c.check(code == 0 and d is not None and not d['changed'], 'the patched level against itself: nothing different')
+
+
 def build_tools():
     for exe, bat in ((DBX, os.path.join(SUITE, 'moh-dbx-tools', 'build.bat')),
                      (LD, os.path.join(SUITE, 'moh-diff-workbench', 'level-diff', 'build.bat'))):
@@ -142,6 +178,8 @@ def main(argv):
 
         code, d, out = leveldiff(a, b, '--summary', work=work)
         c.check(code == 1 and 'only in A' in out and g(0x60) not in out.lower(), '--summary: counts without the instance lists')
+
+        hidden_checks(c, work)
 
         x = os.path.join(work, 'a.xml')
         r = subprocess.run([LD, a, x], capture_output=True, text=True)

@@ -745,6 +745,17 @@ def islands_of(s, keep, gx, gz, stair, step):
     return comp, cid
 
 
+def column_lowest(s):
+    """Per surface: the height of the lowest surface in its column. minimum.at over the column index - reduceat over
+    the columns' starts (clipped for empty columns at the grid's end) cut the last surface off the last column
+    holding any, so a roof there was measured against itself (2026-10-31)."""
+    y = s.y.astype(float)
+    col_of = np.repeat(np.arange(s.nx * s.nz), np.diff(s.start[:s.nx * s.nz + 1]))
+    lowest = np.full(s.nx * s.nz, np.inf)
+    np.minimum.at(lowest, col_of, y)
+    return lowest[col_of]
+
+
 def roof_islands(s, keep, gx, gz, stair, step, terrain, anchor_k):
     """The kept surfaces ROOF_PRUNE drops (bool per surface)."""
     y = s.y.astype(float)
@@ -753,8 +764,7 @@ def roof_islands(s, keep, gx, gz, stair, step, terrain, anchor_k):
     if n < 2:
         return out
     col_of = np.repeat(np.arange(s.nx * s.nz), np.diff(s.start))
-    lowest = np.minimum.reduceat(y, s.start[:-1].clip(max=len(y) - 1)) if len(y) else y
-    lowest = lowest[col_of]
+    lowest = column_lowest(s)
     raised = keep & ~terrain & (y - lowest >= ROOF_RAISE)
     kc = comp[keep]
     size = np.bincount(kc, minlength=n)

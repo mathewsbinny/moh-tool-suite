@@ -23,7 +23,7 @@ LEVELS = ['sp_01', 'sp_02', 'sp_03', 'sp_04', 'sp_003_b', 'sp_004_b', 'sp_005', 
 
 def main(argv):
     opts = dict(zip(argv[1:], argv[2:]))
-    pitch = float(opts.get('--pitch', 0.2))
+    pitch = float(opts.get('--pitch', 0.8))      # the docstring's default: the 0.8 m pair (0.2 was the default before 2026-10-31)
     levels = opts['--levels'].split(',') if '--levels' in opts else list(LEVELS)
     smoke = opts.get('--smoke')
     budget = int(opts['--budget']) if '--budget' in opts else None

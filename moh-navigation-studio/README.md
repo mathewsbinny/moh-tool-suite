@@ -51,9 +51,13 @@ Tools: walkable or unwalkable region (click an outline and press Enter, or click
 height range runs from 2 m below to 4 m above the clicked points, adjustable), seed, unseed, link two areas,
 add or remove a route edge (two points), traversal (ladder, jump, vault or drop, one- or two-way: the
 bottom, then the top), and note. Every edit records who made it (this PC's name unless you type another)
-and when. The panel lists the edits (fly to one, delete one), with undo (Ctrl+Z), redo (Ctrl+Y), save and
-reload; Esc cancels a drawing. Edits are drawn over the scene: walkable green, unwalkable red, seeds cyan,
-unseeds magenta, links orange, route edges yellow (removals red), traversals white.
+and when. The panel lists the edits (fly to one, delete one), with undo (Ctrl+Z; a deleted edit comes back in its
+place), redo (Ctrl+Y), save and reload (with unsaved edits, a second click discards them); Esc cancels a drawing.
+E does not close the panel while you fly with the right button held (E climbs there). Edits are drawn over the
+scene: walkable green, unwalkable red, seeds cyan, unseeds magenta, links orange, route edges yellow (removals red),
+traversals white. A side file that cannot be read (a newer version's, an invalid edit, a typo) is not saved over:
+the studio says so, the edits start empty, and the first save or build keeps the file as
+`<level>.navtune.json.unreadable.bak`.
 
 **Build with these edits** (step 3) saves the side file and runs `navkit.py apply` in the background (its log in the
 panel); when it is done, **open the result** reopens the studio on the built file. Walkability edits (regions,

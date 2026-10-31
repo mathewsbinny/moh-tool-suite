@@ -23,7 +23,7 @@ problem fails the level); then its measures:
 Each measure is compared with the reference run (default "regression"; navparity.py's work\navkit\parity\
 <run>.json). Measures where higher is better must not drop, measures where lower is better must not rise, by
 more than the tolerance (points); counts are listed when they change but do not fail. Exit code 0: nothing
-worse; 1: something worse (or a level failed to build); 2: no reference run.
+worse; 1: something worse (or a level failed to build); 2: no reference run, or a bad option.
 
 Progress: before each level, its number, its expected time and the run's share done and time left (from each
 level's time in the last run or the reference - saved per level as "seconds" - else from its sample file size at the seconds per MB of the timed levels; each finished level
@@ -32,6 +32,7 @@ the build's stages are printed indented as they finish.
 
 The run is saved as "regression_last". After an intended improvement, make it the reference:
   navregress.py --save regression          (or: copy regression_last.json to regression.json)
+--save without a name saves under the reference run's name (default "regression").
 Default levels: the 13 campaign levels and the Onslaught maps with DICE path data (ONS_MP_002 / 004, when imported);
 without any (MOH) every level NavKit has prepared (work\navkit\<level>\navkit.json: the 26 MP levels, about 1 to 2
 hours); --levels for a subset.
@@ -324,8 +325,37 @@ def compare(ref, now, tol):
     return worse, better, counts
 
 
+OPTIONS = ('--levels', '--reference', '--save', '--tolerance', '--opfor')
+
+
+def check_options(args):
+    """(arguments, error) of a command line, checked before anything is built (2026-10-31: '--save' without a name
+    raised IndexError after the whole run; '--save --levels x' saved the run as "--levels"): each option needs a value
+    that is not another option; --save alone takes the reference run's name. error is a message, or None."""
+    args = list(args)
+    for i, a in enumerate(args):
+        if a.startswith('--') and a not in OPTIONS:
+            return args, f'unknown option {a}'
+        if a in OPTIONS and (i + 1 >= len(args) or args[i + 1].startswith('--')) and a != '--save':
+            return args, f'{a} needs a value'
+    if '--tolerance' in args:
+        try:
+            float(args[args.index('--tolerance') + 1])
+        except ValueError:
+            return args, f'--tolerance: a number, not {args[args.index("--tolerance") + 1]!r}'
+    if '--save' in args:
+        i = args.index('--save')
+        if i + 1 >= len(args) or args[i + 1].startswith('--'):
+            args.insert(i + 1, args[args.index('--reference') + 1] if '--reference' in args else 'regression')
+    return args, None
+
+
 def main(argv):
-    args = argv[1:]
+    args, bad = check_options(argv[1:])
+    if bad:
+        print(f'navregress: {bad}')
+        print(__doc__)
+        return 2
     opt = lambda k, d=None: args[args.index(k) + 1] if k in args else d
     root = navparity.opfor_root(opt('--opfor'))
     levels = opt('--levels').split(',') if opt('--levels') else [

@@ -4,7 +4,8 @@ the floor under a convex piece taller than the 10 m solid limit, mesh triangles 
 facing the ray, the sphere touching an edge), the capsule test (walls, ceilings, steep terrain; the exact
 capsule-triangle interval against brute force), the file written in
 navsample.cpp's version-3 format and read back by navsample.py, the grid alignment of navsample.cpp, and the
-destroyed-state parts of a blueprint.
+destroyed-state parts of a blueprint, the terrain rings out to the capsule's radius, and sample_level's geometry
+for detailed squares past the level's box.
 
   python test_navsample_offline.py
 """
@@ -120,6 +121,23 @@ def main(argv):
                   (slab(-2.1, -2.1, 2.1, 2.1, 3.9, 4.0), no.KIND_MESH)])
     s = no.sample_grid(grid, g, flat, log=lambda *a: None)[B]
     check([c[0] for c in column(s, 0.0, 0.0)] == [27.0, 4.0, 0.0], f'tall convex piece: floor below kept {column(s, 0.0, 0.0)}')
+    # ... with a floor 0.15 m under the piece's bottom (hit at once from there): the cast past the piece is a new one
+    # - that floor is skipped as any hit at once is, the floor at 5 m and the terrain kept (the run inside solid was
+    # not reset at the jump: the column was given up, [22.0] only - mp_09_overrun's corner house, 2026-10-31)
+    g = geometry([(slab(-2.1, -2.1, 2.1, 2.1, 10.0, 22.0), no.KIND_CONVEX),
+                  (slab(-2.1, -2.1, 2.1, 2.1, 9.8, 9.85), no.KIND_MESH),
+                  (slab(-2.1, -2.1, 2.1, 2.1, 4.9, 5.0), no.KIND_MESH)])
+    s = no.sample_grid(grid, g, flat, log=lambda *a: None)[B]
+    check([c[0] for c in column(s, 0.0, 0.0)] == [22.0, 5.0, 0.0],
+          f'tall convex piece, a floor just under it: the floors below kept {column(s, 0.0, 0.0)}')
+    # convex hits that are all edge contacts (a thin convex sheet beside the columns): no solid intervals, no error
+    # (max() of an empty array, 2026-10-31)
+    g = geometry([(slab(0.05, -0.5, 0.07, 0.5, 0.5, 1.5), no.KIND_CONVEX)])
+    try:
+        no.sample_grid(no.Grid(0.8, 0.0, 0.0, 1, 1, -10.0, 50.0), g, flat, log=lambda *a: None)
+        check(True, 'convex edge contacts only: sampled')
+    except ValueError as e:
+        check(False, f'convex edge contacts only: {e}')
 
     # 5. the sphere touching an edge: a thin vertical sheet (no thickness) 0.03 m beside a column gives a hit at its
     #    top edge with an upward normal; 0.2 m away it does not
@@ -155,6 +173,16 @@ def main(argv):
     y = column(s, 0.0, 0.0)[0][0]
     check(abs(y - (float(hf.height(0.0, 0.0)) + no.RAY_RADIUS * (1 - math.cos(math.radians(45))))) < 0.002,
           f'terrain lift on a 45 deg slope: {y}')
+    # the terrain under the capsule is tested out to its radius, not past it (a 0.4 m ring, BFBC2's radius, blocked
+    # MOH's 0.35 m capsule beside a terrain cliff it does not touch, 2026-10-31): a cliff from x 0.39 blocks a
+    # column 0.29 m from it, not one 0.39 m away
+    rr = np.hypot(no.RINGS[:, 0], no.RINGS[:, 1])
+    check(abs(rr.max() - no.RADIUS) < 1e-9 and abs(np.hypot(*no._rings(0.4).T).max() - 0.4) < 1e-9,
+          f'terrain rings out to the capsule radius ({rr.max():.3f} m)')
+    hf = heightfield(lambda x, z: np.where(x > 0.39, 3.0, 0.0), lo=-2.0, hi=2.0, size=128)
+    for b in no.CAP_BOTTOMS.values():
+        got = no.terrain_blocks(hf, np.array([0.0, 0.1]), np.array([0.0, 0.0]), np.array([0.0, 0.0]), b).tolist()
+        check(got == [False, True], f'terrain cliff 0.39 m / 0.29 m away (capsule bottom {b}): blocked {got}')
 
     # 8. the capsule-triangle interval against brute force (random triangles, random vertical lines)
     rng = np.random.default_rng(3)
@@ -252,6 +280,74 @@ def main(argv):
         check(no.destroyed_parts(bp) == {'ruin_downed'}, f'destroyed parts: {no.destroyed_parts(bp)}')
         check(no.part_names(hx[:-4] + '.res') == ['base', 'part_01', 'ruin', 'ruin_downed'], 'part names in order')
         check(no.destroyed_parts(os.path.join(d, 'missing.xml')) == set(), 'no blueprint: no destroyed parts')
+
+    # 12. sample_level: the 0.2 m pair's geometry holds the whole detailed squares - read again for their box when it
+    #     reaches past the level's (mp_09_tdm: 4,166 triangles in its detailed squares were never loaded, 2026-10-31);
+    #     reused when the box holds them
+    import types
+    for level_box, want in (([-90, -70, 80, 70], [[-90, -70, 80, 70], [-101.0, -101.0, 101.0, 101.0]]),
+                            ([-150, -150, 150, 150], [[-150, -150, 150, 150]])):
+        loads, runs = [], []
+        fake = types.ModuleType('navkit')
+        fake.Project = lambda root: root
+        fake.ensure_settings = lambda pr, lv: {'box': level_box, 'xoff': -2, 'zoff': -2, 'y': [0, 10]}
+        saved = {k: getattr(no, k) for k in ('load_level', 'run_level', 'detailed_choice')}
+        old_nk = sys.modules.get('navkit')
+        sys.modules['navkit'] = fake
+        try:
+            no.load_level = lambda root, lv, box=None, log=None, bodies=None: loads.append(box) or ('geometry', box)
+            no.run_level = lambda root, lv, pitch, box=None, log=None, rects=None, loaded=None: (
+                runs.append((pitch, loaded[1])) or ['a', 'b'])
+            no.detailed_choice = lambda root, lv, p: ([(1, 1), (2, 2)], None)
+            with tempfile.TemporaryDirectory() as d:
+                no.sample_level(d, 'lv', log=lambda *a: None)
+        finally:
+            for k, v in saved.items():
+                setattr(no, k, v)
+            if old_nk is None:
+                sys.modules.pop('navkit', None)
+            else:
+                sys.modules['navkit'] = old_nk
+        check(loads == want and runs[-1] == (0.2, want[-1]),
+              f'sample_level, level box {level_box}: geometry read for {loads}, the 0.2 m pair on {runs[-1][1]}')
+
+    # 13. the build's reading of the runs (navbuild.stage): a fine samples run is coarsened to the stage's pitch, and
+    #     the high- and narrow-capsule runs with it (they were read at their own pitch and indexed by the coarse
+    #     grid's columns, 2026-10-31); a run on another grid is refused; a level with no walkable ground is a clear
+    #     error, not min() of no sectors
+    import navbuild
+    import navwalk
+
+    def flat_run(nx, nz, flags=0):
+        n = nx * nz
+        normal = np.zeros((n, 3), np.float32)
+        normal[:, 1] = 1.0
+        hit = np.zeros((n, 3), np.int64)
+        hit[:, 0] = no.TERRAIN_SHAPE_VTABLE
+        return navsample.Samples(0.2, 0.0, 0.0, nx, nz, 50.0, -10.0, no.RADIUS, 0.3, no.HEIGHT, no.RAY_RADIUS,
+                                 np.arange(n + 1, dtype=np.int64), np.zeros(n, np.float32), normal,
+                                 np.full(n, flags, np.uint8), hit)
+    navbuild.set_pitch(0.8)
+    with tempfile.TemporaryDirectory() as d:
+        paths = {k: os.path.join(d, k + '.bin') for k in ('fine', 'fine_hi', 'other_hi', 'blocked')}
+        no.write(paths['fine'], flat_run(17, 13))
+        no.write(paths['fine_hi'], flat_run(17, 13, navsample.BLOCKED))
+        no.write(paths['other_hi'], flat_run(21, 13))
+        no.write(paths['blocked'], flat_run(17, 13, navsample.BLOCKED))
+        sc = navwalk.coarse(navsample.load(paths['fine'])[0])
+        hi = navbuild.on_grid(paths['fine_hi'], sc, 'high-capsule')
+        check(abs(hi.pitch - 0.8) < 1e-6 and (hi.nx, hi.nz) == (sc.nx, sc.nz) == (5, 4) and len(hi.y) == len(sc.y),
+              f'a fine high-capsule run coarsened with the samples: {hi.nx} x {hi.nz} at {hi.pitch:g}')
+        try:
+            navbuild.on_grid(paths['other_hi'], sc, 'high-capsule')
+            check(False, 'a high-capsule run on another grid: refused')
+        except ValueError as e:
+            check('not on the grid of the samples' in str(e), f'a high-capsule run on another grid: refused ({e})')
+        try:
+            navbuild.stage(paths['blocked'], None, 0, 0, log=lambda *a: None)
+            check(False, 'no walkable ground: a clear error')
+        except ValueError as e:
+            check('no walkable ground' in str(e), f'no walkable ground: a clear error ({e})')
 
     print('all passed' if not failed else f'{failed} check(s) failed')
     return 1 if failed else 0

@@ -84,6 +84,12 @@ def main(argv):
         c.check('Documents folder' in out, 'names a known function on the stack (the Documents folder)')
         c.check('not build' not in out, f'no build note for build {crashreader.BUILD}')
 
+        null_call = os.path.join(work, 'null_call.xml')            # Eip 0: a call through a null function pointer
+        open(null_call, 'w', encoding='utf-8').write(report(0, regs, stack))
+        code, out = run([null_call, '--no-code'])
+        c.check(code == 0 and 'Crash at 0x00000000' in out and 'null function pointer' in out and 'address unknown' not in out,
+                'Eip 0 is a crash at address 0 (a null function pointer call), not an unknown address', out)
+
         other = os.path.join(work, 'other.xml')
         open(other, 'w', encoding='utf-8').write(report(SITE, regs, stack, build='581582'))
         c.check(f'not build {crashreader.BUILD}' in run([other, '--no-code'])[1], 'another build (the unpatched 581582) is noted')

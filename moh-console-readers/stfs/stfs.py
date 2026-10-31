@@ -20,6 +20,20 @@ import sys
 BLOCK = 0x1000
 
 
+def safe_dest(outdir, path):
+    """The file an entry extracts to: under outdir, or SystemExit for a name that would leave it
+    (a '..' folder, a rooted or drive name, backslashes that climb out)."""
+    rel = path.replace('\\', '/')
+    parts = rel.split('/')
+    if not path or rel.startswith('/') or any(os.path.splitdrive(p + '/x')[0] for p in parts):
+        raise SystemExit(f'refused: the entry "{path}" escapes the output folder')
+    root = os.path.realpath(outdir)
+    dst = os.path.realpath(os.path.join(root, *parts))
+    if not dst.startswith(root.rstrip(os.sep) + os.sep):
+        raise SystemExit(f'refused: the entry "{path}" escapes the output folder')
+    return dst
+
+
 class Package:
     def __init__(self, path):
         self.f = open(path, 'rb')
@@ -87,9 +101,12 @@ class Package:
                             'consecutive': bool(flags & 0x40), 'count': int.from_bytes(e[0x29:0x2C], 'little'),
                             'start': int.from_bytes(e[0x2F:0x32], 'little'), 'parent': struct.unpack_from('>H', e, 0x32)[0],
                             'size': struct.unpack_from('>I', e, 0x34)[0]})
-        for e in entries:
-            parts, p = [e['name']], e['parent']
+        for i, e in enumerate(entries):
+            parts, p, seen = [e['name']], e['parent'], {i}
             while p != 0xFFFF and p < len(entries):
+                if p in seen:                         # an entry its own parent, or two pointing at each other
+                    raise ValueError(f'malformed file table: the folders of entry {i} ("{e["name"]}") form a loop')
+                seen.add(p)
                 parts.append(entries[p]['name'])
                 p = entries[p]['parent']
             e['path'] = '/'.join(reversed(parts))
@@ -119,7 +136,7 @@ def main(argv):
         if argv[1] == 'list':
             print(f'{e["size"]:>12}  {e["path"]}')
         elif argv[1] == 'extract':
-            dst = os.path.join(argv[3], *e['path'].split('/'))
+            dst = safe_dest(argv[3], e['path'])
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             open(dst, 'wb').write(pkg.read(e))
             print(f'{e["size"]:>12}  {dst}')

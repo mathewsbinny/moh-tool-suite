@@ -75,6 +75,8 @@ def is_binary(data):
 def _varint(data, pos):
     value, shift = 0, 0
     while True:
+        if pos >= len(data):
+            raise ValueError('truncated file: a number runs past the end')
         b = data[pos]
         pos += 1
         value |= (b & 0x7F) << shift
@@ -83,8 +85,27 @@ def _varint(data, pos):
         shift += 7
 
 
+def _byte(data, pos):
+    if pos >= len(data):
+        raise ValueError('truncated file: an element cut short')
+    return data[pos]
+
+
+def _string(strings, k):
+    if k >= len(strings):
+        raise ValueError(f'string {k} out of range ({len(strings)} strings): a damaged or truncated file')
+    return strings[k]
+
+
 def _strings(data, tolerant):
+    # 2026-10-31: truncated input raises ValueError('truncated ...') everywhere, never IndexError or struct.error
+    if len(data) < 24:
+        raise ValueError('truncated file: no string table header')
     area, count = struct.unpack_from('>II', data, 16)
+    if 24 + 4 * count > len(data):
+        raise ValueError(f'truncated file: {count} string offsets run past the end')
+    if not tolerant and 24 + area > len(data):
+        raise ValueError('truncated file: the string table runs past the end')
     offsets = struct.unpack_from(f'>{count}I', data, 24)
     base = 24 + 4 * count
     out = []
@@ -120,14 +141,15 @@ def parse(data):
                 break
             stack.pop()
             continue
-        head = data[pos]
+        head = _byte(data, pos)
         pos += 1
-        e = Element(strings[tag], head >> 4)
+        e = Element(_string(strings, tag), head >> 4)
         for _ in range(head & 0xF):
             k, pos = _varint(data, pos)
             v, pos = _varint(data, pos)
-            e.attributes.append((strings[k], strings[v]))
+            e.attributes.append((_string(strings, k), _string(strings, v)))
         if e.kind == CONTAINER:
+            _byte(data, pos)
             pos += 1
             e.children = []
             (stack[-1].children if stack else roots).append(e)
@@ -135,7 +157,7 @@ def parse(data):
             continue
         if e.kind == TEXT:
             idx, pos = _varint(data, pos)
-            e.text = strings[idx]
+            e.text = _string(strings, idx)
         elif e.kind == NUMBERS:
             start = pos
             count, pos = _varint(data, pos)
@@ -153,6 +175,8 @@ def parse(data):
         (stack[-1].children if stack else roots).append(e)
     if stack:
         raise ValueError('truncated file: unclosed container(s)')
+    if not roots:
+        raise ValueError('truncated file: no elements after the string table')
     return DbxFile(strings, roots)
 
 
@@ -268,8 +292,8 @@ def to_xml(data):
             closing = open_tags.pop()
             out.append('\t' * len(open_tags) + '</' + closing + '>\r\n')
             continue
-        name = strings[tag]
-        head = data[pos]
+        name = _string(strings, tag)
+        head = _byte(data, pos)
         pos += 1
         kind = head >> 4
         line = ['\t' * len(open_tags), '<', name]
@@ -278,28 +302,31 @@ def to_xml(data):
             k, pos = _varint(data, pos)
             v, pos = _varint(data, pos)
             if i == 0:
-                first = strings[v]
-            line.append(' ' + strings[k] + '="' + _escape(strings[v]) + '"')
+                first = _string(strings, v)
+            line.append(' ' + _string(strings, k) + '="' + _escape(_string(strings, v)) + '"')
         if kind == CONTAINER:
+            _byte(data, pos)
             pos += 1
             out.append(''.join(line) + '>\r\n')
             open_tags.append(name)
             continue
         if kind == TEXT:
             idx, pos = _varint(data, pos)
-            content = _escape(strings[idx])
+            content = _escape(_string(strings, idx))
             if not content:
                 out.append(''.join(line) + ' />\r\n')
                 continue
         elif kind == NUMBERS:
             count, pos = _varint(data, pos)
             size, pos = _varint(data, pos)
+            if pos + count * size > n:
+                raise ValueError(f'truncated file: {count} numbers of {size} bytes run past the end')
             vals = [_number_text(data[pos + i * size:pos + i * size + (4 if size == 4 else 8 if size == 8 else 2)], size, first)
                     for i in range(count)]
             pos += count * size
             content = '/'.join(vals)
         else:
-            v = data[pos + 1]
+            v = _byte(data, pos + 1)
             pos += 2
             content = 'false' if v == 0 else 'true' if v == 1 else str(v)
         out.append(''.join(line) + '>' + content + '</' + name + '>\r\n')

@@ -211,13 +211,17 @@ def main(argv):
     print(f'  written {when} local ({r["time"]} UTC); type {r["type"]}; build {r["build"]}; {r["sku"]}')
     if r['build'] and r['build'] != BUILD:
         print(f'  note: this is not build {BUILD} - the bundled names may not match')
-    eip = r['registers'].get('Eip') or r['category']
-    name, hint = name_of(eip, syms, image) if eip else ('', '')
-    print(f'\nCrash at 0x{eip:08X}  {name}' if eip else '\nCrash address unknown')
+    eip = r['registers'].get('Eip')
+    if eip is None:                                # Eip 0 is an address (a call through a null pointer), not "none"
+        eip = r['category']
+    name, hint = name_of(eip, syms, image) if eip is not None else ('', '')
+    if eip == 0:
+        name = '(a call or jump through a null function pointer: the caller is the first return address below)'
+    print(f'\nCrash at 0x{eip:08X}  {name}' if eip is not None else '\nCrash address unknown')
     regs = r['registers']
     print('  registers: ' + '  '.join(f'{k} {regs[k]:08X}' + (' (null)' if regs[k] == 0 else '') for k in REGISTERS if k in regs))
 
-    if image and eip and image.is_code(eip):
+    if image and eip is not None and image.is_code(eip):
         start = image.function_start(eip) or eip - 0x40
         ins = [x for x in image.disasm(max(start, eip - 0x60), eip + 0x10) if x.address <= eip + 0x10]
         at = next((k for k, x in enumerate(ins) if x.address == eip), None)

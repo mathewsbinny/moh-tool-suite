@@ -188,8 +188,31 @@ static class LevelDiff
         return po == null ? "" : "  " + po.Blueprint + " at " + Math.Round(po.X, 1) + ", " + Math.Round(po.Y, 1) + ", " + Math.Round(po.Z, 1);
     }
 
+    // A field as compared: Key is what it holds (its attributes, its kind and its value - the text, or the bytes of
+    // numbers / bool / byte), Text what the report shows (the XML's text, or "-> ref").
+    sealed class Value { public string Key, Text; public Element E; }
+
+    static Value FieldValue(DbxFile f, Element c, string text)
+    {
+        string attrs = string.Join(" ", c.Attributes.Select(at => f.Table[at.Name] + "=" + f.Table[at.Value]));
+        string held = c.IsContainer ? "" : c.Kind == Element.Text ? "text:" + XmlExport.ValueText(f, c) : "kind " + c.Kind + ":" + Hex(c.Payload);
+        return new Value { Key = attrs + "|" + held + "|" + text, Text = text, E = c };
+    }
+
+    static string Hex(byte[] b) { return b == null ? "" : BitConverter.ToString(b).Replace("-", " "); }
+
+    // The shown text, with what tells two equal-looking values apart: the kind (text / numbers / other), the
+    // value bytes and the attributes besides the name.
+    static string Detail(DbxFile f, Element c, string text)
+    {
+        var extra = c.Attributes.Where(at => f.Table[at.Name] != "name").Select(at => f.Table[at.Name] + "=" + f.Table[at.Value]);
+        string kind = c.IsContainer ? "container" : c.Kind == Element.Text ? "text" : c.Kind == Element.Numbers ? "numbers " + Hex(c.Payload)
+                    : "kind " + c.Kind + " bytes " + Hex(c.Payload);
+        return text + "  [" + kind + (extra.Any() ? "; " + string.Join(" ", extra) : "") + "]";
+    }
+
     // Fields of one instance as path -> value; lists of references as sets of entries.
-    static void Flatten(DbxFile f, Element e, string path, Options o, Dictionary<string, string> values, Dictionary<string, List<string>> lists)
+    static void Flatten(DbxFile f, Element e, string path, Options o, Dictionary<string, Value> values, Dictionary<string, List<string>> lists)
     {
         var seen = new Dictionary<string, int>();
         foreach (var c in e.Children)
@@ -213,13 +236,13 @@ static class LevelDiff
                 }
                 else
                 {
-                    values[p] = "(" + c.Children.Count + " entries)";
+                    values[p] = FieldValue(f, c, "(" + c.Children.Count + " entries)");
                     Flatten(f, c, p, o, values, lists);
                 }
                 continue;
             }
             string r = f.Get(c, "ref");
-            values[p] = r != null ? "-> " + r : XmlExport.ValueText(f, c);
+            values[p] = FieldValue(f, c, r != null ? "-> " + r : XmlExport.ValueText(f, c));
         }
     }
 
@@ -228,18 +251,23 @@ static class LevelDiff
         var d = new InstanceDiff { Guid = a.Get(ia, "guid"), GuidB = b.Get(ib, "guid"), Type = TypeOf(a, ia), Id = a.Get(ia, "id") };
         if (TypeOf(b, ib) != d.Type) d.Changes.Add(new Change { Path = "(type)", A = a.Get(ia, "type"), B = b.Get(ib, "type") });
         if (a.Get(ia, "id") != b.Get(ib, "id")) d.Changes.Add(new Change { Path = "(id)", A = a.Get(ia, "id"), B = b.Get(ib, "id") });
-        var va = new Dictionary<string, string>();
-        var vb = new Dictionary<string, string>();
+        var va = new Dictionary<string, Value>();
+        var vb = new Dictionary<string, Value>();
         var la = new Dictionary<string, List<string>>();
         var lb = new Dictionary<string, List<string>>();
         Flatten(a, ia, "", o, va, la);
         Flatten(b, ib, "", o, vb, lb);
         foreach (var k in va.Keys.Union(vb.Keys))
         {
-            string x, y;
+            Value x, y;
             va.TryGetValue(k, out x);
             vb.TryGetValue(k, out y);
-            if (x != y) d.Changes.Add(new Change { Path = k, A = x, B = y });
+            if (x != null && y != null && x.Key == y.Key) continue;
+            // the same text but not the same value (2.0 and 2, a text and a number, a bool's other byte, an attribute):
+            // the report says what differs
+            bool look = x != null && y != null && x.Text == y.Text;
+            d.Changes.Add(new Change { Path = k, A = x == null ? null : look ? Detail(a, x.E, x.Text) : x.Text,
+                                       B = y == null ? null : look ? Detail(b, y.E, y.Text) : y.Text });
         }
         foreach (var k in la.Keys.Union(lb.Keys))
         {
@@ -248,9 +276,10 @@ static class LevelDiff
             if (!lb.TryGetValue(k, out y)) y = new List<string>();
             var cx = Counts(x);
             var cy = Counts(y);
+            int removedBefore = d.Removed.Count, addedBefore = d.Added.Count;    // this list's own entries decide
             foreach (var kv in cx) for (int n = (cy.ContainsKey(kv.Key) ? cy[kv.Key] : 0); n < kv.Value; n++) d.Removed.Add(k + ": " + kv.Key);
             foreach (var kv in cy) for (int n = (cx.ContainsKey(kv.Key) ? cx[kv.Key] : 0); n < kv.Value; n++) d.Added.Add(k + ": " + kv.Key);
-            if (d.Removed.Count == 0 && d.Added.Count == 0 && !x.SequenceEqual(y, StringComparer.OrdinalIgnoreCase))
+            if (d.Removed.Count == removedBefore && d.Added.Count == addedBefore && !x.SequenceEqual(y, StringComparer.OrdinalIgnoreCase))
                 d.Changes.Add(new Change { Path = k, A = "same " + x.Count + " entries", B = "in another order" });
         }
         return d;

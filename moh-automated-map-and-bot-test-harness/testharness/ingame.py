@@ -123,7 +123,8 @@ def evaluate(s, asset):
     else:
         reads = sorted(set(s.offset_loads))
         want = tuple(asset) if isinstance(asset, tuple) else None
-        good = want is not None and want in s.offset_loads and s.override is None
+        # every load (the game reads SectorOffsets more than once) must have read the asset's values, not just one
+        good = want is not None and all(l == want for l in s.offset_loads) and s.override is None
         why = (f'loads read {", ".join(f"{x},{z}" for x, z in reads)}' + (f'; override on ({s.override[0]},{s.override[1]})' if s.override else '')
                + (f'; the asset says {want[0]},{want[1]}' if want else '; the level has no asset'))
         out['offsets-read'] = Result('pass' if good else 'fail', f'{src}: {why}', {'loads': len(s.offset_loads),

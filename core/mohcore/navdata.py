@@ -120,12 +120,30 @@ def _ground(xz, est, heightfield):
     return np.where(np.abs(t - est) < 1.5, t, est)
 
 
+def _write_atomic(path, write):
+    """write(file object) into path + '.tmp', then renamed over path: an interrupted write leaves no half file."""
+    tmp = path + '.tmp'
+    try:
+        with open(tmp, 'wb') as fh:
+            write(fh)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def _cells(f, heightfield, cache_dir, path):
     if cache_dir:
         cp = os.path.join(cache_dir, _key(path) + '.npz')
         if os.path.isfile(cp):
-            z = np.load(cp)
-            return z['xz'], _ground(z['xz'], z['est'], heightfield), z['area'], z['est']
+            # 2026-10-31: a truncated or damaged entry (an interrupted write) made every load raise BadZipFile; it
+            # is rebuilt now, and entries are written to a temporary name first
+            try:
+                with np.load(cp) as z:
+                    xz, est, area = z['xz'], z['est'], z['area']
+                return xz, _ground(xz, est, heightfield), area, est
+            except Exception:
+                pass
     xz, ys, area_of = [], [], []
     k = 0
     for s in f.sectors:
@@ -143,7 +161,7 @@ def _cells(f, heightfield, cache_dir, path):
     y = _ground(xz, est, heightfield)
     if cache_dir:
         os.makedirs(cache_dir, exist_ok=True)
-        np.savez(os.path.join(cache_dir, _key(path) + '.npz'), xz=xz, y=y, area=area, est=est)
+        _write_atomic(os.path.join(cache_dir, _key(path) + '.npz'), lambda fh: np.savez(fh, xz=xz, y=y, area=area, est=est))
     return xz, y, area, est
 
 
@@ -152,16 +170,20 @@ def load(path, heightfield=None, cache_dir=None):
     opening a level again takes about a second."""
     if cache_dir:
         pk = os.path.join(cache_dir, _key(path, heightfield) + '.navdata.pkl')
+        # the cache is keyed by the absolute path, so a hit may come from a caller in another folder that passed
+        # a relative path: nav.path is always this caller's file, absolute (2026-10-31: a relative path stored by
+        # the first caller no longer resolved, and the studio failed at start in NavTune.new)
         if os.path.isfile(pk):
             try:
                 with open(pk, 'rb') as fh:
-                    return pickle.load(fh)
+                    nav = pickle.load(fh)
+                nav.path = os.path.abspath(path)
+                return nav
             except Exception:
                 pass                                         # an unreadable cache entry is rebuilt
-        nav = _load(path, heightfield, cache_dir)
+        nav = _load(os.path.abspath(path), heightfield, cache_dir)
         os.makedirs(cache_dir, exist_ok=True)
-        with open(pk, 'wb') as fh:
-            pickle.dump(nav, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        _write_atomic(pk, lambda fh: pickle.dump(nav, fh, protocol=pickle.HIGHEST_PROTOCOL))
         return nav
     return _load(path, heightfield, None)
 

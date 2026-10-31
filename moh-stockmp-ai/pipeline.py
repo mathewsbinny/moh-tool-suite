@@ -1,18 +1,20 @@
 """Sources, build and packaging of a stock level's AI layer.
 
 Inputs, all read from the user's own installs (nothing is shipped):
-- the level's level-00 bundles from Project OPFOR's game copy (Dist and Package), unpacked into the work folder;
+- the level's level-00 bundles from Project OPFOR's game copy (MOH: MP\\dist\\win32 and its patch layer, from
+  mohcore.gamecopy.GameCopy), unpacked into the work folder;
 - the donor level (DICE's SP_004_B: AreaOrder / AreaTrigger layouts, the SectorOffsets asset layout);
 - sp_common (the AI template chain to pack) and mp_common (kits, PathfindingSettings - only read for checks);
 - the path data named in the configuration (DICE's file where one exists for the world, else a NavKit build).
 
 Output, only under <OPFOR>\\work\\stockmp\\<lv>\\:
-    src\\dist, src\\pkg                 the unpacked stock bundles (cache)
-    build\\dist, build\\pkg             the bundles' folders with the authored level and the added entries
+    src\\dist, src\\patch               the unpacked stock bundles (cache)
+    build\\dist, build\\patch           the bundles' folders with the authored level and the added entries
     out\\game\\...                      what an install copies into the game, at the game's own paths:
-        Dist\\win32\\levels\\<lv>\\level-00.fbrb, Package\\levels\\<lv>\\level-00.fbrb,
-        Output\\win32\\ai\\levels\\<lv>\\infantry|vehicle\\pathdata.hpd
-    build_report.json                   hashes of every input and output, counts, the SectorOffsets values
+        MP\\dist\\win32\\levels\\<lv>\\level-00.fbrb, MP\\dist\\win32\\patch\\levels\\<lv>\\level-00.fbrb,
+        MP\\Output\\win32\\ai\\levels\\<lv>\\infantry|vehicle\\pathdata.hpd
+    build_report.json                   hashes of every input and output (the configuration's too: config_sha256),
+                                        counts, the SectorOffsets values
 """
 import hashlib
 import json
@@ -33,7 +35,9 @@ SUITE = os.path.dirname(HERE)
 FBRB = os.path.join(SUITE, 'moh-fbrb-tool', 'FbrbTool.exe')
 DBX = os.path.join(SUITE, 'moh-dbx-tools', 'DbxEdit.exe')
 NAVKIT = os.path.join(SUITE, 'moh-auto-navkit')
-sys.path[:0] = [NAVKIT, os.path.join(NAVKIT, 'tools')]
+sys.path[:0] = [NAVKIT, os.path.join(NAVKIT, 'tools'), os.path.join(SUITE, 'core')]
+
+from mohcore import gamecopy  # noqa: E402  (the game copy's layout)
 
 DONOR_LEVEL = 'SP_004_B'
 MIN_AGREEMENT = 0.75          # as apply_sector_offsets.py
@@ -43,6 +47,10 @@ KINDS = (('Infantry', 'infantry'), ('Vehicle', 'vehicle'))
 
 class BuildError(Exception):
     pass
+
+
+class NoLevelBundle(BuildError):
+    """The level has no level-00 bundle of its own (or is not a level of the game copy)."""
 
 
 def run(*args, ok=(0,)):
@@ -62,7 +70,10 @@ def sha(path):
 
 class Paths:
     """variant: a second build of the same level next to the first (e.g. 'exp0', the minimal layer of experiment 0):
-    <work>\\<lv>-<variant>\\, sharing <work>\\<lv>\\src\\ (the unpacked stock bundles)."""
+    <work>\\<lv>-<variant>\\, sharing <work>\\<lv>\\src\\ (the unpacked stock bundles).
+    The game paths are MOH's, from mohcore.gamecopy.GameCopy (self.gc): the level's bundles in MP\\dist\\win32 ('dist')
+    and its patch layer ('patch': the game loads it instead when there is one), navigation data under MP\\Output\\win32.
+    game: the game copy folder (<OPFOR>\\game; default the OPFOR folder's)."""
 
     def __init__(self, lv, opfor=None, work=None, variant=None, game=None):
         if opfor is None:
@@ -70,7 +81,8 @@ class Paths:
             opfor = navkit.find_opfor(None)
         self.opfor = opfor
         self.lv = lv.lower()
-        self.game = game or os.path.join(opfor, 'game')
+        self.gc = gamecopy.GameCopy(os.path.dirname(os.path.abspath(game)) if game else opfor)
+        self.game = self.gc.game
         self.work = work or os.path.join(opfor, 'work', 'stockmp')
         self.variant = variant
         self.root = os.path.join(self.work, self.lv + (f'-{variant}' if variant else ''))
@@ -80,21 +92,41 @@ class Paths:
     def src(self, variant):
         return os.path.join(self.work, self.lv, 'src', variant)
 
+    def layers(self):
+        """(variant, folder) of the game's data layers, lowest first: the base and its patch (GameCopy.layers)."""
+        return (('dist', self.gc.dist), ('patch', self.gc.patch))
+
+    def bundle(self, variant):
+        """The game path of the level's level-00 bundle in one layer (the level folder as the game copy spells it)."""
+        return os.path.join(dict(self.layers())[variant], 'levels', self.gc.levels().get(self.lv, self.lv), 'level-00.fbrb')
+
     def bundles(self):
-        """(variant, game bundle path) of the level's level-00 bundles that exist."""
-        out = []
-        for v, p in (('dist', os.path.join(self.game, 'Dist', 'win32', 'levels', self.lv, 'level-00.fbrb')),
-                     ('pkg', os.path.join(self.game, 'Package', 'levels', self.lv, 'level-00.fbrb'))):
-            if os.path.isfile(p):
-                out.append((v, p))
-        return out
+        """(variant, game bundle path) of the level's level-00 bundles that exist, lowest first - the last is the one
+        the game loads. [] for a level without a bundle of its own (a DLC mode loaded from its map's common_mp_<nn>)."""
+        return [(v, self.bundle(v)) for v, _top in self.layers() if os.path.isfile(self.bundle(v))]
+
+    def loaded_bundle(self):
+        """(variant, path) of the bundle the game loads for the level; a BuildError saying why when there is none."""
+        found = self.bundles()
+        if found:
+            return found[-1]
+        where = ' or '.join(os.path.join(top, 'levels') for _v, top in self.layers())
+        if self.lv in self.gc.levels():
+            why = (f'the game loads it from {", ".join(self.gc.commons(self.lv))} only (a mode without a level bundle of '
+                   'its own), and the AI layer goes into the level\'s own partition')
+        else:
+            why = 'it is not a level of this game copy'
+        raise NoLevelBundle(f'{self.lv}: no {self.lv}\\level-00.fbrb in {where} - {why}')
+
+    def _out(self, game_path):
+        """Where a game file's new copy is staged: out\\game\\ mirrors the game folder."""
+        return os.path.join(self.root, 'out', 'game', os.path.relpath(game_path, self.game))
 
     def out_bundle(self, variant):
-        rel = (['Dist', 'win32', 'levels', self.lv] if variant == 'dist' else ['Package', 'levels', self.lv])
-        return os.path.join(self.root, 'out', 'game', *rel, 'level-00.fbrb')
+        return self._out(self.bundle(variant))
 
     def out_pathdata(self, kind):
-        return os.path.join(self.root, 'out', 'game', 'Output', 'win32', 'ai', 'levels', self.lv, kind, 'pathdata.hpd')
+        return self._out(self.gc.pathdata(self.lv, kind))
 
     def config(self):
         return os.path.join(self.root, 'config.json')
@@ -135,8 +167,12 @@ def donor(paths):
         inf = os.path.join(base, 'levels', 'sp_004_b', 'Precomputed', 'Infantry', 'SectorOffsets.dbx')
         if os.path.isfile(lvl) and os.path.isfile(inf):
             return lvl, inf
-    d = unpacked(os.path.join(paths.game, 'Dist', 'win32', 'levels', 'sp_004_B', 'level-00.fbrb'),
-                 os.path.join(paths.cache, 'sp_004_b'))
+    found = paths.gc.level_bundles('sp_004_b')
+    if not found:
+        raise BuildError('the donor level SP_004_B was not found: not in work\\levels\\sp_004_b and not in the game copy '
+                         f'({paths.gc.dist}) - MOH\'s multiplayer game has no campaign level; the layer\'s layouts '
+                         'come from BFBC2\'s SP_004_B')
+    d = unpacked(found[-1], os.path.join(paths.cache, 'sp_004_b'))
     lvl = find_entry(d, 'Levels/SP_004_B.dbx')
     inf = find_entry(d, 'Levels/SP_004_B/Precomputed/Infantry/SectorOffsets.dbx')
     if not (lvl and inf):
@@ -148,7 +184,11 @@ def common(paths, name):
     d = os.path.join(paths.common, name)
     if os.path.isfile(os.path.join(d, 'fbrb.manifest')):
         return d
-    return unpacked(os.path.join(paths.game, 'Dist', 'win32', 'levels', name, 'level-00.fbrb'), os.path.join(paths.cache, name))
+    found = paths.gc.level_bundles(name)          # lowest first: the patch's copy, when there is one, is the game's
+    if not found:
+        raise BuildError(f'{name} not found: no levels\\{name}\\level-00.fbrb in the game copy ({paths.gc.dist}) and no '
+                         f'unpacked copy in {d} (MOH\'s shared bundles are common_mp and common_mp_<nn>)')
+    return unpacked(found[-1], os.path.join(paths.cache, name))
 
 
 def kit_refs(paths):
@@ -221,25 +261,21 @@ def template_parts(paths, parts):
 
 
 def loads_sp_common(paths):
-    """Whether the level's level-00 bundle loads sp_common (package.mft), i.e. the template resolves without packing."""
-    mft = os.path.join(paths.game, 'Dist', 'win32', 'package.mft')
-    if not os.path.isfile(mft):
-        return False
-    block, cur = [], False
-    for line in open(mft, encoding='utf-8', errors='replace').read().splitlines():
-        if line.startswith('BundleSource '):
-            cur = line.split(' ', 1)[1].strip().lower() == f'game:levels/{paths.lv}/level-00.fbrb'
-        elif cur and line.startswith('BundleTarget '):
-            block.append(line.split(' ', 1)[1].strip().lower())
-    return 'game:levels/sp_common/level-00.fbrb' in block
+    """Whether the level's level-00 bundle loads sp_common (package.mft's load set, GameCopy.manifest; the patch's
+    copy counts), i.e. the template resolves without packing."""
+    targets = paths.gc.manifest().get(f'levels/{paths.lv}/level-00.fbrb', [])
+    return any(t.split('/')[-2:] == ['sp_common', 'level-00.fbrb'] for t in targets)
+
+
+def config_sha(c):
+    """sha256 of a configuration's content (canonical JSON: key order and layout do not count), as build_report.json
+    records it - validate checks a build against the configuration it is given."""
+    return hashlib.sha256(json.dumps(c, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
 def generate(paths, **kw):
     """Write a first configuration for the level (config.json) and return it."""
-    variants = paths.bundles()
-    if not variants:
-        raise BuildError(f'{paths.lv}: no level-00 bundle in {paths.game}')
-    v, b = variants[-1]                            # the Package copy when there is one (the game loads it first)
+    v, b = paths.loaded_bundle()                   # the patch's copy when there is one (the game loads it instead)
     d = unpacked(b, paths.src(v))
     entry = level_entry(d, _level_name(d, paths.lv))
     m = levelmodel.Model(dbxbin.read(find_entry(d, entry)))
@@ -262,8 +298,9 @@ def build(paths, c, log=print):
     """Author the level in every level-00 bundle of the level, pack, stage the path data. Returns the report."""
     if cfgmod.check(c):
         raise BuildError('configuration: ' + '; '.join(cfgmod.check(c)))
-    rep = {'lv': paths.lv, 'level': c['level'], 'layer': c.get('layer', 'full'), 'inputs': {}, 'outputs': {},
-           'variants': {}, 'sector_offsets': {}}
+    paths.loaded_bundle()                          # a level without a bundle of its own: say so before any work
+    rep = {'lv': paths.lv, 'level': c['level'], 'layer': c.get('layer', 'full'), 'config_sha256': config_sha(c),
+           'inputs': {}, 'outputs': {}, 'variants': {}, 'sector_offsets': {}}
     donor_lvl, donor_so = donor(paths)
     rep['inputs']['donor'] = {'path': donor_lvl, 'sha256': sha(donor_lvl)}
     pd = c.get('pathdata') or {}

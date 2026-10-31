@@ -115,7 +115,7 @@ def load(lang, root=None, path=None):
     if path:
         if not os.path.isfile(path):
             raise FileNotFoundError(path)
-        hist = re.sub(r'_(normal|huge|numbers)\.bin$', '_histogram.bin', path, flags=re.I)
+        hist = re.sub(r'_(global|normal|huge|numbers)\.bin$', '_histogram.bin', path, flags=re.I)
         return LocFile(open(path, 'rb').read(), open(hist, 'rb').read() if os.path.isfile(hist) and hist != path else None, path)
     root = root or mc.find_opfor()
     langs = languages(root)

@@ -222,7 +222,12 @@ def main(argv):
     syms = crashreader.read_symbols([crashreader.SYMBOLS] + extra)
     exact = take(args, '--exact', False, has_value=False)
     mx = int(take(args, '--max', '40'))
-    dis = take(args, '--dis')
+    # --dis [N]: the next word is N only when it is a plain decimal - "refs --dis 0x00946840" keeps its address
+    dis = None
+    if '--dis' in args:
+        i = args.index('--dis')
+        dis = args.pop(i + 1) if i + 1 < len(args) and re.fullmatch(r'\d+', args[i + 1]) else True
+        del args[i]
     dis_n = 0 if dis is None else (6 if dis is True else int(dis))
     before = parse_int(take(args, '--before', '0x20'))
     after = parse_int(take(args, '--after', '0x40'))

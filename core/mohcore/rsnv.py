@@ -2,9 +2,14 @@
 the input of the navigation runtime (`rsnav`; MOH's copy: project-opfor-moh src/rsnav). Written by NavKit's exporter (navexport1943.py)
 from a checked build; read here for tests, tools and the Python reference search.
 
-Medal of Honor (2026-10-30): a copy of bf1943-tool-suite's core/bfbc2core/rsnv.py, unchanged below this paragraph - the
-format is shared with rsnav, so the two copies must stay the same (a fix goes into both). MOH's exporter is
+Medal of Honor (2026-10-30): a copy of bf1943-tool-suite's core/bfbc2core/rsnv.py, unchanged below this paragraph except
+for the MOH changes listed here - the format is shared with rsnav, and MOH keeps its own copies of both (this module and
+project-opfor-moh's src/rsnav), so a fix goes into these two and BF1943's are left as they are. MOH's exporter is
 moh-auto-navkit/tools/navexport.py; its files are little-endian (PC) and hold no vehicle entries (OFFM).
+MOH changes:
+- 2026-10-31: validate() refuses an edge kind past the known ones (EDGE_KINDS, 7), as MOH's rsn_load does: kinds 7-255
+  loaded silently, and rsnav closed kinds over 31 while this module searched them (kinds 7-31 raised IndexError in
+  edge_cost's kind_extra).
 
     w = rsnv.load(path_or_bytes)       # either byte order
     w.node_pos, w.edge_target, w.edge_kind, w.edge_cost, w.areas, ...
@@ -63,6 +68,7 @@ H_SCALE_AT = 48         # header: u32 the search heuristic's scale in 1/2^24 (20
 H_SCALE_ONE = 1 << 24
 H_SCALE_LEGACY = 0.999
 EDGE_WALK, EDGE_LADDER_UP, EDGE_LADDER_DOWN, EDGE_DROP, EDGE_JUMP, EDGE_BOARD, EDGE_ALIGHT = range(7)
+EDGE_KINDS = 7         # rsnav's RSN_EDGE_KINDS: a file with an edge of another kind is refused (validate)
 EDGE_NAMES = ['walk', 'ladder up', 'ladder down', 'drop', 'jump', 'board', 'alight']
 NAUX_SHALLOW, NAUX_WADE, NAUX_BORDER, NAUX_LADDER_END, NAUX_JUMP_END = 1, 2, 4, 8, 16
 EDGEF_COND = 1
@@ -550,6 +556,8 @@ class World:
             out.append('NODE edge ranges do not cover EDGE')
         if n_edge and int(self.edge_target.max()) >= n:
             out.append('EDGE target out of range')
+        if n_edge and int(self.edge_kind.max()) >= EDGE_KINDS:
+            out.append('EDGE kind unknown')
         if len(self.node_area) == n and n and (np.any((self.node_area != 0xFFFF) & (self.node_area >= n_area))
                                                or np.any(self.node_sector >= n_sect)):
             out.append('NAUX area or sector out of range')

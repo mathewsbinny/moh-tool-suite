@@ -17,7 +17,9 @@ Quick (no game data; navigation data, levels, bundles and logs built in the test
   - opfor.log sessions: level, states, AI events, SectorOffsets loads and the override, pathfinder counts, crash; the
     in-game criteria passed, failed and on hold;
   - saved runs: save / load, another format refused; comparison: worse beyond the tolerance, within it, closer to
-    1.0, a test now failing and one fixed, counts, missing and new, battery pairs lost; the report;
+    1.0, a test now failing and one fixed, counts, missing and new, battery pairs lost; the report; regressions that
+    must not pass: a lost file or level, a new failing test, fail -> error (other status changes listed), metrics in
+    one run only listed, orders lost; cache entries written whole; --files without dice where no level has DICE's file;
   - the command line: compare (exit 1 on a regression, 0 without), show, list, import-log, ingame (on hold, starts
     nothing), an error explained with its log.
 Game (--game, Project OPFOR's game copy; outputs to a temporary folder): MOH's bundle layout (mp_01's load set: the
@@ -381,6 +383,18 @@ def quick(check, tmp):
     open(bp, 'ab').close()
     check(n1 == levelinfo.bundle_names(bp, cache) and r1 == levelinfo.bundle_read(bp, ['Levels/TEST.dbx'], cache)
           and os.path.isdir(os.path.join(cache, 'bundles')), 'bundle names and entries cached per bundle state')
+    left = [f for _d, _s, fs in os.walk(cache) for f in fs if f.endswith('.tmp')]
+    real_replace, cut = os.replace, os.path.join(tmp, 'cut_cache')
+    os.replace = lambda *a: (_ for _ in ()).throw(OSError('cut off'))      # the write stops before the entry is in place
+    try:
+        levelinfo.bundle_read(bp, ['Levels/TEST.dbx'], cut)
+    except OSError:
+        pass
+    finally:
+        os.replace = real_replace
+    entries = [f for _d, _s, fs in os.walk(cut) for f in fs if not f.endswith('.tmp')]
+    check(not left and not entries and levelinfo.bundle_read(bp, ['Levels/TEST.dbx'], cut) == r1,
+          'a cache entry is written whole or not at all (temporary file, then os.replace): a cut-off write leaves none')
 
     # opfor.log sessions
     ss = ingame.sessions(LOG)
@@ -393,6 +407,10 @@ def quick(check, tmp):
     ev2 = ingame.evaluate(ss[2], (-3, -7))
     check(ev2['loads-ai-init'].status == 'fail' and ev2['offsets-read'].status == 'fail' and ev2['pathfinders'].status == 'hold',
           'a crashed session with the override and 0,0 loads fails; no unit counters: on hold')
+    half = ingame.sessions(LOG)[1]
+    half.offset_loads = [(-3, -7), (0, 0)]
+    check(ingame.evaluate(half, (-3, -7))['offsets-read'].status == 'fail',
+          'offsets-read: one load with the asset\'s values and one with 0,0 fails (every load must read them)')
     check(all(r.status == 'hold' for r in ingame.telemetry_tests().values()), 'the telemetry tests (M6) are on hold')
 
     # saved runs and comparison
@@ -429,6 +447,58 @@ def quick(check, tmp):
     text = out.getvalue()
     check(bad == 3 and 'FAIL has-ai' in text and '3 regression(s)' in text and 'reach_parity_pct: 99.0 -> 97.0' in text,
           'the report and the comparison as text')
+
+    # what must not pass as "no regressions"
+    def regressions(a, b):
+        found = runs.compare(a, b)
+        with contextlib.redirect_stdout(io.StringIO()):
+            return found, runs.compare_report(a, b, found)
+    lost = saved_run('lost', {'pairs_reached_pct': 80.0, 'reach_parity_pct': 99.0, 'islands': 5})
+    lost['levels']['sp_test']['files'].pop('navkit')
+    found, bad = regressions(base, lost)
+    check(bad == 3 and all(f[0] == 'missing' for f in found if f[2] == 'navkit'),
+          f'a lost navkit file (its three tests gone, the level still there) is a regression ({bad})')
+    found, bad = regressions(base, gone)
+    check(bad == 1 and ('missing', 'sp_test') in {(f[0], f[1]) for f in found}, f'a level gone from the new run is a regression ({bad})')
+    one = saved_run('one', {})
+    two = saved_run('two', {})
+    two['levels']['sp_test']['level']['kits'] = result('fail')
+    two['levels']['sp_test']['level']['templates'] = result('pass')
+    found, bad = regressions(one, two)
+    check(bad == 1 and ('new', 'kits') in {(f[0], f[3]) for f in found}, 'a test new in the new run that fails is a regression; a new pass is not')
+    for before, after, kind, worse in (('fail', 'error', 'status', True), ('pass', 'skip', 'restatus', False),
+                                       ('warn', 'pass', 'restatus', False), ('error', 'fail', 'restatus', False)):
+        one['levels']['sp_test']['level']['has-ai'] = result(before)
+        two = saved_run('two', {})
+        two['levels']['sp_test']['level']['has-ai'] = result(after)
+        found, bad = regressions(one, two)
+        check([(f[0], f[5], f[6]) for f in found] == [(kind, before, after)] and bad == int(worse),
+              f'{before} -> {after}: listed as {kind}' + (', a regression' if worse else ', not a regression'))
+    dropped = saved_run('dropped', {'pairs_reached_pct': 80.0, 'reach_parity_pct': 99.0})
+    found = runs.compare(base, dropped)
+    check(('dropped', 'reachability', 'islands') in {(f[0], f[3], f[4]) for f in found}
+          and ('added', 'reachability', 'found') in {(f[0], f[3], f[4]) for f in runs.compare(base, new)},
+          'a metric in only one run is listed (dropped / added)')
+    check(runs.spec('orders', 'orders_lost') == ('lower', 0) == runs.spec('reachability', 'targets_lost'),
+          'orders_lost is judged like targets_lost (lower is better, no tolerance)')
+    ol = [saved_run(n, {}) for n in ('ol_a', 'ol_b')]
+    for r, n in zip(ol, (0, 1)):
+        r['levels']['sp_test']['files']['navkit']['tests']['orders'] = result('fail', {'orders_lost': n})
+    check(('worse', 'orders', 'orders_lost') in {(f[0], f[3], f[4]) for f in runs.compare(*ol)}, 'one more order lost is worse')
+
+    # --files by default: dice only when a chosen level has DICE's path data (MOH ships none)
+    import harness
+    from mohcore import gamecopy
+    fake = os.path.join(tmp, 'fake_opfor')
+    for lv, marker in (('zz_dice', False), ('zz_navkit', True)):
+        pd = gamecopy.GameCopy(fake).pathdata(lv)
+        os.makedirs(os.path.dirname(pd))
+        open(pd, 'wb').close()
+        if marker:                                     # NavKit installed it onto a level without path data
+            open(pd + '.opfor-new', 'w').close()
+    check(harness.default_files(fake, ['zz_none']) == 'navkit' and harness.default_files(fake, ['zz_navkit']) == 'navkit'
+          and harness.default_files(fake, ['zz_none', 'zz_dice']) == 'dice,navkit',
+          '--files default: navkit for levels without DICE path data (NavKit\'s own install is not DICE\'s), dice,navkit with')
 
     # the command line
     np_ = runs.save(new, os.path.join(tmp, 'new.json'))

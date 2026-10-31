@@ -797,12 +797,12 @@ def build(samples_path, tris_path, xoff, zoff, out_path, step=mohsoldier.STEP, l
         set_pitch(0.8)
     else:
         graphs = a['graphs']
+    link_counts(graphs)
     if DROP_LINKS:
-        log(f'drop links made {DROP_STATS.get("linked", 0)} (counted per stage), ends in two sectors '
-            f'{DROP_STATS.get("split", 0) // 2} (not linked)')
+        log(f'drop links made {DROP_STATS["linked"]}, ends in two sectors {DROP_STATS["split"] // 2} (not linked)')
     if ladders:
-        log(f'ladders: {len(ladders)}; links made {LADDER_STATS.get("linked", 0)} (counted per stage), ends in two '
-            f'sectors {LADDER_STATS.get("split", 0)}')
+        log(f'ladders: {len(ladders)}; links made {LADDER_STATS["linked"]}, ends in two sectors '
+            f'{LADDER_STATS["split"]}')
     if DETAIL_FEATURES:
         log(f'detail features: {DETAIL_STATS.get("d", 0)} D lines, {DETAIL_STATS.get("f", 0)} F cells; '
             f'{DETAIL_STATS.get("outline_moved", 0)} outline sides moved to them, '
@@ -812,6 +812,36 @@ def build(samples_path, tris_path, xoff, zoff, out_path, step=mohsoldier.STEP, l
     # route islands that shadow a larger one lose their nodes (navislands.py: SHADOW_ISLANDS)
     graphs = navislands.prune(graphs, list(seeds or []) + list(order_points or []) + list(area_orders or []), log)
     write_file(graphs, out_path, log, t0)
+
+
+def link_counts(graphs):
+    """DROP_STATS / LADDER_STATS 'linked' and 'split' of the sectors written (graphs, after merge_detailed): the drop
+    links are the one-way pairs (DROP_IDS) in their graphs; the rest is the stages' per-sector entries. Summed over
+    both stages, stage a's links in the sectors stage b replaces were counted too (2026-10-31)."""
+    sids = [g[0] for g in graphs]
+    DROP_STATS['linked'] = sum(1 for _sid, _b, _m, pts, pairs, _o in graphs for a_, b_, _d in pairs
+                               if (pts[a_][0], pts[b_][0]) in DROP_IDS)
+    per = DROP_STATS.get('sectors', {})
+    DROP_STATS['split'] = sum(per.get(sid, 0) for sid in sids)
+    per = LADDER_STATS.get('sectors', {})
+    LADDER_STATS['linked'] = sum(per.get(sid, (0, 0))[0] for sid in sids)
+    LADDER_STATS['split'] = sum(per.get(sid, (0, 0))[1] for sid in sids)
+
+
+def on_grid(path, s, what):
+    """A second sampling run of the grid s (the high- or narrow-capsule run), coarsened as s was when it is a fine
+    run (navwalk.coarse, as stage does): walkable() matches its surfaces to s's by column and height
+    (navwalk.matched_flags). A run on another grid is refused - read at its own pitch beside a coarsened s it was
+    indexed with the wrong columns (2026-10-31)."""
+    f, _ = navsample.load(path)
+    if abs(f.pitch - PITCH) > 1e-3:
+        f = navwalk.coarse(f)
+    if (abs(f.pitch - s.pitch) > 1e-3 or f.nx != s.nx or f.nz != s.nz or abs(f.min_x - s.min_x) > 1e-3
+            or abs(f.min_z - s.min_z) > 1e-3):
+        raise ValueError(f'{what} run {path} is not on the grid of the samples (pitch {f.pitch:g}, {f.nx} x {f.nz} '
+                         f'from ({f.min_x:g}, {f.min_z:g}); the samples: pitch {s.pitch:g}, {s.nx} x {s.nz} from '
+                         f'({s.min_x:g}, {s.min_z:g}))')
+    return f
 
 
 def stage(samples_path, high_path, xoff, zoff, tris_path=None, step=mohsoldier.STEP, log=print, dynamic_path=None,
@@ -856,8 +886,8 @@ def stage(samples_path, high_path, xoff, zoff, tris_path=None, step=mohsoldier.S
             f'{int(outside.sum())} surfaces outside left out')
     tris = np.load(tris_path) if tris_path else None
     dyn = np.load(dynamic_path) if dynamic_path else None
-    hi = navsample.load(high_path)[0] if high_path else None
-    narrow = navsample.load(narrow_path)[0] if narrow_path else None
+    hi = on_grid(high_path, s, 'high-capsule') if high_path else None
+    narrow = on_grid(narrow_path, s, 'narrow-capsule') if narrow_path else None
     st = np.load(stairs_path) if stairs_path else None
     ex = np.load(exclude_path) if exclude_path else None
     exf = np.load(exclude_foot_path) if exclude_foot_path else None
@@ -903,6 +933,9 @@ def stage(samples_path, high_path, xoff, zoff, tris_path=None, step=mohsoldier.S
     # Pass 1: areas per sector, and which area each surface belongs to.
     info = {}
     have = set(sectors)
+    if not sectors and grid_min is None:
+        # the level's own stage (not a detailed pass, whose caller keeps sectors without ground at the normal pitch)
+        raise ValueError(f'{samples_path}: no walkable ground kept ({len(s.y)} surfaces) - nothing to build')
     min_x_sector, min_z_sector = grid_min or (min(X for X, _ in sectors), min(Y for _, Y in sectors))
     for X, Y in sectors:
         gi0, gj0, ox, oz = sector_origin_index(level, X, Y, xoff, zoff)
@@ -1057,11 +1090,12 @@ def stage(samples_path, high_path, xoff, zoff, tris_path=None, step=mohsoldier.S
         orders = [p for p in (order_points or ()) if ox <= p[0] < ox + 100 and oz <= p[2] < oz + 100]
         lads = [(f_, t_) for f_, t_ in ladder_pairs if f_ in area_of and t_ in area_of]
         drops = [(f_, t_) for f_, t_ in drop_pairs if f_ in area_of and t_ in area_of]
-        DROP_STATS['linked'] = DROP_STATS.get('linked', 0) + len(drops)
-        # a drop whose ledge and landing lie in two sectors is not linked (as for ladders: the graph is per sector)
-        DROP_STATS['split'] = DROP_STATS.get('split', 0) + sum(1 for f_, t_ in drop_pairs if (f_ in area_of) != (t_ in area_of))
-        LADDER_STATS['linked'] = LADDER_STATS.get('linked', 0) + len(lads)
-        LADDER_STATS['split'] = LADDER_STATS.get('split', 0) + sum(1 for f_, t_ in ladder_pairs if (f_ in area_of) != (t_ in area_of))
+        # per sector, a later stage's entry replacing an earlier one's (stage b over a's detailed sectors): build()
+        # counts the sectors written. A drop whose ledge and landing lie in two sectors is not linked (as for
+        # ladders: the graph is per sector)
+        DROP_STATS.setdefault('sectors', {})[sid] = sum(1 for f_, t_ in drop_pairs if (f_ in area_of) != (t_ in area_of))
+        LADDER_STATS.setdefault('sectors', {})[sid] = (
+            len(lads), sum(1 for f_, t_ in ladder_pairs if (f_ in area_of) != (t_ in area_of)))
         pts, pairs = build_graph(level, areas, area_of, traced, border_nodes[(X, Y)], gi0, gj0, ox, oz, new_id, orders,
                                  lads, drops)
         navislands.note_nodes(level, pts)        # which nodes stand on terrain (SHADOW_OBJECTS_ONLY)

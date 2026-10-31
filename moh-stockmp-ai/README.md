@@ -19,12 +19,25 @@ python stockmp.py all      mp_005                 the three in a row (keeps an e
 python stockmp.py install  mp_005 [--apply | --revert]     plan (default), copy into the game, or undo
 ```
 
-Options: `--pathdata <folder>` (a folder under the game's `Output\win32\ai\levels`; default the level's own, else the
+Options: `--pathdata <folder>` (a folder under the game's `MP\Output\win32\ai\levels`; default the level's own, else the
 DICE folder of the same world, e.g. mp_005 -> ons_mp_005gr), `--minimal` (experiment 0: HasAI, PathfindingTypes,
 path data and SectorOffsets only, stock spawners untouched), `--keep-stock-spawners`, `--variant <name>` (a second
 build beside the first: `work\stockmp\<level>-<name>`).
 
 Edit `config.json` by hand and run `build` again; the build is deterministic (same configuration, same bytes).
+`build_report.json` records the configuration's sha256 (`config_sha256`), and `validate` fails at once when the
+configuration it is given is not the one built (edited after the build, or a build from before the hash was recorded).
+
+The game paths are MOH's, from `core\mohcore\gamecopy.py`: a level's `level-00.fbrb` in `game\MP\dist\win32\levels`
+and its patch layer `game\MP\dist\win32\patch\levels` (the game loads the patch's copy when there is one), path data
+under `game\MP\Output\win32\ai\levels`. A level without a level bundle of its own (the DLC modes mp_03_elimination and
+mp_07_koth, loaded from their map's common_mp_<nn>) or a name that is not a level is refused with the reason. MOH's
+`MoHMPGame.exe` has no AI types (no AreaOrderEntityData, HasAI, PathfindingTypes or PathdataSectorOffsets), and MOH
+has no sp_common / mp_common or campaign donor level, so the layer cannot be built or run for MOH: `summary` reads a
+MOH level, and the build steps stop with what is missing.
+
+`install --apply` and `--revert` check every file first: when one was changed after the install, nothing is copied or
+restored (the game is never left with the base layer new and the patch old).
 
 ## What a build contains
 
@@ -32,8 +45,8 @@ Edit `config.json` by hand and run `build` again; the build is deterministic (sa
 
 | file | content |
 |---|---|
-| `Dist\win32\levels\<lv>\level-00.fbrb`, `Package\levels\<lv>\level-00.fbrb` | the level partition with the AI layer; `Levels/<LV>/Precomputed/Infantry|Vehicle/SectorOffsets` (from the path data's own sector ids); the AI template chain (SpawnTemplate_Enemy_Grunt, its Sense and Behaviour, from the user's sp_common) when the level does not load sp_common |
-| `Output\win32\ai\levels\<lv>\infantry|vehicle\pathdata.hpd` | the path data named in the configuration |
+| `MP\dist\win32\levels\<lv>\level-00.fbrb`, `MP\dist\win32\patch\levels\<lv>\level-00.fbrb` (the layers the level has) | the level partition with the AI layer; `Levels/<LV>/Precomputed/Infantry|Vehicle/SectorOffsets` (from the path data's own sector ids); the AI template chain (SpawnTemplate_Enemy_Grunt, its Sense and Behaviour, from the user's sp_common) when the level does not load sp_common |
+| `MP\Output\win32\ai\levels\<lv>\infantry|vehicle\pathdata.hpd` | the path data named in the configuration |
 
 The AI layer (author.py, with where each part was taken from):
 

@@ -15,9 +15,11 @@ A run (JSON, <OPFOR>\\work\\harness\\runs\\<name>.json):
 
 Comparison (compare(base, new)): per level, file key, test and metric present in both runs, against the metric's
 direction and tolerance (SPEC): worse beyond the tolerance is a regression, better is listed, counts that change are
-listed. A test whose status goes from pass / info / warn to fail or error is a regression; tests and levels missing
-from either run are listed. Files are matched by key (dice, navkit ...), so two builds of NavKit compare directly;
-a file whose sha1 is unchanged is expected to give the same numbers.
+listed, metrics in one run only are listed. A test whose status goes from pass / info / warn to fail or error, or
+from anything to error, is a regression; any other status change is listed. A level, or a test of a level still
+in the new run, that is gone from the new run is a regression (a lost file or level must not pass as "no
+regressions"), and so is a test new in the new run that fails or errs. Files are matched by key (dice, navkit ...),
+so two builds of NavKit compare directly; a file whose sha1 is unchanged is expected to give the same numbers.
 """
 import json
 import os
@@ -67,6 +69,8 @@ def spec(test, metric):
             return 'higher', 0.5
         return 'count', 0
     if test == 'orders':
+        if base == 'orders_lost':                  # as reachability's targets_lost: one more lost is worse
+            return 'lower', 0
         return ('higher', 0.5) if base.endswith('_pct') else ('count', 0)
     if test == 'offsets':
         return ('higher', 0) if base == 'matches' else ('count', 0)
@@ -193,8 +197,10 @@ def _line(log, test, r, details):
 
 def compare(base, new, scale=1.0):
     """[(kind, level, scope, test, metric, before, after)]: kind 'worse', 'better', 'changed' (counts), 'missing'
-    (in base, not in new), 'new' (in new only), 'status' (a test now failing: worse), 'fixed' (no longer failing),
-    'pairs' (battery pairs routed before and not now, with the same points)."""
+    (a test or level in base, not in new), 'new' (in new only; after is its status), 'status' (a test now failing,
+    or now an error: worse), 'fixed' (no longer failing), 'restatus' (any other status change), 'dropped' / 'added'
+    (a metric in base only / new only), 'pairs' (battery pairs routed before and not now, with the same points).
+    Which of them are regressions: regression()."""
     out = []
     a = {(lv, sc, t): r for lv, sc, t, r in results(base)}
     b = {(lv, sc, t): r for lv, sc, t, r in results(new)}
@@ -210,12 +216,21 @@ def compare(base, new, scale=1.0):
         out.append(('new', lv, '', '', '', None, 'level'))
     for k in sorted(a.keys() & b.keys()):
         ra, rb = a[k], b[k]
-        if ra['status'] not in BAD and rb['status'] in BAD:
-            out.append(('status', *k, '', ra['status'], rb['status']))
-        elif ra['status'] in BAD and rb['status'] not in BAD:
-            out.append(('fixed', *k, '', ra['status'], rb['status']))
+        sa, sb = ra['status'], rb['status']
+        if sa != sb:
+            if (sa not in BAD and sb in BAD) or sb == 'error':
+                out.append(('status', *k, '', sa, sb))
+            elif sa in BAD and sb not in BAD:
+                out.append(('fixed', *k, '', sa, sb))
+            else:                                  # pass -> skip, fail -> warn ...: listed
+                out.append(('restatus', *k, '', sa, sb))
         test = k[2]
-        for m in sorted(ra.get('metrics', {}).keys() & rb.get('metrics', {}).keys()):
+        ma, mb = ra.get('metrics', {}), rb.get('metrics', {})
+        for m in sorted(ma.keys() - mb.keys()):
+            out.append(('dropped', *k, m, ma[m], None))
+        for m in sorted(mb.keys() - ma.keys()):
+            out.append(('added', *k, m, None, mb[m]))
+        for m in sorted(ma.keys() & mb.keys()):
             x, y = ra['metrics'][m], rb['metrics'][m]
             if not isinstance(x, (int, float)) or not isinstance(y, (int, float)) or x == y:
                 continue
@@ -240,7 +255,13 @@ def compare(base, new, scale=1.0):
     return out
 
 
-REGRESSION = {'worse', 'status'}
+REGRESSION = {'worse', 'status', 'missing'}
+
+
+def regression(f):
+    """Whether a compare() finding is a regression: worse, now failing or an error, gone from the new run, or a
+    test new in the new run that fails or errs."""
+    return f[0] in REGRESSION or (f[0] == 'new' and f[6] in BAD)
 
 
 def compare_report(base, new, found, log=print):
@@ -252,21 +273,26 @@ def compare_report(base, new, found, log=print):
             if was is not None:
                 log(f'  {lv:12s} {key:9s} ' + ('same file' if was == now else f'{was[:8]} -> {now[:8]}'))
     words = {'worse': 'worse  ', 'status': 'FAILS  ', 'better': 'better ', 'fixed': 'fixed  ', 'changed': 'count  ',
-             'missing': 'missing', 'new': 'new    ', 'pairs': 'pairs  '}
-    order = ['status', 'worse', 'pairs', 'missing', 'fixed', 'better', 'new', 'changed']
+             'missing': 'MISSING', 'new': 'new    ', 'pairs': 'pairs  ', 'restatus': 'status ', 'dropped': 'dropped',
+             'added': 'added  '}
+    order = ['status', 'worse', 'missing', 'new', 'pairs', 'fixed', 'restatus', 'better', 'dropped', 'added', 'changed']
     for kind in order:
         for f in [x for x in found if x[0] == kind]:
             _k, lv, sc, test, m, x, y = f
             where = ' '.join(p for p in (lv, sc, test) if p)
-            if kind in ('status', 'fixed'):
+            if kind in ('status', 'fixed', 'restatus'):
                 log(f'  {words[kind]} {where}: {x} -> {y}')
             elif kind == 'pairs':
                 log(f'  {words[kind]} {where}: {y} pair(s) routed before, not now ({m.split(".")[0]})')
-            elif kind in ('missing', 'new'):
-                log(f'  {words[kind]} {where}')
+            elif kind == 'missing':
+                log(f'  {words[kind]} {where}' + (' (the whole level)' if x == 'level' else f' (was {x})'))
+            elif kind == 'new':
+                log(f'  {"NEW " + y.upper() if y in BAD else words[kind]} {where}')
+            elif kind in ('dropped', 'added'):
+                log(f'  {words[kind]} {where} {m}' + (f' (was {x})' if kind == 'dropped' else f' ({y})'))
             else:
                 d, tol = spec(test, m)
                 log(f'  {words[kind]} {where} {m}: {x} -> {y}' + (f'  (tolerance {tol:g})' if kind in ('worse', 'better') else ''))
-    bad = sum(1 for f in found if f[0] in REGRESSION)
+    bad = sum(1 for f in found if regression(f))
     log(f'{bad} regression(s)' if bad else 'no regressions')
     return bad

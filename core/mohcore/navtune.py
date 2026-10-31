@@ -3,7 +3,7 @@ navigation data, recorded by position so they still apply after the level is reg
 
     t = NavTune.new('Levels/SP_01', base_path, kind='navkit')     # or load(path)
     t.add(op('unwalkable', region=box(...)))                       # by / when filled in
-    t.undo(); t.redo()
+    t.remove(k); t.undo(); t.redo()                                # undo / redo: adds and removals, in order
     t.save(path)
 
 Bases: 'navkit' (NavKit's output; every operation allowed) or 'dice' (the level's own path data; only additive
@@ -121,6 +121,10 @@ class NavTune:
         self.level = level
         self.base = base                       # {'kind', 'sha1', 'file'}
         self.operations = list(operations or [])
+        # 2026-10-31: undo and redo are stacks of actions, ('add', op) and ('remove', index, op), so a removal is
+        # undone by putting the operation back where it was (undo used to pop the last operation: deleting one and
+        # pressing Ctrl+Z removed another edit and lost the deleted one). Not saved: the file holds operations only.
+        self.undo_stack = []
         self.redo_stack = []
         self.dirty = False
 
@@ -142,31 +146,51 @@ class NavTune:
         if problems:
             raise ValueError('; '.join(problems))
         self.operations.append(o)
+        self.undo_stack.append(('add', o))
         self.redo_stack.clear()
         self.dirty = True
         return o
 
     def remove(self, index):
         o = self.operations.pop(index)
+        self.undo_stack.append(('remove', index, o))
         self.redo_stack.clear()
         self.dirty = True
         return o
 
-    def undo(self):
-        if not self.operations:
-            return None
-        o = self.operations.pop()
-        self.redo_stack.append(o)
-        self.dirty = True
+    def _apply(self, action, reverse):
+        """Does (reverse=False) or undoes an action; returns its operation. Undo and redo run in stack order, so the
+        list is as it was right after (or before) the action: an added operation is the last one."""
+        if action[0] == 'add':
+            o = action[1]
+            if reverse:
+                self.operations.pop()
+            else:
+                self.operations.append(o)
+            return o
+        _, index, o = action
+        if reverse:
+            self.operations.insert(index, o)
+        else:
+            self.operations.pop(index)
         return o
+
+    def undo(self):
+        """Undoes the last add or remove; returns its operation (None: nothing to undo)."""
+        if not self.undo_stack:
+            return None
+        action = self.undo_stack.pop()
+        self.redo_stack.append(action)
+        self.dirty = True
+        return self._apply(action, reverse=True)
 
     def redo(self):
         if not self.redo_stack:
             return None
-        o = self.redo_stack.pop()
-        self.operations.append(o)
+        action = self.redo_stack.pop()
+        self.undo_stack.append(action)
         self.dirty = True
-        return o
+        return self._apply(action, reverse=False)
 
     def base_changed(self, base_path):
         """True when the file at base_path is not the one the edits were made on."""

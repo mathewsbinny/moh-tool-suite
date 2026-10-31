@@ -126,6 +126,31 @@ def main(argv):
     hub.stop()
     wait()
     check(len(told) == n, 'a tool the user stops: no failure warning')
+
+    # Stop ends the tool's own children too (run_tests -> navregress, prepare -> FbrbTool)
+    done = os.path.join(tmp, 'grandchild_done.txt')
+    grandchild = f'import time; time.sleep(4); open({done!r}, "w").write("ran on")'
+    hub.run([hubmod.PYTHON, '-c', f'import subprocess, sys; print("started", flush=True); '
+             f'subprocess.run([sys.executable, "-c", {grandchild!r}])'], 'A tool with a child')
+    root.update()
+    time.sleep(1.5)
+    hub.stop()
+    t0 = time.time()
+    while str(hub.stop_btn.cget('state')) != 'disabled' and time.time() - t0 < 10:   # the 'done' line arrived
+        root.update()
+        time.sleep(0.05)
+    ended = time.time() - t0
+    time.sleep(4.5)
+    check(ended < 3 and not os.path.exists(done) and len(told) == n,
+          f'Stop ends the tool and the process it started ({ended:.1f} s; the child never finished its work)')
+
+    # LevelDiff's exit code 1 means the files differ: done, not a failure
+    other = os.path.join(hub.pr.work, 'levels', 'mp_02', 'dist', 'levels', 'MP_02.dbx')
+    hub.ld_b.set(other)
+    hub.diff()
+    wait()
+    check(os.path.isfile(other) and 'done - the files differ: LevelDiff' in output() and len(told) == n,
+          'Level diff: two different levels - "the files differ", no failure warning')
     check(root.report_callback_exception is not None, 'errors in the window\'s own buttons are caught and reported')
     root.destroy()
 

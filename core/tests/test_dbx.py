@@ -4,9 +4,13 @@
 
 Uses moh-dbx-tools\\tests\\fingerprints_795745.txt (SHA-1 of DbxEdit's XML per input file); every input
 file found under the folders is checked, then every other binary .dbx is parsed (it must not fail).
+
+First, without game data (alone when no folder is given): a made-up file cut at every length, and one with a string
+index past the table, are refused by parse and to_xml with ValueError, never IndexError / struct.error (2026-10-31).
 """
 import hashlib
 import os
+import struct
 import sys
 import time
 
@@ -27,7 +31,54 @@ def files(roots):
                         yield os.path.join(d, n)
 
 
+def made_up():
+    """A small binary .dbx: a partition with one instance holding a text field and a 4-byte number."""
+    strings = ['', 'partition', 'name', 'P', 'instance', 'guid', 'G1', 'field', 'Text', 'hello', 'Number']
+    blob, offs = b'', []
+    for t in strings:
+        offs.append(len(blob))
+        blob += t.encode() + b'\0'
+    area = 4 * len(strings) + len(blob)
+    head = dbx.MAGIC + bytes(8) + struct.pack('>II', area, len(strings)) + struct.pack(f'>{len(strings)}I', *offs) + blob
+    ix = {t: k for k, t in enumerate(strings)}
+    body = bytes([ix['partition'], dbx.CONTAINER << 4 | 1, ix['name'], ix['P'], 0,
+                  ix['instance'], dbx.CONTAINER << 4 | 1, ix['guid'], ix['G1'], 0,
+                  ix['field'], dbx.TEXT << 4 | 1, ix['name'], ix['Text'], ix['hello'],
+                  ix['field'], dbx.NUMBERS << 4 | 1, ix['name'], ix['Number'], 1, 4]) + struct.pack('>f', 1.5) + bytes([0, 0])
+    return head + body, len(head)
+
+
+def truncation_checks():
+    """Every cut of the made-up file and a string index past the table: ValueError, never another error. Returns
+    the number of failed checks."""
+    data, body = made_up()
+    f = dbx.parse(data)
+    ok = bool(f.instances) and f.instances[0].child('Text').text == 'hello' and dbx.floats(f.instances[0].child('Number')) == [1.5]
+    print(f'{"ok  " if ok else "FAIL"} the made-up file reads')
+    wrong = []
+    bad_index = bytearray(data)
+    bad_index[body + 5] = 60                     # the instance's tag: string 60 of 11
+    cases = [(f'{n} bytes', data[:n]) for n in range(len(data))] + [('a string index past the table', bytes(bad_index))]
+    for what, d in cases:
+        for name, fn in (('parse', dbx.parse), ('to_xml', dbx.to_xml)):
+            try:
+                fn(d)
+                if name == 'parse':
+                    wrong.append(f'{name}, {what}: no error')
+            except ValueError:
+                pass
+            except Exception as e:
+                wrong.append(f'{name}, {what}: {type(e).__name__}: {e}')
+    print(f'{"ok  " if not wrong else "FAIL"} the file cut at each of its {len(data)} lengths and a string index past '
+          f'the table: ValueError every time ({"; ".join(wrong[:3]) or "all"})')
+    return (not ok) + bool(wrong)
+
+
 def main(argv):
+    if truncation_checks():
+        return 1
+    if len(argv) < 2:
+        return 0
     golden = {}
     for line in open(os.path.join(SUITE, 'moh-dbx-tools', 'tests', 'fingerprints_795745.txt')):
         p = line.split()

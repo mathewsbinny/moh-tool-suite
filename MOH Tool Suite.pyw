@@ -47,6 +47,15 @@ SCRIPTS = {
 }
 
 
+def kill_tree(proc):
+    """Ends a process and all its descendants (taskkill /T on Windows; the process alone elsewhere)."""
+    if os.name == 'nt':
+        r = subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)], capture_output=True, creationflags=NO_WINDOW)
+        if r.returncode == 0 or proc.poll() is not None:
+            return
+    proc.kill()
+
+
 def tool(name):
     """The tool's exe, built first (with the C# compiler Windows ships) if it is not there yet."""
     exe, bat = TOOLS[name]
@@ -104,6 +113,7 @@ class Hub:
         self.tab_tests()
         self.tab_more()
         self.tails = {}                        # label -> the last lines of a tool's output (for error reports)
+        self.ok_codes = {}                     # label -> {exit code: what it means}: the codes that are not a failure
         root.report_callback_exception = lambda t, v, tb: errors.report(v, tb=tb, where='a button')
         self.write(f'Log: {errors._state.get("path")}\n')
         self.check_libraries()
@@ -126,8 +136,9 @@ class Hub:
                                                    f'Install them with:\npip install {pip}')
 
     # --- running tools ------------------------------------------------------------------------------
-    def run(self, args, label, cwd=None):
-        """One tool in the background (the tab's), its output streamed to the pane."""
+    def run(self, args, label, cwd=None, ok=None):
+        """One tool in the background (the tab's), its output streamed to the pane. ok: the exit codes that mean
+        the tool did its job, with what each says ({0: ''} by default; LevelDiff's 1 = the files differ)."""
         if self.proc is not None and self.proc.poll() is None:
             messagebox.showinfo('MOH Tool Suite', 'A tool is still running - wait for it or press Stop.')
             return
@@ -140,6 +151,7 @@ class Hub:
         except OSError as e:
             errors.report(e, where=f'starting {label}')
             return
+        self.ok_codes[label] = ok or {0: ''}
         self.status.set(f'Running: {label}')
         self.stop_btn.configure(state='normal')
         threading.Thread(target=self.reader, args=(self.proc, label, True), daemon=True).start()
@@ -200,14 +212,18 @@ class Hub:
                 item = self.lines.get_nowait()
                 if isinstance(item, tuple):
                     _, label, code, main = item
-                    self.write(f'{"done" if code == 0 else f"finished with exit code {code}"}: {label}\n')
+                    ok = self.ok_codes.get(label, {0: ''}) if main else {0: ''}
+                    if code in ok:
+                        self.write(f'done{" - " + ok[code] if ok[code] else ""}: {label}\n')
+                    else:
+                        self.write(f'finished with exit code {code}: {label}\n')
                     errors.logger().info(f'exit {code}: {label}')
                     if main:
                         self.status.set('Ready.')
                         self.stop_btn.configure(state='disabled')
                         if label.startswith('Levels'):
                             self.fill_levels()
-                    if code not in (0, None) and not self.stopped:
+                    if code not in ok and code is not None and not self.stopped:
                         self.failed(label, code, main)
                     self.stopped = False
                 else:
@@ -231,9 +247,11 @@ class Hub:
                                                    f'The whole output is in the pane below; the suite\'s log:\n{errors._state.get("path")}')
 
     def stop(self):
+        """Ends the running tool and every process it started (run_tests -> navregress, prepare -> FbrbTool):
+        terminating only the direct child would leave those running, and holding the output pipe open."""
         if self.proc is not None and self.proc.poll() is None:
             self.stopped = True
-            self.proc.terminate()
+            kill_tree(self.proc)
             self.write('stopped.\n')
             errors.logger().info('stopped by the user')
 
@@ -410,7 +428,7 @@ class Hub:
                 args += ['--ignore', field]
         if self.ld_json.get().strip():
             args += ['--json', self.ld_json.get().strip()]
-        self.run(args, 'LevelDiff')
+        self.run(args, 'LevelDiff', ok={0: '', 1: 'the files differ'})
 
     # --- Crash reader -------------------------------------------------------------------------------
     def tab_crash(self):

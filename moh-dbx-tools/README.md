@@ -50,7 +50,8 @@ DbxEdit import <file.xml> <out.dbx> [--like <original.dbx>] [--types <file.dbx |
 `xml` converts every binary `.dbx` file it finds (folders are searched recursively) and skips plain-XML
 ones. Empty files are skipped and counted, not reported as errors: they are bundles' `*deleted*` entries,
 which FbrbTool versions before 2026-10-16 unpacked as zero-byte files (current ones list them in
-`fbrb.manifest` only). `roundtrip` counts them the same way.
+`fbrb.manifest` only). `roundtrip` counts them the same way. A file that cannot be read or converted is
+named and the exit code is 1; the others are still converted.
 
 The XML doesn't record every type. For example, `1` may be the integer 1 or the decimal 1.0. So `import`
 takes the types from **the original file**: `--like`, or `<name>.dbx` next to the XML.
@@ -110,7 +111,7 @@ Commands (a `@file` argument reads more commands from a file, one per line; `#` 
 | `graft=<src.dbx>\|<guid>[\|<before guid>]` | copies an instance from another file, with every instance of that file it references |
 | `copyfield=<src.dbx>\|<src guid>\|<field>\|<guid>` | copies one field (arrays included) from another file's instance |
 | `additem=<guid>\|<array>\|<ref>[\|<before ref>]` | adds a reference to an array field of an instance |
-| `setfield=<guid>\|<field>\|<value>` | sets a text field or a single 4-byte number of an instance (not a reference - see below) |
+| `setfield=<guid>\|<field>\|<value>` | sets a text, number or bool / byte field of an instance, typed like its present value (not a reference - see below) |
 | `set=<field>\|<true\|false\|0-255>` | sets every bool / byte field called `<field>` |
 | `partguid=<guid>` | sets the partition's own GUID (for a copy under a new name) |
 

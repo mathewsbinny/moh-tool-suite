@@ -2,8 +2,10 @@ r"""Tests of the stock-MP AI authoring tool.
 
   python tests\test_stockmp.py           quick: synthetic levels built in memory (no game data): the DBX writer, the
                                          number kinds, authoring a Conquest and a Rush layer, the configuration
-                                         checks, the SectorOffsets asset, install / revert on a fake game folder,
-                                         and DbxEdit's check and round trip on the written files
+                                         checks, the SectorOffsets asset, MOH's game layout (GameCopy: MP dist
+                                         and its patch, Output; a level without a bundle refused with the reason),
+                                         install / revert on a fake game folder (all targets checked first), the
+                                         configuration hash validate checks, and DbxEdit's check and round trip
   python tests\test_stockmp.py --game    + Project OPFOR's game copy: the DBX writer on every file of mp_01's level
                                          bundles (work\levels\mp_01) byte for byte, and that MoHMPGame.exe has no AI
                                          types (AreaOrderEntityData, HasAI, PathfindingTypes, PathdataSectorOffsets):
@@ -328,25 +330,87 @@ def quick(tmp):
           and struct.unpack('>i', coredbx.numbers(e.child('ZOffset'))[1][0])[0] == -4 and e.attr('guid') == ig,
           'SectorOffsets asset: name, offsets as 4-byte integers, OPFOR\'s guids')
 
-    # install / revert on a fake game folder
+    # MOH's game layout (mohcore.gamecopy): MP\dist\win32 and its patch layer, MP\Output\win32
     import stockmp
     root = os.path.join(tmp, 'opfor')
     game = os.path.join(root, 'game')
+    mpd = os.path.join(game, 'MP', 'dist', 'win32')
+    for top, lv in ((mpd, 'test_01'), (os.path.join(mpd, 'patch'), 'test_01'), (mpd, 'common_mp_03')):
+        f = os.path.join(top, 'levels', lv, 'level-00.fbrb')
+        os.makedirs(os.path.dirname(f))
+        open(f, 'wb').write(b'stock bundle' if top == mpd else b'stock patch bundle')
+    open(os.path.join(mpd, 'package.mft'), 'w').write(
+        'BundleSource game:levels/test_01/level-00.fbrb\nBundleTarget game:patch/levels/test_01/level-00.fbrb\n'
+        'BundleTarget game:levels/test_01/level-00.fbrb\nBundleSource game:levels/test_03/level-00.fbrb\n'
+        'BundleTarget game:levels/common_mp_03/level-00.fbrb\n')
     paths = pipeline.Paths('test_01', opfor=root, work=os.path.join(root, 'work', 'stockmp'))
-    outf = os.path.join(paths.root, 'out', 'game', 'Package', 'levels', 'test_01', 'level-00.fbrb')
-    os.makedirs(os.path.dirname(outf))
-    open(outf, 'wb').write(b'new bundle')
-    tgt = os.path.join(game, 'Package', 'levels', 'test_01', 'level-00.fbrb')
-    os.makedirs(os.path.dirname(tgt))
-    open(tgt, 'wb').write(b'stock bundle')
+    rel = lambda p: os.path.relpath(p, root).replace(os.sep, '/')
+    check([(v, rel(p)) for v, p in paths.bundles()] == [('dist', 'game/MP/dist/win32/levels/test_01/level-00.fbrb'),
+                                                        ('patch', 'game/MP/dist/win32/patch/levels/test_01/level-00.fbrb')]
+          and paths.loaded_bundle()[0] == 'patch', 'MOH layout: the level\'s bundles in MP\\dist\\win32 and its patch (the one loaded)')
+    check(rel(paths.out_bundle('patch')) == 'work/stockmp/test_01/out/game/MP/dist/win32/patch/levels/test_01/level-00.fbrb'
+          and rel(paths.out_pathdata('infantry')) == 'work/stockmp/test_01/out/game/MP/Output/win32/ai/levels/test_01/infantry/pathdata.hpd',
+          'the build stages at the game\'s own MOH paths (out\\game mirrors the game folder)')
+    check(pipeline.loads_sp_common(paths) is False, 'package.mft read through GameCopy: test_01 does not load sp_common')
+    for lv, why in (('test_03', 'common_mp_03'), ('test_02', 'not a level')):
+        try:
+            pipeline.Paths(lv, opfor=root, work=paths.work).loaded_bundle()
+            check(False, f'{lv}: no bundle of its own is refused')
+        except pipeline.NoLevelBundle as e:
+            check(why in str(e), f'{lv}: no bundle of its own is refused with the reason ({why})')
+    try:
+        stockmp.main(['stockmp.py', 'summary', 'test_03', '--opfor', root, '--work', paths.work])
+        check(False, 'summary of a level without a bundle: a clear error')
+    except SystemExit as e:
+        check('no test_03\\level-00.fbrb' in str(e.code) and 'common_mp_03' in str(e.code),
+              'summary of a level without a bundle: a clear error, no IndexError')
+
+    # install / revert on the fake game folder
+    outs = [paths.out_bundle('dist'), paths.out_bundle('patch')]
+    tgts = [paths.bundle('dist'), paths.bundle('patch')]
+    for f in outs:
+        os.makedirs(os.path.dirname(f))
+        open(f, 'wb').write(b'new bundle')
     stockmp.install(paths, ['--plan'])
-    check(open(tgt, 'rb').read() == b'stock bundle', 'install --plan changes nothing')
+    check(open(tgts[1], 'rb').read() == b'stock patch bundle', 'install --plan changes nothing')
     stockmp.install(paths, ['--apply'])
-    check(open(tgt, 'rb').read() == b'new bundle' and open(tgt + stockmp.BACKUP, 'rb').read() == b'stock bundle',
-          'install --apply copies the build and keeps the original')
+    check(all(open(t, 'rb').read() == b'new bundle' for t in tgts) and open(tgts[1] + stockmp.BACKUP, 'rb').read() == b'stock patch bundle',
+          'install --apply copies the build and keeps the originals')
+    for f in outs:
+        open(f, 'wb').write(b'newer bundle')
+    open(tgts[1], 'wb').write(b'changed by hand')                 # the patch's copy changed after the install
+    for mode, verb in (('--apply', 'installed'), ('--revert', 'reverted')):
+        try:
+            stockmp.install(paths, [mode])
+            check(False, f'install {mode}: a file changed after the install stops it')
+        except SystemExit as e:
+            check(open(tgts[0], 'rb').read() == b'new bundle' and open(tgts[1], 'rb').read() == b'changed by hand'
+                  and f'nothing {verb}' in str(e.code),
+                  f'install {mode}: every target checked first - one changed after the install, nothing touched (dist not newer than patch)')
+    open(tgts[1], 'wb').write(b'new bundle')
     stockmp.install(paths, ['--revert'])
-    check(open(tgt, 'rb').read() == b'stock bundle' and not os.path.exists(tgt + stockmp.BACKUP)
-          and not os.path.exists(tgt + stockmp.APPLIED), 'install --revert restores the original')
+    check(open(tgts[0], 'rb').read() == b'stock bundle' and open(tgts[1], 'rb').read() == b'stock patch bundle'
+          and not any(os.path.exists(t + x) for t in tgts for x in (stockmp.BACKUP, stockmp.APPLIED)),
+          'install --revert restores the originals')
+
+    # validate judges the configuration the build was made from
+    import validate
+    c = json.loads(json.dumps(c))
+    shuffled = json.loads(json.dumps(dict(reversed(list(c.items())))))
+    check(pipeline.config_sha(c) == pipeline.config_sha(shuffled), 'config_sha: the content counts, not key order')
+    os.makedirs(paths.root, exist_ok=True)
+    rep_path = os.path.join(paths.root, 'build_report.json')
+    json.dump({'config_sha256': pipeline.config_sha(c), 'sector_offsets': {}, 'variants': {}}, open(rep_path, 'w'))
+    check(validate.check_config(json.load(open(rep_path)), c)[0], 'a build of this configuration: the configuration check passes')
+    edited = json.loads(json.dumps(c))
+    edited['spawners'] = edited['spawners'][:-1]
+    for name, rep_cfg, want in (('edited after the build', edited, 'another configuration'), ('no hash (older build)', None, 'no configuration hash')):
+        if rep_cfg is None:
+            json.dump({'sector_offsets': {}, 'variants': {}}, open(rep_path, 'w'))
+        res = validate.validate(paths, edited if rep_cfg is not None else c, log=lambda *a: None)
+        check(not res['passed'] and res['results'][0]['check'] == 'configuration' and want in res['results'][0]['detail']
+              and not json.load(open(os.path.join(paths.root, 'validation.json')))['passed'],
+              f'validate fails on a configuration {name} (validation.json says so)')
 
 
 # ------------------------------------------------------------------------------------------ game tests

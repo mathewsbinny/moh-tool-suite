@@ -12,7 +12,8 @@
 //            partguid=<guid>         sets the partition's own guid (a copy under a new name gets a new one)
 //            copyfield=<src.dbx>|<src guid>|<field>|<guid>  copies a field (with arrays) from another file's instance
 //            set=<field>|<true|false|0-255>  sets a bool / byte field
-//            setfield=<guid>|<field>|<value>  sets a field of that instance (text, or one 4-byte number)
+//            setfield=<guid>|<field>|<value>  sets a field of that instance (text, numbers, bool / byte), typed like
+//                                    its present value
 //            additem=<guid>|<array>|<ref>[|<before ref>]  adds an item referring to <ref> to array <array> of
 //                                    instance <guid> (at the end, or before the item referring to <before ref>)
 //            dropfield=<name>        removes every field named <name> (fields the PC build does not have)
@@ -1008,21 +1009,21 @@ namespace MohDbx
 
         public bool SetField(string guid, string field, string value)
         {
+            bool rounded;
+            return SetField(guid, field, value, out rounded);
+        }
+
+        // The value typed like the field's present one, as the import and the window encode a changed value
+        // (XmlImport.EncodeValue): text, numbers ('/'-separated; integer or decimal as the old value is), or
+        // true / false / 0-255. A value the field's kind cannot hold throws InvalidDataException.
+        public bool SetField(string guid, string field, string value, out bool rounded)
+        {
+            rounded = false;
             var instance = file.Instance(guid);
             if (instance == null || !instance.IsContainer) return false;
-            var e = instance.Children.FirstOrDefault(c => file.Get(c, "name") == field && (c.Kind == Element.Text || c.Kind == Element.Numbers));
+            var e = instance.Children.FirstOrDefault(c => file.Get(c, "name") == field && !c.IsContainer && c.Payload != null);
             if (e == null) return false;
-            if (e.Kind == Element.Text)
-            {
-                e.Payload = Varint.Bytes(file.Intern(value));
-                return true;
-            }
-            // one 4-byte number: count 1, size 4, big-endian value (float if the text has a '.')
-            if (e.Payload.Length != 6 || e.Payload[0] != 1 || e.Payload[1] != 4) return false;
-            uint bits = value.Contains(".")
-                ? BitConverter.ToUInt32(BitConverter.GetBytes(float.Parse(value, CultureInfo.InvariantCulture)), 0)
-                : (uint)int.Parse(value);
-            e.Payload = new byte[] { 1, 4, (byte)(bits >> 24), (byte)(bits >> 16), (byte)(bits >> 8), (byte)bits };
+            e.Payload = XmlImport.EncodeValue(file, e, value, out rounded);
             return true;
         }
 
@@ -1445,25 +1446,30 @@ namespace MohDbx
 
         static int Xml(IEnumerable<string> paths)
         {
-            int converted = 0, deleted = 0;
+            // exit 1 if any file could not be read or converted; a file that is not binary DBX (plain XML already)
+            // is skipped, not counted as converted
+            int converted = 0, deleted = 0, notBinary = 0, failed = 0;
             foreach (string f in paths.SelectMany(DbxFiles))
             {
                 try
                 {
                     if (DeletedEntry(f)) { deleted++; continue; }
                     byte[] data = File.ReadAllBytes(f);
-                    if (Encoding.ASCII.GetString(data, 0, 8) == "{binary}")
-                        File.WriteAllText(Path.ChangeExtension(f, ".xml"), XmlExport.Convert(data));
+                    if (data.Length < 8 || Encoding.ASCII.GetString(data, 0, 8) != "{binary}") { notBinary++; continue; }
+                    File.WriteAllText(Path.ChangeExtension(f, ".xml"), XmlExport.Convert(data));
                     converted++;
                 }
                 catch (Exception e)
                 {
+                    failed++;
                     Console.Error.WriteLine(f + ": " + e.Message);
                     ToolLog.Warn("xml: " + f + ": " + e.Message);
                 }
             }
-            Console.WriteLine("converted " + converted + " file(s)" + DeletedNote(deleted));
-            return 0;
+            Console.WriteLine("converted " + converted + " file(s)" + DeletedNote(deleted)
+                              + (notBinary > 0 ? ", skipped " + notBinary + " not binary DBX" : "")
+                              + (failed > 0 ? "; " + failed + " FAILED" : ""));
+            return failed > 0 ? 1 : 0;
         }
 
         // import <in.xml> <out.dbx> [--like <original.dbx>] [--types <file.dbx|folder>]...
@@ -1629,9 +1635,14 @@ namespace MohDbx
                         break;
                     }
                     case "setfield=":
-                        if (!editor.SetField(p[0], p[1], p[2])) { Console.Error.WriteLine("setfield: no settable field " + p[1] + " in " + p[0]); return 1; }
+                    {
+                        bool rounded;
+                        string value = string.Join("|", p.Skip(2));        // a text value may itself hold '|'
+                        if (!editor.SetField(p[0], p[1], value, out rounded)) { Console.Error.WriteLine("setfield: no settable field " + p[1] + " in " + p[0]); return 1; }
+                        if (rounded) Console.WriteLine("setfield " + p[1] + ": rounded to the nearest 4-byte value");
                         fieldsSet++;
                         break;
+                    }
                     case "additem=":
                     {
                         bool ok = editor.AddItem(p[0], p[1], p[2], p.Length > 3 ? p[3] : null);

@@ -3,6 +3,7 @@
   navparity.py run <name> <level>=<candidate.hpd> ... [--opfor <folder>]
   navparity.py run <name> --pattern "<path with {lv}>" [--levels sp_01,sp_02,...]
   navparity.py show <name> [<other name>]        a table; with two names, the second against the first
+                                                 (navregress.py's self-check rows: their own columns)
 
 Each level is compared with its original (DICE) path data in OPFOR's game copy, on everything:
   sectors        sector ids in each file
@@ -51,9 +52,12 @@ def opfor_root(given=None):
 
 
 def reference_of(root, lv):
+    """The path of the level's DICE path data - callers test os.path.isfile: it exists only when the level has an
+    original. NavKit's own install (an .opfor-new marker beside it, MOH) is not one: its backup's path, which does not
+    exist, is returned (2026-10-31: navregress measured parity of a build against NavKit's earlier one)."""
     import navkit
     p = navkit.gamecopy.GameCopy(root).pathdata(lv)
-    return p + '.opfor-orig' if os.path.isfile(p + '.opfor-orig') else p
+    return navkit.original_pathdata(p) or p + navkit.BACKUP_SUFFIX
 
 
 def level_xml(root, lv):
@@ -234,17 +238,51 @@ TOTALS = ['ground', 'extra_ground', 'areas_same', 'portals', 'nodes_same', 'edge
           'ladder_ground', 'df_d_precision', 'df_d_recall', 'df_f_precision', 'df_f_recall']
 
 
+# navregress.py's self-check rows (a level without DICE path data - every MOH MP level): NavKit's own figures
+SELF_COLUMNS = [
+    ('self_points', 'points', '{}'), ('self_on_area', 'on area %', '{:.1f}'), ('self_near_node', 'near node %', '{:.1f}'),
+    ('self_large_group', 'large grp %', '{:.1f}'), ('self_pairwise', 'joined %', '{:.1f}'),
+    ('self_directed', 'routed %', '{:.1f}'), ('self_strong', 'strong %', '{:.1f}'), ('self_areas', 'areas', '{}'),
+    ('self_detailed', 'detailed', '{}'), ('self_nodes', 'nodes', '{}'), ('self_one_way', 'one-way', '{}'),
+    ('self_islands', 'islands', '{}'),
+]
+SELF_TOTALS = ['self_on_area', 'self_near_node', 'self_large_group', 'self_pairwise', 'self_directed', 'self_strong']
+
+
+def is_self_check(row):
+    return 'areas_same' not in row and 'self_points' in row
+
+
 def table(run, other=None, log=print):
-    rows = {r['level']: r for r in run['levels']}
-    base = {r['level']: r for r in other['levels']} if other else {}
-    head = f"{'level':9s} " + ' '.join(f'{h:>10s}' for _, h, _ in COLUMNS)
+    """The run as a table - parity rows (against DICE) and self-check rows (navregress.py, no DICE path data) each
+    with their own columns (2026-10-31: a self-check row raised KeyError 'areas_same', an empty run divided by
+    zero); with 'other', each value's change from it."""
     log(f"run '{run['name']}' ({run['date']})" + (f" against '{other['name']}' ({other['date']}): value (change)" if other else ''))
+    if not run['levels']:
+        log('  no levels in this run')
+        return
+    others = other['levels'] if other else []
+    parity = [r for r in run['levels'] if not is_self_check(r)]
+    own = [r for r in run['levels'] if is_self_check(r)]
+    if parity:
+        _table(parity, [r for r in others if not is_self_check(r)], COLUMNS, TOTALS, log)
+    if own:
+        if parity:
+            log('')
+        log('self-check (no DICE path data):')
+        _table(own, [r for r in others if is_self_check(r)], SELF_COLUMNS, SELF_TOTALS, log)
+
+
+def _table(levels, other_levels, columns, totals, log):
+    rows = {r['level']: r for r in levels}
+    base = {r['level']: r for r in other_levels}
+    head = f"{'level':9s} " + ' '.join(f'{h:>10s}' for _, h, _ in columns)
     log(head)
     for lv in [l for l in LEVELS if l in rows] + sorted(set(rows) - set(LEVELS)):
         r = rows[lv]
         cells = []
-        for key, _, f in COLUMNS:
-            if key in ('portals',) and r['areas_same'] == 0:
+        for key, _, f in columns:
+            if key in ('portals',) and r.get('areas_same', 0) == 0:
                 cells.append(f"{'n/a':>10s}")   # a share of matching areas, and none match
                 continue
             v = f.format(r.get(key, 0))
@@ -253,14 +291,14 @@ def table(run, other=None, log=print):
                 v += f"({'+' if delta > 0 else ''}{f.format(delta) if isinstance(delta, float) else delta})"
             cells.append(f'{v:>10s}')
         log(f'{lv:9s} ' + ' '.join(cells))
-    avg = {k: sum(r.get(k, 0) for r in rows.values()) / len(rows) for k in TOTALS}
-    if all(r['areas_same'] == 0 for r in rows.values()):
+    avg = {k: sum(r.get(k, 0) for r in rows.values()) / len(rows) for k in totals}
+    if 'portals' in avg and all(r.get('areas_same', 0) == 0 for r in rows.values()):
         avg.pop('portals')
-    line = f"{'mean':9s} " + ' '.join(f"{(f.format(avg[k]) if k in avg else ''):>10s}" for k, _, f in COLUMNS)
+    line = f"{'mean':9s} " + ' '.join(f"{(f.format(avg[k]) if k in avg else ''):>10s}" for k, _, f in columns)
     log(line)
-    if other:
-        bavg = {k: sum(r.get(k, 0) for r in other['levels']) / len(other['levels']) for k in TOTALS}
-        log(f"{'change':9s} " + ' '.join(f"{(('+' if avg[k] - bavg[k] > 0 else '') + f.format(avg[k] - bavg[k]) if k in avg and k in bavg else ''):>10s}" for k, _, f in COLUMNS))
+    if other_levels:
+        bavg = {k: sum(r.get(k, 0) for r in other_levels) / len(other_levels) for k in totals}
+        log(f"{'change':9s} " + ' '.join(f"{(('+' if avg[k] - bavg[k] > 0 else '') + f.format(avg[k] - bavg[k]) if k in avg and k in bavg else ''):>10s}" for k, _, f in columns))
 
 
 def save_path(root, name):

@@ -14,6 +14,7 @@ import datetime
 import glob
 import logging
 import os
+import re
 import sys
 import threading
 import traceback
@@ -94,7 +95,10 @@ def setup(tool, gui=True, level=logging.INFO):
 
 
 def _prune(tool):
-    files = sorted(glob.glob(os.path.join(log_dir(), f'{tool}-*.log')))
+    # only this tool's own logs, <tool>-<YYYY-MM-DD>.log as setup() names them: a glob of '<tool>-*.log' also took
+    # another tool's whose name starts with this one's ('navkit' pruned 'navkit-gui-...' and kept too few of its own)
+    own = re.compile(re.escape(tool) + r'-\d{4}-\d{2}-\d{2}\.log', re.IGNORECASE)
+    files = sorted(p for p in glob.glob(os.path.join(log_dir(), f'{tool}-*.log')) if own.fullmatch(os.path.basename(p)))
     for p in files[:-KEEP]:
         try:
             os.remove(p)

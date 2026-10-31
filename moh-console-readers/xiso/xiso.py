@@ -24,7 +24,25 @@ def find_partition(f):
     raise SystemExit('no XDVDFS volume found')
 
 
-def walk(f, base, sector, size, prefix=''):
+def safe_dest(outdir, path):
+    """The file an entry extracts to: under outdir, or SystemExit for a name that would leave it
+    (a '..' folder, a rooted or drive name, backslashes that climb out)."""
+    rel = path.replace('\\', '/')
+    parts = rel.split('/')
+    if not path or rel.startswith('/') or any(os.path.splitdrive(p + '/x')[0] for p in parts):
+        raise SystemExit(f'refused: the entry "{path}" escapes the output folder')
+    root = os.path.realpath(outdir)
+    dst = os.path.realpath(os.path.join(root, *parts))
+    if not dst.startswith(root.rstrip(os.sep) + os.sep):
+        raise SystemExit(f'refused: the entry "{path}" escapes the output folder')
+    return dst
+
+
+def walk(f, base, sector, size, prefix='', dirs=None):
+    dirs = set() if dirs is None else dirs     # directory tables already walked: a folder that contains itself
+    if sector in dirs:
+        return
+    dirs.add(sector)
     f.seek(base + sector * SECTOR)
     table = f.read(size)
     seen = set()
@@ -38,7 +56,7 @@ def walk(f, base, sector, size, prefix=''):
         if left: yield from node(left * 4)
         path = prefix + name
         if attr & 0x10:
-            if sz: yield from walk(f, base, sec, sz, path + '/')
+            if sz: yield from walk(f, base, sec, sz, path + '/', dirs)
         else:
             yield path, sec, sz
         if right: yield from node(right * 4)
@@ -63,13 +81,19 @@ def main():
             n = 0
             for path, sec, sz in files:
                 if flt not in path.lower(): continue
-                dst = os.path.join(out, *path.split('/'))
+                dst = safe_dest(out, path)
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 f.seek(base + sec * SECTOR)
                 with open(dst, 'wb') as o:
                     left = sz
                     while left:
-                        chunk = f.read(min(left, 1 << 22)); o.write(chunk); left -= len(chunk)
+                        chunk = f.read(min(left, 1 << 22))
+                        if not chunk:                  # the size runs past the end of the image
+                            break
+                        o.write(chunk); left -= len(chunk)
+                if left:
+                    os.remove(dst)
+                    raise SystemExit(f'{path}: the image ends {left} bytes short of this file (truncated or malformed image)')
                 n += 1
             print(f'extracted {n} files to {out}')
 

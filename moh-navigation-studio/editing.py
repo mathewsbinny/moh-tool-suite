@@ -2,10 +2,15 @@
 (`<level>.navtune.json`, core/mohcore/navtune.py). Edits are recorded and shown here; applying them (the
 rebuild for regions and seeds, links and route edges written into the file) comes with `navkit apply`.
 
-Tools (E opens the panel): walkable / unwalkable region (an outline clicked on the ground, or a box from two
+Tools (E opens the panel; not while flying with the right button held, where E climbs): walkable / unwalkable region (an outline clicked on the ground, or a box from two
 corners, with a height range), seed, unseed, link two areas, add / remove a route edge, traversal (ladder,
 jump, vault, drop: bottom then top), note. Enter finishes an outline, Esc cancels the current drawing,
-Ctrl+Z / Ctrl+Y undo and redo.
+Ctrl+Z / Ctrl+Y undo and redo (a removed edit is undone in place).
+
+A side file that cannot be read (a newer version's, an invalid operation, a JSON typo) is never saved over: the
+editor starts empty with a warning, and the first save (or build) keeps the unreadable file as
+<side file>.unreadable.bak (.unreadable.1.bak, ... when taken). Reload asks for a second click when there are unsaved
+edits.
 """
 import os
 
@@ -72,19 +77,12 @@ class Editor:
         self.st, self.root, self.lv = studio, root, lv
         self.target = 'NavKit' if 'NavKit' in studio.files else 'DICE'
         nav = studio.files[self.target]
-        self.path = nt.default_path(root, lv)
-        self.tune = None
+        self.level_name = level_name
         self.message = ''
-        if os.path.isfile(self.path):
-            try:
-                self.tune = nt.load(self.path)
-                if self.tune.base_changed(nav.path):
-                    self.message = (f'the side file was made on another version of {self.tune.base.get("file", "the base file")}; '
-                                    f'its edits are by position, so they still show and apply')
-            except ValueError as e:
-                self.message = f'side file not read: {e}'
-        if self.tune is None:
-            self.tune = nt.NavTune.new(level_name, nav.path, kind='navkit' if self.target == 'NavKit' else 'dice')
+        self.warning = ''                       # shown at the panel's top until the side file is saved or read
+        self.unreadable = None                  # a side file that could not be read: backed up, never saved over
+        self.reload_armed = False               # reload with unsaved edits: the second click discards them
+        self.open_side_file(nt.default_path(root, lv), nav.path)
         self.open = False
         self.tool = None
         self.shape = 'polygon'
@@ -97,12 +95,76 @@ class Editor:
         self.job_out = os.path.join(root, 'work', 'navkit', lv, 'pathdata.hpd')
         self.install_msg = ''
 
+    # --- the side file -----------------------------------------------------------------------------
+    def open_side_file(self, path, base_path=None):
+        """Reads the side file at path, or starts empty edits when there is none. 2026-10-31: when it cannot be read
+        (a newer version's, an invalid operation, a JSON typo), the edits start empty but the file is remembered
+        (self.unreadable, a warning on the panel) and save() backs it up first - before, the empty edits were saved
+        over it and the user's file was lost."""
+        self.path = path
+        self.unreadable = None
+        self.warning = ''
+        base_path = base_path or self.st.files[self.target].path
+        tune = None
+        if os.path.isfile(path):
+            try:
+                tune = nt.load(path)
+                if tune.base_changed(base_path):
+                    self.message = (f'the side file was made on another version of {tune.base.get("file", "the base file")}; '
+                                    f'its edits are by position, so they still show and apply')
+            except (OSError, ValueError) as e:
+                self.unreadable = path
+                self.warning = (f'The side file could not be read, so the edits start empty: {e}. Saving (or building) '
+                                f'keeps it as {os.path.basename(self.backup_path())} - fix it and reload, or go on with '
+                                f'new edits.')
+        self.tune = tune or nt.NavTune.new(self.level_name, base_path, kind='navkit' if self.target == 'NavKit' else 'dice')
+        self.reload_armed = False
+
+    def backup_path(self):
+        """A free name for the unreadable side file's backup: <path>.unreadable.bak, then .unreadable.1.bak ..."""
+        p, k = self.path + '.unreadable.bak', 1
+        while os.path.exists(p):
+            p, k = f'{self.path}.unreadable.{k}.bak', k + 1
+        return p
+
+    def save(self):
+        """Saves the edits to the side file, an unreadable one there renamed to a backup first. Returns the message."""
+        kept = ''
+        if self.unreadable is not None and os.path.isfile(self.path) \
+                and os.path.normcase(os.path.abspath(self.unreadable)) == os.path.normcase(os.path.abspath(self.path)):
+            b = self.backup_path()
+            os.replace(self.path, b)
+            kept = f' (the unreadable side file was kept as {b})'
+        self.unreadable = None
+        self.warning = ''
+        self.tune.save(self.path)
+        self.reload_armed = False
+        return f'saved {len(self.tune.operations)} edit(s) to {self.path}{kept}'
+
+    def reload(self, v):
+        """Reads the side file again. Unsaved edits are thrown away only on a second click (2026-10-31); a file that
+        cannot be read leaves the edits on screen as they are. Returns True when it was read."""
+        if self.tune.dirty and not self.reload_armed:
+            self.reload_armed = True
+            self.message = 'there are unsaved edits: click reload again to discard them and read the side file'
+            return False
+        before, self.message = self.tune, ''
+        self.open_side_file(self.path)              # sets the message when the base file changed
+        loaded = self.unreadable is None
+        if not loaded:
+            self.tune = before
+            self.message = 'not loaded: ' + self.warning
+        else:
+            self.message = f'loaded {len(self.tune.operations)} edit(s)' + (f'; {self.message}' if self.message else '')
+        self.refresh(v)
+        return loaded
+
     # --- build with the edits (navkit apply) --------------------------------------------------------
     def start_apply(self):
         import subprocess
         import sys
         import threading
-        self.tune.save(self.path)
+        self.message = self.save()
         navkit_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'moh-auto-navkit', 'navkit.py')
         cmd = [sys.executable, '-u', navkit_py, 'apply', self.lv, '--navtune', self.path, '--out', self.job_out, '--opfor', self.root]
         self.job_log = ['saved the side file; building with its edits (a full rebuild: about 1-8 minutes) ...']
@@ -179,6 +241,7 @@ class Editor:
             self.refresh(v)
 
     def commit(self, o):
+        self.reload_armed = False
         try:
             self.tune.add(o)
             self.message = 'added: ' + self.tune.summary(len(self.tune.operations) - 1)
@@ -186,11 +249,17 @@ class Editor:
             self.message = f'not added: {e}'
         self.clicks = []
 
+    @staticmethod
+    def e_toggles(v, right_down):
+        """Whether E opens / closes the panel: not while flying with the right button held, where the viewer's fly
+        mode climbs with E (2026-10-31: it closed the panel and dropped a half-drawn outline)."""
+        return not (getattr(v.camera, 'fly', False) and right_down)
+
     def keys(self, v):
         io = imgui.get_io()
         if io.want_capture_keyboard:
             return
-        if imgui.is_key_pressed(imgui.Key.e):
+        if imgui.is_key_pressed(imgui.Key.e) and self.e_toggles(v, imgui.is_mouse_down(imgui.MouseButton_.right)):
             self.set_open(v, not self.open)
         if not self.open:
             return
@@ -212,11 +281,13 @@ class Editor:
         self.refresh(v)
 
     def undo(self, v):
+        self.reload_armed = False
         o = self.tune.undo()
         self.message = 'undone: ' + o['op'] if o else 'nothing to undo'
         self.refresh(v)
 
     def redo(self, v):
+        self.reload_armed = False
         o = self.tune.redo()
         self.message = 'redone: ' + o['op'] if o else 'nothing to redo'
         self.refresh(v)
@@ -248,6 +319,10 @@ class Editor:
         imgui.set_next_window_size((570, 520), imgui.Cond_.first_use_ever)
         imgui.begin('Edit (E)')
         kind = self.tune.kind
+        if self.warning:
+            imgui.push_style_color(imgui.Col_.text, (1.0, 0.45, 0.3, 1.0))
+            imgui.text_wrapped(self.warning)
+            imgui.pop_style_color()
         imgui.text(f'editing {self.target}\'s data ({kind} base) - side file {os.path.relpath(self.path, self.root)}')
         imgui.text_disabled('The button below builds the edits into the path data: regions and seeds by a rebuild, '
                             'links and route edges into its route graph. Traversals are recorded (a later step).')
@@ -305,16 +380,13 @@ class Editor:
             self.redo(v)
         imgui.same_line()
         if imgui.button('save' + (' *' if self.tune.dirty else '')):
-            self.tune.save(self.path)
-            self.message = f'saved {len(self.tune.operations)} edit(s) to {self.path}'
-        imgui.same_line()
-        if imgui.button('reload'):
             try:
-                self.tune = nt.load(self.path)
-                self.message = f'loaded {len(self.tune.operations)} edit(s)'
-            except (OSError, ValueError) as e:
-                self.message = f'not loaded: {e}'
-            self.refresh(v)
+                self.message = self.save()
+            except OSError as e:
+                self.message = f'not saved: {e}'
+        imgui.same_line()
+        if imgui.button('reload: click again to discard the edits' if self.reload_armed else 'reload'):
+            self.reload(v)
         state = self.job_state()
         if self.tune.kind == 'dice' and os.path.basename(self.job_out) == 'pathdata.hpd':
             self.job_out = os.path.join(os.path.dirname(self.job_out), 'pathdata_dice_edited.hpd')   # never over NavKit's
@@ -364,6 +436,8 @@ class Editor:
             imgui.text(f'{k + 1}. ' + self.tune.summary(k))
         imgui.end_child()
         if drop is not None:
-            self.tune.remove(drop)
+            o = self.tune.remove(drop)
+            self.reload_armed = False
+            self.message = f'removed: {o["op"]} (Ctrl+Z puts it back)'
             self.refresh(v)
         imgui.end()

@@ -334,6 +334,11 @@ def quick(c, work):
             'mohloc: keys, the PC text under WIN32_<key> first')
     c.check(loc.lookup('RU')[2] == 'ок' and loc.lookup('JP')[2] == '殺す', 'mohloc: single-byte and two-byte characters',
             repr(loc.lookup('RU')) + repr(loc.lookup('JP')))
+    gp = os.path.join(work, 'language_test_global.bin')            # MOH's other name: language_<lang>_global.bin
+    open(gp, 'wb').write(normal)
+    g = mohloc.load('test', path=gp)
+    c.check(g.table is not None and g.lookup('RU')[2] == 'ок', 'mohloc: language_<lang>_global.bin finds its histogram',
+            repr(g.lookup('RU')))
     c.check(loc.lookup(f'{mohloc.khash("MENU_PLAY_NOW"):#x}')[2] == 'PLAY NOW' and loc.lookup('NOPE') is None,
             'mohloc: lookup by hash; a missing key')
     code_, out = run('mohloc.py', 'get', 'MENU_PLAY_NOW', 'PC_SERVER_BROWSER', '--file', lp)

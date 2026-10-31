@@ -19,7 +19,8 @@ height 1.8 m (crouched 1.15), step 0.3 m, slopes up to 45 degrees, jumps 0.65 m,
 
 The last step, **export**, turns the build into the file OPFOR's bots will read: RSNV, the format of the navigation
 runtime rsnav. When rsnav's host build is on the PC (project-opfor-moh `src\rsnav`, `python -B build.py host`), export also loads the file in rsnav and
-routes between the level's spawn points. What is not there yet: the bots themselves (`project-opfor-moh\BOT_PLAN.md`).
+routes between the level's spawn points; export (and all) then fails when rsnav places fewer than two points,
+leaves a pair unrouted, fails to smooth a path or its C search differs from the Python reference. What is not there yet: the bots themselves (`project-opfor-moh\BOT_PLAN.md`).
 
 ## Before you start
 

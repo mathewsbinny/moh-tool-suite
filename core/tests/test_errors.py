@@ -4,7 +4,7 @@ r"""errors.py, the suite's error handling and logging (no game data; the logs go
   missing file, no memory, OpenGL), a generic text otherwise;
 - the log: errors with their traceback, warnings (Python's too), errors in other threads, the tool's start;
 - guard(): a crash is logged and the tool exits with code 1; Ctrl+C exits with 130;
-- old logs: the 20 newest per tool are kept;
+- old logs: the 20 newest per tool are kept (only the tool's own: navkit's pruning leaves navkit-gui's alone);
 - the 3D view: an error in a panel is logged once and listed in its Problems window, the frame goes on.
 
   python test_errors.py
@@ -88,6 +88,17 @@ def main(argv):
         errors._prune('old-tool')
         kept = sorted(f for f in os.listdir(logs) if f.startswith('old-tool'))
         check(len(kept) == 20 and kept[0] == 'old-tool-2020-01-11.log', 'old logs: the 20 newest per tool are kept')
+        # 2026-10-31: a tool whose name starts with another's (navkit, navkit-gui): pruning one keeps the other's
+        for k in range(30):
+            open(os.path.join(logs, f'navkit-gui-2020-02-{k + 1:02d}.log'), 'w').close()
+        for k in range(3):
+            open(os.path.join(logs, f'navkit-2020-03-{k + 1:02d}.log'), 'w').close()
+        errors._prune('navkit')
+        names = os.listdir(logs)
+        check(sum(f.startswith('navkit-gui-') for f in names) == 30 and sum(f.startswith('navkit-2020') for f in names) == 3,
+              "pruning one tool's logs leaves a tool named like it alone (navkit / navkit-gui)")
+        errors._prune('navkit-gui')
+        check(sum(f.startswith('navkit-gui-') for f in os.listdir(logs)) == 20, 'and that tool keeps its own 20 newest')
 
         from mohcore import viewer
         v = viewer.Viewer(viewer.Scene(), 'test')

@@ -723,10 +723,11 @@ def main(argv):
     if files:                                               # edits need path data; a compare-only view has none
         st.editor = editing.Editor(st, lvl.opfor, lvl.lv, f'Levels/{lvl.name}')
     if st.editor is not None and '--navtune' in opts:       # a side file somewhere else (tests, shared files)
-        from mohcore import navtune
-        st.editor.path = opts['--navtune']
-        if os.path.isfile(st.editor.path):
-            st.editor.tune = navtune.load(st.editor.path)
+        st.editor.open_side_file(opts['--navtune'])
+    if st.editor is not None and st.editor.warning:         # an unreadable side file: said at once, panel open
+        from mohcore import errors
+        errors.warn(st.editor.warning, show=True)
+        st.editor.open = True
     v = viewer.Viewer(st.scene, f'MOH Navigation Studio - {lvl.name}',
                       panels=[st.panel_main, st.panel_islands, st.panel_selection, st.panel_path, st.panel_compare,
                               st.panel_anomaly] + ([st.editor.panel] if st.editor is not None else []) + [st.panel_status])

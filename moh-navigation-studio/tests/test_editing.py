@@ -6,7 +6,12 @@ and a graph-only base (side file kind "dice") refusing region edits and taking l
 so that base is NavKit's build standing in for DICE's file. Needs Project OPFOR's game copy and a NavKit build of
 the level.
 
-  python test_editing.py [level]
+First, without game data (--quick runs only these; 2026-10-31): an unreadable side file is not saved over (the
+editor warns, starts empty, and the save keeps the file as .unreadable.bak), reload with unsaved edits needs a
+second click, a deleted edit comes back in its place on undo, and E does not toggle the panel while flying with
+the right button held.
+
+  python test_editing.py [level] [--quick]
 """
 import os
 import shutil
@@ -34,14 +39,92 @@ class FakeViewer:
         self.overlay = list(segs)
 
 
+class FakeStudio:
+    """What the editor uses of the studio, on a stand-in base file (no game data)."""
+    def __init__(self, base):
+        self.files = {'NavKit': type('Nav', (), {'path': base})()}
+        self.refreshed = 0
+
+    def sync_click_mode(self, v):
+        pass
+
+    def refresh_overlay(self, v):
+        self.refreshed += 1
+
+
+def quick_checks(check):
+    tmp = tempfile.mkdtemp(prefix='editing_quick_')
+    try:
+        base = os.path.join(tmp, 'pathdata.hpd')
+        open(base, 'wb').write(b'stand-in base file, only hashed')
+        st, v = FakeStudio(base), FakeViewer()
+        side = nt.default_path(tmp, 'lv')
+        good = nt.NavTune.new('Levels/LV', base)
+        good.add(nt.op('note', at=(1, 2, 3), text='the user\'s edit'))
+        j = good.to_json()
+        j['version'] = nt.VERSION + 1                     # a newer version's file: not readable here
+        os.makedirs(os.path.dirname(side))
+        import json
+        json.dump(j, open(side, 'w'))
+        original = open(side, 'rb').read()
+        ed = editing.Editor(st, tmp, 'lv', 'Levels/LV')
+        check(ed.unreadable == side and not ed.tune.operations and 'could not be read' in ed.warning,
+              'an unreadable side file: the editor warns and starts with no edits')
+        check(open(side, 'rb').read() == original, 'and the file is left as it was')
+        ed.tune.add(nt.op('seed', at=(0, 0, 0)))
+        msg = ed.save()
+        bak = side + '.unreadable.bak'
+        check(os.path.isfile(bak) and open(bak, 'rb').read() == original and 'kept as' in msg and not ed.warning,
+              'the first save keeps the unreadable file as .unreadable.bak (not saved over)')
+        check([o['op'] for o in nt.load(side).operations] == ['seed'], 'and saves the new edits to the side file')
+        ed.save()
+        check(open(bak, 'rb').read() == original and not os.path.exists(side + '.unreadable.1.bak'),
+              'a second save writes over its own file only')
+        # a JSON typo, read by reload: the edits on screen stay
+        open(side, 'w').write('{"format": "moh-navtune", ')
+        ed.tune.add(nt.op('unseed', at=(1, 0, 0)))
+        first = ed.reload(v)
+        check(not first and ed.reload_armed and len(ed.tune.operations) == 2, 'reload with unsaved edits: the first click only asks')
+        second = ed.reload(v)
+        check(not second and len(ed.tune.operations) == 2 and ed.unreadable == side,
+              'the second click reads the file; unreadable (a JSON typo), so the edits stay and the file is kept')
+        ed.save()
+        check(os.path.isfile(side + '.unreadable.1.bak'), 'saved: that file kept as .unreadable.1.bak')
+        ed.tune.add(nt.op('note', at=(2, 0, 0), text='new'))
+        ed.reload(v)
+        ed.undo(v)                                       # another action: the next reload asks again
+        check(not ed.reload_armed, 'an edit, undo or redo between the clicks cancels the confirmation')
+        ed.save()
+        check(ed.reload(v) and len(ed.tune.operations) == 2, 'reload without unsaved edits reads the file at once')
+        # delete then undo: the deleted edit comes back in its place
+        ed.tune.add(nt.op('note', at=(3, 0, 0), text='last'))
+        ops = list(ed.tune.operations)
+        ed.tune.remove(0)
+        ed.undo(v)
+        check(ed.tune.operations == ops and ed.tune.operations[0] is ops[0], 'delete then Ctrl+Z: the deleted edit is back in its place')
+        # E while flying (right button held) climbs in the viewer; it does not close the panel
+        v.camera = type('Cam', (), {'fly': True})()
+        check(not editing.Editor.e_toggles(v, True) and editing.Editor.e_toggles(v, False),
+              'E does not toggle the panel while flying with the right button held')
+        v.camera.fly = False
+        check(editing.Editor.e_toggles(v, True), 'and toggles it in orbit mode')
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main(argv):
-    lv = argv[1] if len(argv) > 1 else 'mp_07_koth'
+    lv = next((a for a in argv[1:] if not a.startswith('--')), 'mp_07_koth')
     failed = 0
 
     def check(ok, what):
         nonlocal failed
         failed += not ok
         print(f'{"ok  " if ok else "FAIL"} {what}')
+
+    quick_checks(check)
+    if '--quick' in argv:
+        print('all passed' if not failed else f'{failed} check(s) failed')
+        return 1 if failed else 0
 
     lvl = levelmod.load(lv, log=lambda *a: None)
     cand, ref = studio.default_files(lvl.opfor, lvl.lv)

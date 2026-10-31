@@ -1,6 +1,7 @@
 r"""NavKit's water rule (navbuild.water_tops / deep_water) on a sample grid built here (no game data): ground more
 than the limit (MOH: the soldier's WaterDepthLimit, 1.4 m) under the water is left out, shallower ground and ground outside the water are kept, stacked floors
-are judged by their own height, overlapping water pieces take the higher surface, and no water changes nothing.
+are judged by their own height, overlapping water pieces take the higher surface, and no water changes nothing. The
+water report (navwater.compare) with and without NavKit floors.
 
   python test_water_rule.py
 """
@@ -58,6 +59,18 @@ def main(argv):
     top2 = navbuild.water_tops(s, v2, t2).reshape(s.nz, s.nx)
     check(top2.max() == 4.0 and np.isclose(top2[0, 0], 4.0) and np.isclose(top2[0, 8], 3.0), 'overlapping water: the higher surface')
     check(not navbuild.deep_water(s, None).any(), 'no water: nothing left out')
+    # the water report (navwater.compare) on a candidate with no floors: an empty report, no error (~ of an empty float
+    # array, 2026-10-31); one floor each, DICE's under 1 m of water
+    import navwater
+    try:
+        r = navwater.compare('lv', [], [((0, 0), 0.0)], np.zeros(0), np.array([1.0]), 2)
+        check(r['navkit_cells'] == 0 and r['extra_cells'] == 0 and r['dice_under_water'] == 1,
+              f"water report, no NavKit floors: {r['navkit_cells']} cells, DICE under water {r['dice_under_water']}")
+    except TypeError as e:
+        check(False, f'water report, no NavKit floors: {e}')
+    r = navwater.compare('lv', [((0, 0), 0.0), ((5, 0), 0.0)], [((0, 0), 0.0)], np.array([1.0, 0.2]), np.array([1.0]), 2)
+    check(r['extra_cells'] == 1 and r['extra_under_water'] == 1 and r['bands'][4]['navkit_in_dice'] == 1,
+          f"water report: one extra floor, under water ({r['extra_cells']}, {r['extra_under_water']})")
     print('all passed' if not failed else f'{failed} check(s) failed')
     return 1 if failed else 0
 

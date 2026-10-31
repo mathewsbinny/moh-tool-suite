@@ -1,5 +1,8 @@
 """Offline checks of a built AI layer (no game launch). Each check gives (name, ok, detail); validate() runs them all.
 
+  0. The build is of the configuration given: build_report.json's config_sha256 (pipeline.config_sha) matches it -
+     else validate fails at once (a configuration edited after the build is judged against nothing it built).
+
   1. DbxEdit check: no error, and no more warnings than the stock level has (references resolved against the built
      bundle folder and mp_common).
   2. DbxEdit roundtrip, and XML export -> import (--like) gives the same bytes.
@@ -335,9 +338,30 @@ def check_packed(out_bundle, build_dir, tmp):
     return bad == 0, f'{n} files unpack identical' if not bad else f'{bad} of {n} files differ after packing'
 
 
+def check_config(rep, c):
+    """0. The build is of this configuration: build_report.json's config_sha256 against the one given."""
+    built, now = rep.get('config_sha256'), pipeline.config_sha(c)
+    if built == now:
+        return True, f'built from this configuration ({now[:12]})'
+    if built is None:
+        return False, 'the build records no configuration hash (built by an older version): build again'
+    return False, f'the build is of another configuration ({built[:12]}, this one is {now[:12]}): build again'
+
+
+def _save(paths, results):
+    out = {'passed': all(ok for _n, ok, _d in results), 'results': [{'check': n, 'ok': ok, 'detail': d} for n, ok, d in results]}
+    with open(os.path.join(paths.root, 'validation.json'), 'w', encoding='utf-8') as f:
+        json.dump(out, f, indent=1)
+    return out
+
+
 def validate(paths, c, log=print):
     rep = json.load(open(os.path.join(paths.root, 'build_report.json'), encoding='utf-8'))
-    results = []
+    ok, detail = check_config(rep, c)
+    log(f'{"ok  " if ok else "FAIL"} configuration: {detail}')
+    if not ok:                                     # the other checks would judge this configuration against another build
+        return _save(paths, [('configuration', ok, detail)])
+    results = [('configuration', ok, detail)]
     tmp = tempfile.mkdtemp(prefix='stockmp_validate_')
     mp_common = pipeline.common(paths, 'mp_common')
     so = {k: (v['x'], v['z']) for k, v in rep['sector_offsets'].items()}
@@ -374,7 +398,4 @@ def validate(paths, c, log=print):
             log(f'{"ok  " if ok else "FAIL"} staged {folder} path data: offsets {xz} (asset {so[kind]})')
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    out = {'passed': all(ok for _n, ok, _d in results), 'results': [{'check': n, 'ok': ok, 'detail': d} for n, ok, d in results]}
-    with open(os.path.join(paths.root, 'validation.json'), 'w', encoding='utf-8') as f:
-        json.dump(out, f, indent=1)
-    return out
+    return _save(paths, results)

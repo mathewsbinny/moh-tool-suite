@@ -184,6 +184,9 @@ def corrupt_cases():
         'NAUX area': lambda s: s.update(NAUX=[(7, 0, 0, 0)] + s['NAUX'][1:]),
         'NAUX sector': lambda s: s.update(NAUX=[(0, 3, 0, 0)] + s['NAUX'][1:]),
         'EDGE target': lambda s: s.update(EDGE=[(99, 38, 0)] + s['EDGE'][1:]),
+        # 2026-10-31: an edge kind past the known ones (7..255), refused by validate and by MOH's rsn_load alike
+        'EDGE kind 7': lambda s: s.update(EDGE=[(1 | rsnv.EDGE_KINDS << 24, 38, 0)] + s['EDGE'][1:]),
+        'EDGE kind 255': lambda s: s.update(EDGE=[(1 | 255 << 24, 38, 0)] + s['EDGE'][1:]),
         'LADR node': lambda s: s.update(LADR=[(0.0, 10.0, 0.0, 0.0, 12.0, 0.0, 0.0, 0, 99, 0)]),
         'OFFM node': lambda s: s.update(OFFM=[(1, 3, 0, 99, 0.0, 10.0, 0.0, 0.0, 1.0, 0)]),
         'ISLD node': lambda s: s.update(ISLD=[(4, 99, 0, 0, 0)]),

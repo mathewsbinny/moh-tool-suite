@@ -101,7 +101,8 @@ A local reference is a `ref` value 36 characters long without a `/`.
 - `set=<field>|<true|false|0-255>`: for every non-container element of a type other than text or numbers,
   with a two-byte value and an attribute `name` equal to `<field>`, sets the second byte. Fails if none.
 - `setfield=<guid>|<field>|<value>`: on a direct child of that instance named `<field>` (first match that is
-  text or numbers), sets the text, or the single 4-byte number (a float if the value has a `.`).
+  not a container), sets the value as the XML import encodes a changed value: text as given; numbers
+  `/`-separated, each 4-byte one an integer or a decimal as the field's present value is; true / false / 0-255.
 - `partguid=<guid>`: sets the `guid` attribute of the top-level partition.
 - `additem=<guid>|<array>|<ref>[|<before ref>]`: adds an item to the direct child `array` of that instance
   named `<array>`, shaped like its first existing item but with only a `ref` attribute; at the end, or

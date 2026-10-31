@@ -27,6 +27,27 @@ STEPS = [('prepare', '1. Prepare', 'Unpack the level, extract its objects, choos
          ('check', '4. Check', 'Score the result (against the original path data if the level has one)')]
 
 
+def kill_tree(proc):
+    """Ends a step and every process it started (FbrbTool, DbxEdit, ordercheck ...): Popen.kill ended navkit.py alone
+    and left its children running on Windows (2026-10-31). taskkill /T /F; Popen.kill when taskkill is not there."""
+    if proc.poll() is not None:
+        return
+    try:
+        subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)], capture_output=True,
+                       creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if proc.poll() is None:
+        proc.kill()
+
+
+def installed(pr, lv):
+    """NavKit's file is installed for the level: DICE's original backed up (.opfor-orig), or - a level that had no
+    path data, every MOH MP level - the no-original marker (.opfor-new)."""
+    p = pr.pathdata(lv)
+    return os.path.isfile(p + navkit.BACKUP_SUFFIX) or os.path.isfile(p + navkit.NEW_SUFFIX)
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -145,7 +166,7 @@ class App:
                 'check': os.path.isfile(os.path.join(out, 'check.txt'))}
         for k, m in self.marks.items():
             m['text'] = '✔' if done[k] else ''
-        inst = os.path.isfile(self.pr.pathdata(lv) + navkit.BACKUP_SUFFIX)
+        inst = installed(self.pr, lv)
         orig = self.pr.dice_pathdata(lv)
         self.installed['text'] = ('NavKit\'s path data is INSTALLED in the game for this level.' if inst else
                                   'The game uses the level\'s original path data.' if orig else
@@ -222,7 +243,7 @@ class App:
         if not self.proc:
             return
         self.cancelled = True
-        self.proc.kill()
+        kill_tree(self.proc)
         self.write('\ncancelled\n')
         # a sampling run killed mid-way leaves the game open and opfor.ini changed
         navkit.close_game()

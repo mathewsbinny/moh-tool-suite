@@ -26,7 +26,8 @@ work\navkit\regress\<lv>.hpd, else work\navkit\<lv>\pathdata.hpd; installed: wha
 and per level the AI-readiness checks from files (HasAI, AI spawners, templates and their partitions in the load set,
 kits, AreaOrders, the SectorOffsets asset, installed path data); the in-game checks stay on hold.
 Default levels: every level with DICE path data; MOH ships none, so there every level NavKit has built
-(work\navkit\<lv>\pathdata.hpd: the 26 MP levels), and --files defaults to navkit; --levels for a subset. MOH's
+(work\navkit\<lv>\pathdata.hpd: the 26 MP levels); --levels for a subset. --files defaults to dice,navkit only when one
+of the levels has DICE path data, else (MOH) to navkit. MOH's
 levels have no AI layer (no HasAI, AI spawners or SectorOffsets asset: MoHMPGame.exe has none of those types), so the
 AI-readiness checks fail there by design.
 Saved as <OPFOR>\work\harness\runs\<name>.json (default name "last"); with --reference, compared with that run.
@@ -103,7 +104,10 @@ def parity_row(root, lv, path, cache):
         return json.load(open(cp)), 'the harness cache'
     row = navparity.run_level(root, lv, path, lambda *a: None)
     os.makedirs(os.path.dirname(cp), exist_ok=True)
-    json.dump(row, open(cp, 'w'), indent=1)
+    tmp = cp + '.tmp'                              # whole or not at all: a cut-off entry would be read forever
+    with open(tmp, 'w') as fh:
+        json.dump(row, fh, indent=1)
+    os.replace(tmp, cp)
     return row, 'measured now'
 
 
@@ -251,6 +255,13 @@ def positional(args):
     return out
 
 
+def default_files(root, levels):
+    """--files when not given: 'dice,navkit' when one of the levels has DICE's path data (navparity.reference_of),
+    else 'navkit' - MOH ships none, and a 'dice' there would only record "path data not found" for every level."""
+    import navparity
+    return 'dice,navkit' if any(os.path.isfile(navparity.reference_of(root, lv)) for lv in levels) else 'navkit'
+
+
 def cmd_run(args):
     import navparity
     root = opfor(opt(args, '--opfor'))
@@ -259,7 +270,6 @@ def cmd_run(args):
     levels = opt(args, '--levels')
     levels = [x.strip().lower() for x in levels.split(',')] if levels else [
         lv for lv in navparity.LEVELS + navparity.ONSLAUGHT if os.path.isfile(navparity.reference_of(root, lv))]
-    dice = bool(levels)
     if not levels:          # MOH: no DICE path data - the levels NavKit has built
         nk = os.path.join(root, 'work', 'navkit')
         levels = sorted(lv for lv in (os.listdir(nk) if os.path.isdir(nk) else [])
@@ -268,8 +278,7 @@ def cmd_run(args):
     unknown = [t for t in tests if t not in TESTS]
     if unknown:
         raise ValueError(f'unknown test kind(s) {", ".join(unknown)} (known: {", ".join(TESTS)})')
-    options = {'levels': levels, 'files': [f.strip() for f in opt(args, '--files', 'dice,navkit' if dice or opt(args, '--levels')
-                                                                      else 'navkit').split(',')],
+    options = {'levels': levels, 'files': [f.strip() for f in opt(args, '--files', default_files(root, levels)).split(',')],
                'navkit': opt(args, '--navkit', 'auto'), 'tests': tests, 'pairs': int(opt(args, '--pairs', 200)),
                'level_pairs': int(opt(args, '--level-pairs', 100)), 'seed': int(opt(args, '--seed', 1))}
     reference = opt(args, '--reference')

@@ -53,7 +53,10 @@ def main(argv):
         ('navboundary, a missing NavKit file', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tools', 'navboundary.py'), 'sp_004_b', missing], 'navboundary', 'what to do'),
         ('test harness, a missing saved run', [PY, os.path.join(SUITE, 'moh-automated-map-and-bot-test-harness', 'harness.py'), 'show', missing + '.json'], 'harness', 'missing'),
         ('test harness, a file that is not a run', [PY, os.path.join(SUITE, 'moh-automated-map-and-bot-test-harness', 'harness.py'), 'compare', notrun, notrun], 'harness', 'what to do'),
-        ('test runner, an unknown test name', [PY, os.path.join(SUITE, 'run_tests.py'), 'quick', '--only'], 'run-tests', 'what to do'),
+        ('test runner, --only without a name', [PY, os.path.join(SUITE, 'run_tests.py'), 'quick', '--only'], 'run-tests', 'needs part of a test name'),
+        ('test runner, a name no test has', [PY, os.path.join(SUITE, 'run_tests.py'), 'quick', '--only', 'no such test'], 'run-tests', 'no quick test has'),
+        # "--only game" filters the quick tier by name; it does not choose the game tier (no quick test has "game")
+        ('test runner, --only game', [PY, os.path.join(SUITE, 'run_tests.py'), '--only', 'game', '--list'], 'run-tests', 'no quick test has "game"'),
     ]
     try:
         for label, args, log_name, says in cases:

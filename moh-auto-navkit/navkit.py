@@ -11,8 +11,9 @@ OPFOR's bots read).
   python navkit.py check   MP_05_TDM          score it (self-check: routes between the spawn points and objectives)
   python navkit.py export  MP_05_TDM          write work\\navkit\\<level>\\<level>.rsnv for the navigation runtime
                                               (tools\\navexport.py) and check it (tools\\rsnavcheck.py, when rsnav's
-                                              host build is found)
-  python navkit.py apply   SP_01 [--navtune file] [--out file] [--install]
+                                              host build is found; it fails as rsnavcheck does: points not placed,
+                                              pairs not routed, smoothing failures, C search != Python)
+  python navkit.py apply  SP_01 [--navtune file] [--out file] [--install]
                                               build with the edits of the level's navigation side file
                                               (work\\navkit\\<level>\\<level>.navtune.json, made in the
                                               Navigation Studio) into work\\navkit\\<level>\\pathdata.hpd,
@@ -27,8 +28,9 @@ OPFOR's bots read).
                                               two path-data files on the level's AI positions
                                               (default: the original against NavKit's build)
 
-Options: --box minX,minZ,maxX,maxZ and --y bottom,top (prepare / sample: override the sampling box),
-         --pitch 0.8 / 0.2 (sample: that pass only; 0.2 = a detailed-zone run over the level's detailed sectors;
+Options: --box minX,minZ,maxX,maxZ and --y bottom,top (prepare / sample: override the sampling box; sample
+         recomputes the sector offsets from it when they came from the box rule),
+         --pitch 0.8 / 0.2 (sample --ingame: that pass only; 0.2 = a detailed-zone run over the level's detailed sectors;
          writes <level>_navkit_p02.bin / _hi_p02.bin, the level's settings and its 0.8 m samples untouched),
          --opfor <Project OPFOR folder> (default: OPFOR_ROOT, else "Project OPFOR" next to the toolkit),
          --no-detail (build / apply / all: no D lines or F cells - navbuild.DETAIL_FEATURES off).
@@ -66,6 +68,16 @@ AGENTS = [('normal', f'{mohsoldier.RADIUS},{mohsoldier.STEP},{mohsoldier.HEIGHT}
 SAMPLE_DONE = re.compile(r'navsample: (done|no physics|cannot create|empty box|needs \[debug\])')
 BACKUP_SUFFIX = '.opfor-orig'
 NEW_SUFFIX = '.opfor-new'       # where NavKit installed onto a level that had no path data to back up
+
+
+def original_pathdata(p):
+    """The original of a level's installed path data p: its backup (p.opfor-orig), else p itself unless NavKit put
+    it there (p.opfor-new: the level had none), else None."""
+    if os.path.isfile(p + BACKUP_SUFFIX):
+        return p + BACKUP_SUFFIX
+    if os.path.isfile(p) and not os.path.isfile(p + NEW_SUFFIX):
+        return p
+    return None
 
 
 def _sha256(path):
@@ -125,12 +137,11 @@ class Project:
         return self.copy.pathdata(lv)
 
     def dice_pathdata(self, lv):
-        """The level's original path data (the backup if NavKit's file is installed), or None."""
-        p = self.pathdata(lv)
-        for f in (p + BACKUP_SUFFIX, p):
-            if os.path.isfile(f):
-                return f
-        return None
+        """The level's original path data (the backup if NavKit's file is installed), or None. A file with the
+        no-original marker beside it (.opfor-new) is NavKit's own install, not an original (2026-10-31: on MOH it was
+        taken as DICE's file - prepare's box and offsets, the build's clip and check all came from NavKit's earlier
+        build)."""
+        return original_pathdata(self.pathdata(lv))
 
     def level(self, name):
         lv = name.replace('\\', '/').split('/')[-1].lower()
@@ -239,14 +250,7 @@ def prepare(pr, lv, log=print, box=None, y=None):
     auto_box, auto_y, source = sampling_box(pr, lv, L)
     s = {'level': LV, 'box': box or auto_box, 'y': y or auto_y, 'box_source': 'given' if box else source}
     if xoff is None:
-        # No SectorOffsets asset (Onslaught and other MP levels): DICE's rule, one sector below the path data's
-        # lowest extent, so the first sector id is 1,1 - it holds for all 15 shipped SectorOffsets (13 campaign,
-        # ons_mp_005, ons_mp_008). A new map has no path data; its box (which holds the ground) stands in.
-        import navregress
-        ext = navregress.reference_bounds(pr.root, lv)
-        lo = ext[:2] if ext else s['box'][:2]
-        xoff, zoff = int(math.floor(lo[0] / 100.0)) - 1, int(math.floor(lo[1] / 100.0)) - 1
-        s['offsets_source'] = 'rule: path data extent' if ext else 'rule: box'
+        xoff, zoff, s['offsets_source'] = rule_offsets(pr, lv, s['box'])
     else:
         s['offsets_source'] = 'SectorOffsets'
     s['xoff'], s['zoff'] = xoff, zoff
@@ -255,6 +259,29 @@ def prepare(pr, lv, log=print, box=None, y=None):
     log(f'  box {fmt(s["box"])} ({s["box_source"]}), y {fmt(s["y"])}, sector offsets {s["xoff"]}, {s["zoff"]} '
         f'({s["offsets_source"]}); {cols / 1e6:.1f} M columns per sampling run')
     log(f'  settings: {os.path.relpath(pr.settings_path(lv), pr.root)}')
+
+
+def rule_offsets(pr, lv, box):
+    """(xoff, zoff, source) of a level without a SectorOffsets asset (Onslaught and other MP levels): DICE's rule, one
+    sector below the path data's lowest extent, so the first sector id is 1,1 - it holds for all 15 shipped
+    SectorOffsets (13 campaign, ons_mp_005, ons_mp_008). A new map has no path data; its box (which holds the ground)
+    stands in."""
+    import navregress
+    ext = navregress.reference_bounds(pr.root, lv)
+    lo = ext[:2] if ext else box[:2]
+    return (int(math.floor(lo[0] / 100.0)) - 1, int(math.floor(lo[1] / 100.0)) - 1,
+            'rule: path data extent' if ext else 'rule: box')
+
+
+def set_box(pr, lv, s, box=None, y=None):
+    """A new sampling box / heights (--box / --y) into the level's settings, the sector offsets recomputed with
+    prepare's rule when they came from it (2026-10-31: they were kept, so a box reaching below the old sector 0 gave
+    sector x -1, masked to 0xFF in the sector ids). A SectorOffsets asset's offsets are the level's own and stay."""
+    s['box'], s['y'] = box or s['box'], y or s['y']
+    if str(s.get('offsets_source', '')).startswith('rule'):
+        s['xoff'], s['zoff'], s['offsets_source'] = rule_offsets(pr, lv, s['box'])
+    json.dump(s, open(pr.settings_path(lv), 'w'), indent=1)
+    return s
 
 
 def common_dirs(root, lv=None):
@@ -503,8 +530,7 @@ def sample(pr, lv, log=print, confirm=None, box=None, y=None, timeout=3600, pitc
         # (navsample_rects); the level's settings stay as they are
         s = dict(s, box=box or detailed_box(pr, lv), y=y or s['y'], rects=None if box else detailed_rects(pr, lv))
     elif box or y:
-        s['box'], s['y'] = box or s['box'], y or s['y']
-        json.dump(s, open(pr.settings_path(lv), 'w'), indent=1)
+        set_box(pr, lv, s, box, y)
     log(f'== sample {lv}: box {fmt(s["box"])}, y {fmt(s["y"])}, pitch {pitch}')
     if not pr.dice_pathdata(lv):
         log('  warning: this level has no AI path data, so its AI (and the sampler) may not start - see QUICKSTART.md')
@@ -536,9 +562,7 @@ def sample_level(pr, lv, log=print, confirm=None, box=None, y=None):
     where build reads them (work\\navsample\\<lv>_navkit*.bin)."""
     import navsample_offline
     if box or y:
-        s = ensure_settings(pr, lv)
-        s['box'], s['y'] = box or s['box'], y or s['y']
-        json.dump(s, open(pr.settings_path(lv), 'w'), indent=1)
+        set_box(pr, lv, ensure_settings(pr, lv), box, y)
     out = navsample_offline.sample_level(pr.root, lv, log=log)
     os.makedirs(os.path.join(pr.work, 'navsample'), exist_ok=True)
     for suf in ('_p02', '_hi_p02'):                          # a stale 0.2 m pair would be built in
@@ -720,7 +744,16 @@ def export(pr, lv, log=print):
     except FileNotFoundError as e:
         log(f'  {e}')
         return
-    rsnavcheck.check_level(pr.root, lv, rb, log=lambda m: log('  ' + m))
+    r = rsnavcheck.check_level(pr.root, lv, rb, log=lambda m: log('  ' + m))
+    # rsnavcheck.main's pass rule (2026-10-31: the result was dropped, so export and all passed whatever rsnav found):
+    # two points placed at least, every pair routed one way, no smoothing failed, the C search equal to Python's
+    why = [m for bad, m in ((r['placed'] < 2, f'{r["placed"]} point(s) placed'),
+                            (r['either_way'] != r['unordered'], f'pairs routed {r["either_way"]}/{r["unordered"]}'),
+                            (r['smooth_failed'], f'{r["smooth_failed"]} smoothing failure(s)'),
+                            (r['reference_equal'][0] != r['reference_equal'][1],
+                             f'C search equal to Python on {r["reference_equal"][0]}/{r["reference_equal"][1]}')) if bad]
+    if why:
+        raise NavKitError(f'{lv}: the RSNV file fails in rsnav - ' + '; '.join(why))
 
 
 def compare(pr, lv, log=print, reference=None, candidate=None):
@@ -857,10 +890,12 @@ def _apply(pr, lv, navtune_path, out, log):
                 f'by position and are applied, but check them')
         shutil.copyfile(src, out)
     if graph:
+        before = _sha256(out)
         f = hpdtool.parse(open(out, 'rb').read())
         results = navlinks.apply(f, graph, log=log)
         open(out, 'wb').write(hpdtool.write(f))
         log(f'  {sum(ok for _, ok, _ in results)} of {len(graph)} link / route-edge edit(s) applied')
+        rekey_cells(out, before, log)
     data = open(out, 'rb').read()
     f = hpdtool.parse(data)
     if hpdtool.write(f) != data:
@@ -878,6 +913,26 @@ def _apply(pr, lv, navtune_path, out, log):
         log(f'  {notes} note(s): kept in the side file only')
     log(f'  read back exactly ({time.time() - t0:.0f} s in all)')
     return out
+
+
+def rekey_cells(hpd, before, log=print):
+    """The build's cells (navbuild.cells_path) re-keyed to its file after graph edits: they are keyed to the file's
+    SHA-256 (navbuild.read_cells), and link / route-edge edits change the file but not its areas - without this, export
+    silently fell back to rasterised outlines (2026-10-31). Only a cells file that belonged to the file before the edits
+    ('before': its SHA-256 then) is re-keyed; a stale one stays stale."""
+    import numpy as np
+    import navbuild
+    p = navbuild.cells_path(hpd)
+    if not os.path.isfile(p):
+        return False
+    with np.load(p) as z:
+        arrays = {k: z[k] for k in z.files}
+    if str(arrays.get('hpd_sha256')) != before:
+        return False
+    arrays['hpd_sha256'] = np.array(_sha256(hpd))
+    np.savez_compressed(p, **arrays)
+    log(f'  cells {os.path.basename(p)} re-keyed to the edited file (its areas are unchanged)')
+    return True
 
 
 def status(pr, lv, log=print):
@@ -901,26 +956,68 @@ def ask(question):
     return input(question + ' [y/N] ').strip().lower() in ('y', 'yes')
 
 
+VALUE_OPTIONS = ('--box', '--y', '--opfor', '--root', '--reference', '--candidate', '--navtune', '--out', '--from',
+                 '--pitch')        # --root: older name of --opfor
+FLAGS = ('--yes', '--install', '--no-detail', '--ingame')
+
+
+def parse_options(argv):
+    """(arguments, {option: value}, {flag}) of a command line, or NavKitError: each option needs a value (not another
+    option), and the arguments left must not look like options (2026-10-31: --ingame was never parsed, so
+    'sample --ingame lv' took '--ingame' as the level; an option without a value raised IndexError)."""
+    args, opts, flags = [], {}, set()
+    rest = list(argv[1:])
+    while rest:
+        a = rest.pop(0)
+        if a in VALUE_OPTIONS:
+            if not rest or rest[0].startswith('--'):
+                raise NavKitError(f'{a} needs a value')
+            opts[a] = rest.pop(0)
+        elif a in FLAGS:
+            flags.add(a)
+        elif a.startswith('--'):
+            raise NavKitError(f'unknown option {a}')
+        else:
+            args.append(a)
+    return args, opts, flags
+
+
+def numbers(opts, k, n):
+    if k not in opts:
+        return None
+    try:
+        v = [float(x) for x in opts[k].split(',')]
+    except ValueError:
+        v = []
+    if len(v) != n:
+        raise NavKitError(f'{k}: {n} comma-separated numbers expected, not {opts[k]!r}')
+    return v
+
+
 def main(argv):
-    args = [a for a in argv[1:]]
-    opts = {}
-    for k in ('--box', '--y', '--opfor', '--root', '--reference', '--candidate', '--navtune', '--out', '--from',
-              '--pitch'):   # --root: older name of --opfor
-        if k in args:
-            i = args.index(k)
-            opts[k] = args[i + 1]
-            del args[i:i + 2]
-    yes = '--yes' in args
-    install_flag = '--install' in args
-    if '--no-detail' in args:              # build / apply / all: no D lines or F cells (the output before 2026-10-26)
+    if '--help' in argv[1:] or argv[1:2] == ['-h']:
+        print(__doc__)
+        return 0
+    try:
+        args, opts, flags = parse_options(argv)
+        box, y = numbers(opts, '--box', 4), numbers(opts, '--y', 2)
+        pitch = numbers(opts, '--pitch', 1)
+        if pitch and '--ingame' not in flags:
+            # the offline sampler always does its 0.8 m pair and then the 0.2 m pair; a pass alone is the in-game
+            # sampler's (2026-10-31: --pitch without --ingame was ignored - a whole resample)
+            raise NavKitError('--pitch is a pass of the in-game sampler: sample --ingame --pitch 0.8 / 0.2 '
+                              '(the offline sample always does both)')
+    except NavKitError as e:
+        print('error:', e)
+        return 1
+    yes = '--yes' in flags
+    install_flag = '--install' in flags
+    if '--no-detail' in flags:             # build / apply / all: no D lines or F cells (the output before 2026-10-26)
         import navbuild
         navbuild.DETAIL_FEATURES = False
-    args = [a for a in args if a not in ('--yes', '--install', '--no-detail')]
     if not args or args[0] in ('-h', '--help', 'help'):
         print(__doc__)
         return 0
-    box = [float(v) for v in opts['--box'].split(',')] if '--box' in opts else None
-    y = [float(v) for v in opts['--y'].split(',')] if '--y' in opts else None
     confirm = None if yes else ask
     try:
         pr = Project(opts.get('--opfor') or opts.get('--root'))
@@ -934,9 +1031,9 @@ def main(argv):
         if cmd == 'prepare':
             prepare(pr, lv, box=box, y=y)
         elif cmd == 'sample':
-            if '--ingame' in opts and '--pitch' in opts:     # BFBC2's in-game sampler (not in MOH's OPFOR core)
-                sample(pr, lv, confirm=confirm, box=box, y=y, pitch=float(opts['--pitch']))
-            elif '--ingame' in opts:
+            if '--ingame' in flags and pitch:          # BFBC2's in-game sampler (not in MOH's OPFOR core)
+                sample(pr, lv, confirm=confirm, box=box, y=y, pitch=pitch[0])
+            elif '--ingame' in flags:
                 sample_level_ingame(pr, lv, confirm=confirm, box=box, y=y)
             else:
                 sample_level(pr, lv, confirm=confirm, box=box, y=y)

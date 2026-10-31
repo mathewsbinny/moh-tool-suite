@@ -64,8 +64,14 @@ def tests():
         ('review fixes: apply inputs, stock-MP reinstall, studio flags, cache key', 'quick', [PY, os.path.join(SUITE, 'tests', 'test_review_fixes.py')]),
         ('review fixes 2: harness missing files, navkit no-original reinstall, old fbrb manifests', 'quick',
          [PY, os.path.join(SUITE, 'tests', 'test_review_fixes2.py')]),
+        ('review fixes 3: navkit no-original reference, cells re-key, box offsets, options, GUI kill tree, export rule, navregress/navparity/navdiff/sample_all', 'quick',
+         [PY, os.path.join(SUITE, 'tests', 'test_review_fixes3.py')]),
         ('navigation side files (navtune)', 'quick', [PY, os.path.join(SUITE, 'core', 'tests', 'test_navtune.py')]),
         ('RSNV format and the Python reference (rsnv)', 'quick', [PY, os.path.join(SUITE, 'core', 'tests', 'test_rsnv.py')]),
+        ('path data and the path test, built data (navdata)', 'quick', [PY, os.path.join(SUITE, 'core', 'tests', 'test_navdata.py'), '--quick']),
+        ('level loader: terrain unpack, water layers, built data', 'quick', [PY, os.path.join(SUITE, 'core', 'tests', 'test_level.py'), '--quick']),
+        ('DBX reader: truncated files, built data', 'quick', [PY, os.path.join(SUITE, 'core', 'tests', 'test_dbx.py')]),
+        ('Navigation Studio editor: side files, undo, keys, built data', 'quick', [PY, os.path.join(SUITE, 'moh-navigation-studio', 'tests', 'test_editing.py'), '--quick']),
         ('NavKit water rule (ground too deep under water)', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_water_rule.py')]),
         ('NavKit walkability edits (navedits)', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_navedits.py')]),
         ('NavKit area link rule', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_area_link.py')]),
@@ -131,10 +137,29 @@ def tests():
     return t
 
 
+def refuse(cause, fix, code):
+    """A mistake in the command line: said in words as errors.report says them (cause, what to do, the log)."""
+    sys.path.insert(0, os.path.join(SUITE, 'core'))
+    from mohcore import errors
+    errors.logger().error(f'run-tests: {cause}')
+    print(f'error: {cause}\n  what to do: {fix}\n  details: {errors._state.get("path")}', file=sys.stderr)
+    return code
+
+
 def main(argv):
-    tier = next((a for a in argv[1:] if a in TIERS), 'quick')
-    only = argv[argv.index('--only') + 1].lower() if '--only' in argv else None
+    only, skip = None, set()
+    if '--only' in argv:
+        k = argv.index('--only')
+        if k + 1 >= len(argv) or argv[k + 1].startswith('--'):
+            return refuse('--only needs part of a test name after it', 'For example: python run_tests.py quick --only leveldiff '
+                          '(--list shows the names)', 2)
+        only, skip = argv[k + 1].lower(), {k + 1}
+    # the tier is a tier name among the arguments, not the --only value (--only game filters, it is not the game tier)
+    tier = next((a for i, a in enumerate(argv) if i > 0 and i not in skip and a in TIERS), 'quick')
     chosen = [x for x in tests() if TIERS.index(x[1]) <= TIERS.index(tier) and (only is None or only in x[0].lower())]
+    if only is not None and not chosen:
+        return refuse(f'no {tier} test has "{only}" in its name',
+                      f'See the names with: python run_tests.py {tier} --list (or name a larger tier: game, full)', 1)
     if '--list' in argv:
         for name, t, _ in chosen:
             print(f'{t:6s} {name}')

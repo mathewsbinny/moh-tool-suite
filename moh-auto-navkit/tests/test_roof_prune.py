@@ -1,7 +1,8 @@
 r"""NavKit's roof pruning (navwalk.ROOF_PRUNE, roof_islands) on a sample grid built here (no game data): terrain at
 y 0 everywhere, a roof (object, y 5) nothing reaches, an anchored deck (y 5.3) 1.6 m from a second roof, and a
 ground-level patch cut off from the rest. The lone roof is dropped; the roof beside the anchored deck, a roof with
-an anchor on it, the ground-level patch and the largest island stay; with the rule off everything stays.
+an anchor on it, the ground-level patch and the largest island stay; with the rule off everything stays. Each
+column's lowest surface (what a roof's rise is measured from) with empty columns at the grid's end.
 
   python test_roof_prune.py
 """
@@ -76,6 +77,13 @@ def main(argv):
         check(kept_at(s, keep3, 2, 1, 5.0), 'ROOF_PRUNE off: the lone roof stays')
     finally:
         navwalk.ROOF_PRUNE = old
+    # each column's lowest surface, with empty columns at the grid's end: the last column holding surfaces keeps its
+    # lowest (reduceat over clipped starts gave its roof, 3.0, 2026-10-31)
+    cols = [[0.0], [0.0], [0.0], [3.0, 0.0], [], []]
+    t = SimpleNamespace(nx=3, nz=2, start=np.cumsum([0] + [len(c) for c in cols]),
+                        y=np.array([v for c in cols for v in c], np.float32))
+    low = navwalk.column_lowest(t)
+    check(low.tolist() == [0.0, 0.0, 0.0, 0.0, 0.0], f'lowest surface per column, empty columns at the end: {low.tolist()}')
     print('all passed' if not failed else f'{failed} check(s) failed')
     return 1 if failed else 0
 

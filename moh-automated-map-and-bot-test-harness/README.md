@@ -31,7 +31,7 @@ python harness.py ingame mp_005                                 what the in-game
 ```
 
 Options of `run`: `--levels` (default: every level with DICE path data, the 13 campaign levels and ONS_MP_002 /
-004), `--files dice,navkit,installed` (default `dice,navkit`), `--navkit auto|regress|build|<path with {lv}>`
+004), `--files dice,navkit,installed` (default `dice,navkit` when one of the levels has DICE path data, else `navkit` - MOH ships none), `--navkit auto|regress|build|<path with {lv}>`
 (which NavKit build: `regress` is `work\navkit\regress\<lv>.hpd`, navregress's latest; `build` is
 `work\navkit\<lv>\pathdata.hpd`; `auto` takes the first that exists), `--tests` (a subset of
 `structure,reachability,battery,orders,offsets,parity,level`), `--pairs 200` and `--level-pairs 100` (battery
@@ -156,11 +156,13 @@ Runs are JSON, `<OPFOR>\work\harness\runs\<name>.json` (format `moh-harness-run`
 direction and a tolerance (`runs.spec`): shares where higher is better (0.5 points for reachability and orders,
 1 point for batteries), shares where lower is better (extra routes, refusals, over-connection), length ratios where
 closer to 1.0 is better (0.02 at the median, 0.05 at the 90th percentile), structure problems (0), the offsets
-match, and NavKit's parity measures with navregress's own lists and tolerance (0.05 points). Worse beyond the
-tolerance is a **regression**, as is a test going from pass / info / warn to fail or error. Counts that change
-(islands, AI spawners), better measures, fixed tests, battery pairs routed before and not now, and levels or tests
-missing from either run are listed but are not regressions. A file whose sha1 did not change gives the same
-numbers (the game-tier test checks that).
+match, targets and orders lost (0), and NavKit's parity measures with navregress's own lists and tolerance (0.05
+points). Worse beyond the tolerance is a **regression**, as is a test going from pass / info / warn to fail or
+error, a test going to error from anything, a level gone from the new run, a test gone from a level still in it (a
+lost file or level must not compare as "no regressions"), and a test new in the new run that fails or errs. Other
+status changes (pass -> skip, error -> fail ...), counts that change (islands, AI spawners), better measures, fixed
+tests, metrics in only one run, battery pairs routed before and not now, and new levels are listed but are not
+regressions. A file whose sha1 did not change gives the same numbers (the game-tier test checks that).
 
 ## Tiers
 
@@ -179,7 +181,7 @@ The harness never starts the game. The in-game parts are designed and plug in as
 - **Now: importing a session.** `import-log <run> --level <lv> [--log <opfor.log>] [--session N]` reads an
   `opfor.log` (default the game copy's, read only), splits it into sessions (one per `opfor.dll loaded` line), takes
   the latest one that started the level and adds three checks to the run: `loads-ai-init` (in game, AI init seen,
-  no crash), `offsets-read` (the SectorOffsets loads read the asset's values, no `[dev] sector_offsets` override),
+  no crash), `offsets-read` (every SectorOffsets load read the asset's values, no `[dev] sector_offsets` override),
   `pathfinders` (the unit-counter dumps show pathfinders after spawning; needs `[dev] unit_counters_dump=1`). These
   are the validation criteria of OPFOR's Onslaught ports.
 - **ON HOLD: `testrun.bat` per level.** The harness will run OPFOR's `testrun.bat <level> --yes` for each level of

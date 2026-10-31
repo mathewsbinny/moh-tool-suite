@@ -77,8 +77,12 @@ All 26 levels built, checked and exported (2026-10-30; table in "RSNV export"). 
   A drop must be one a soldier can make (2026-10-30, after rsnav's follower took the links): floor at drop height no
   farther out than MOH's run (4 m/s, `OnGroundStateData`) carries it during the fall, plus a cell (kept or not: a
   curb's foot too cramped for the capsule is still floor - mp_10's 0.5 m curbs); no column on the way without floor
-  (the sampler's cast stopped there: solid - an mp_09_overrun link ran 2.8 m through a wall for a 1 m drop); no
-  diagonal past a wall corner. A drop whose ends lie in two sectors is not linked (counted in the build log: 0-7 per
+  (the sampler's cast stopped there: solid - an mp_09_overrun link ran 2.8 m through a wall for a 1 m drop), nor one
+  whose floor at the ledge's height is all too cramped for the capsule under something above the head (a wall taller
+  than the soldier, sampled only at its top: mp_09_overrun's links through a facade, 2026-10-31; without anything
+  overhead it is a curb's cramped edge, crossed); no diagonal past a wall corner (either kind of wall); the first
+  floor at most 2 m out in metres and the walkable landing a cell past it at most (a cell count before 2026-10-31:
+  2.4 m straight and 3.4 m diagonally at 0.8 m pitch). A drop whose ends lie in two sectors is not linked (counted in the build log: 0-7 per
   level), nor one between two nodes a walk already joins.
 - **Tall convex pieces.** The sampler replays the in-game cast, which gives up after 10 m inside a solid. mp_09's
   invisible wall over the corner house's attic is 10.1 m tall: under it the floors, both flights of stairs and the
@@ -92,7 +96,11 @@ All 26 levels built, checked and exported (2026-10-30; table in "RSNV export"). 
   that multi-floor house the 25 buckets gave 231 entries: the nearest node's area was cut off. Fixed in MOH's copy of
   rsnav (project-opfor-moh `src\rsnav`): placed 24 -> 25 of 29, 300 / 300 pairs both ways.
 
-Open: mp_05's spawns in the doorway recesses of the town's outer wall (96 %), beside 1 m bush collision boxes; the
+Open: mp_05's spawns in the doorway recesses of the town's outer wall (96 %), beside 1 m bush collision boxes -
+`navkit.py export` now fails mp_05_domination and mp_05_tdm on rsnav's pass rule for it (2026-10-31); two
+mp_10 spawns at (24.0, 113.3, 6.4) and (29.4, 113.2, 12.0) (self-check 100 -> 89 % on mp_10_tdm / domination): the
+one-way drop chain that left their ground ran over floor too cramped for the capsule under something overhead,
+which the facade rule now refuses - whether that is an overhang a soldier passes is not checked; the
 east half of mp_09_overrun's corner house's upper floor, behind a 1 m wall from the stairwell, is entered from nowhere
 NavKit finds (it is left by dropping; no spawn on it). rsnav's follower takes drop edges (project-opfor-moh
 `src\rsnav`, 2026-10-30: every single-bot route of its tests followed on mp_08_tdm, mp_02 and mp_09_overrun); crowds
@@ -195,7 +203,8 @@ reads its own per-level file, **RSNV**. `tools\navexport.py` (run by `navkit.py 
   `tools\rsnavcheck.py` loads it in **rsnav itself** (its host build `rsnav.dll`, through rsnav's ctypes bindings; found at
   `RSNAV_ROOT` or project-opfor-moh's `src\rsnav` beside the suite; build it with `python -B build.py host` there), places the level's spawn points and objectives on the walkable
   cells, routes every pair with the soldier's filter, smooths the paths, and checks the C search's cost against the
-  Python reference (`rsnv.search`) on 20 pairs.
+  Python reference (`rsnv.search`) on 20 pairs. `navkit.py export` (and `all`) fails on rsnavcheck's rule: at least two
+  points placed, every pair routed one way, no smoothing failure, the C cost equal to Python's (2026-10-31).
 
 All 26 MOH MP levels (2026-10-30, with drop links and the tall-convex sampling): every file reads back with 0 problems
 and every node on an area; in rsnav the C search's cost equals the Python reference's on all 520 sampled pairs, and no
@@ -208,32 +217,32 @@ way): "one way" counts the pairs routed in at least one direction, "both ways" i
 
 | Level | Nodes / edges | Drop edges | Areas | RSNV (MB) | rsnav load (ms) | Points placed | Pairs routed one way | Both ways | Self-check % (nearest node) | Search (ms) | Ladders |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| mp_01 | 6,697 / 20,136 | 158 | 4,208 | 3.03 | 7.1 | 93 / 118 | 4278 / 4278 | 4278 / 4278 (100.0 %) | 95.9 | 0.116 | 0 |
-| mp_01_elimination | 4,301 / 12,690 | 64 | 1,736 | 1.46 | 0.5 | 24 / 26 | 276 / 276 | 276 / 276 (100.0 %) | 100.0 | 0.015 | 2 |
-| mp_02 | 7,493 / 19,729 | 138 | 4,432 | 3.48 | 1.1 | 64 / 90 | 2016 / 2016 | 1668 / 2016 (82.7 %) | 100.0 | 0.111 | 0 |
-| mp_02_koth | 3,049 / 7,849 | 67 | 1,738 | 1.37 | 0.4 | 19 / 22 | 171 / 171 | 171 / 171 (100.0 %) | 100.0 | 0.026 | 0 |
-| mp_02_koth2 | 2,655 / 6,845 | 67 | 1,839 | 1.28 | 0.4 | 17 / 19 | 136 / 136 | 136 / 136 (100.0 %) | 100.0 | 0.036 | 0 |
-| mp_03_elimination | 2,265 / 5,461 | 56 | 1,438 | 1.08 | 0.4 | 24 / 26 | 276 / 276 | 276 / 276 (100.0 %) | 100.0 | 0.014 | 0 |
-| mp_04 | 8,278 / 25,341 | 135 | 5,089 | 4.48 | 1.4 | 98 / 124 | 4753 / 4753 | 4753 / 4753 (100.0 %) | 100.0 | 0.138 | 0 |
-| mp_04_koth | 3,842 / 11,767 | 56 | 2,221 | 2.05 | 0.9 | 23 / 25 | 253 / 253 | 253 / 253 (100.0 %) | 100.0 | 0.03 | 0 |
-| mp_05_domination | 4,551 / 14,064 | 59 | 1,963 | 1.66 | 0.7 | 50 / 65 | 1176 / 1225 | 1176 / 1225 (96.0 %) | 96.4 | 0.063 | 0 |
-| mp_05_overrun | 4,497 / 13,991 | 62 | 1,875 | 1.62 | 0.6 | 28 / 35 | 378 / 378 | 378 / 378 (100.0 %) | 100.0 | 0.039 | 0 |
-| mp_05_tdm | 4,531 / 14,058 | 59 | 1,961 | 1.68 | 0.6 | 49 / 62 | 1128 / 1176 | 1128 / 1176 (95.9 %) | 96.1 | 0.057 | 0 |
-| mp_06_domination | 3,662 / 10,671 | 58 | 2,476 | 1.79 | 0.5 | 38 / 46 | 703 / 703 | 703 / 703 (100.0 %) | 100.0 | 0.032 | 0 |
-| mp_06_elimination | 3,668 / 10,684 | 59 | 2,472 | 1.79 | 0.6 | 25 / 27 | 300 / 300 | 300 / 300 (100.0 %) | 100.0 | 0.044 | 0 |
-| mp_06_overrun | 3,628 / 10,610 | 59 | 2,480 | 1.79 | 0.5 | 27 / 31 | 351 / 351 | 351 / 351 (100.0 %) | 100.0 | 0.034 | 0 |
-| mp_06_tdm | 3,662 / 10,671 | 58 | 2,476 | 1.79 | 0.8 | 37 / 43 | 666 / 666 | 666 / 666 (100.0 %) | 100.0 | 0.043 | 0 |
-| mp_07_koth | 1,760 / 5,752 | 24 | 816 | 0.76 | 0.3 | 28 / 30 | 378 / 378 | 378 / 378 (100.0 %) | 100.0 | 0.023 | 0 |
-| mp_08_domination | 3,880 / 8,738 | 113 | 2,064 | 1.5 | 0.7 | 34 / 44 | 561 / 561 | 561 / 561 (100.0 %) | 100.0 | 0.078 | 3 |
-| mp_08_overrun | 3,893 / 8,789 | 114 | 2,066 | 1.5 | 0.7 | 27 / 31 | 351 / 351 | 351 / 351 (100.0 %) | 100.0 | 0.055 | 3 |
-| mp_08_tdm | 3,880 / 8,738 | 113 | 2,064 | 1.5 | 0.8 | 34 / 41 | 561 / 561 | 561 / 561 (100.0 %) | 100.0 | 0.064 | 3 |
-| mp_09_domination | 3,501 / 10,319 | 57 | 1,764 | 1.36 | 0.5 | 47 / 58 | 1081 / 1081 | 1081 / 1081 (100.0 %) | 100.0 | 0.045 | 0 |
-| mp_09_elimination | 3,462 / 10,213 | 57 | 1,742 | 1.35 | 0.4 | 30 / 32 | 435 / 435 | 435 / 435 (100.0 %) | 100.0 | 0.037 | 0 |
-| mp_09_overrun | 3,440 / 10,144 | 55 | 1,750 | 1.35 | 0.4 | 25 / 29 | 300 / 300 | 300 / 300 (100.0 %) | 92.3 | 0.02 | 0 |
-| mp_09_tdm | 3,501 / 10,319 | 57 | 1,764 | 1.36 | 0.5 | 47 / 55 | 1081 / 1081 | 1081 / 1081 (100.0 %) | 100.0 | 0.027 | 0 |
-| mp_10_domination | 2,637 / 8,008 | 28 | 1,405 | 1.15 | 0.4 | 32 / 44 | 496 / 496 | 496 / 496 (100.0 %) | 100.0 | 0.023 | 0 |
-| mp_10_overrun | 2,637 / 8,007 | 29 | 1,406 | 1.15 | 0.4 | 22 / 26 | 231 / 231 | 231 / 231 (100.0 %) | 100.0 | 0.022 | 0 |
-| mp_10_tdm | 2,637 / 8,008 | 28 | 1,405 | 1.15 | 0.4 | 32 / 41 | 496 / 496 | 496 / 496 (100.0 %) | 100.0 | 0.022 | 0 |
+| mp_01 | 6,665 / 20,069 | 144 | 4,208 | 3.03 | 8.6 | 93 / 118 | 4278 / 4278 | 4278 / 4278 (100.0 %) | 95.9 | 0.186 | 0 |
+| mp_01_elimination | 4,467 / 12,950 | 62 | 1,930 | 1.51 | 1.1 | 24 / 26 | 276 / 276 | 276 / 276 (100.0 %) | 100.0 | 0.025 | 2 |
+| mp_02 | 7,454 / 19,661 | 126 | 4,438 | 3.48 | 2.5 | 64 / 90 | 2016 / 2016 | 1668 / 2016 (82.7 %) | 100.0 | 0.184 | 0 |
+| mp_02_koth | 3,084 / 7,867 | 58 | 1,775 | 1.41 | 0.8 | 19 / 22 | 171 / 171 | 171 / 171 (100.0 %) | 100.0 | 0.041 | 0 |
+| mp_02_koth2 | 2,640 / 6,815 | 65 | 1,845 | 1.28 | 1.3 | 17 / 19 | 136 / 136 | 136 / 136 (100.0 %) | 100.0 | 0.059 | 0 |
+| mp_03_elimination | 2,236 / 5,382 | 49 | 1,437 | 1.08 | 0.6 | 24 / 26 | 276 / 276 | 276 / 276 (100.0 %) | 100.0 | 0.02 | 0 |
+| mp_04 | 8,296 / 25,315 | 127 | 5,129 | 4.57 | 2.0 | 98 / 124 | 4753 / 4753 | 4753 / 4753 (100.0 %) | 100.0 | 0.167 | 0 |
+| mp_04_koth | 4,128 / 11,802 | 60 | 2,775 | 2.3 | 1.7 | 23 / 25 | 253 / 253 | 253 / 253 (100.0 %) | 100.0 | 0.042 | 0 |
+| mp_05_domination | 4,540 / 13,871 | 57 | 1,986 | 1.67 | 0.9 | 50 / 65 | 1176 / 1225 | 1176 / 1225 (96.0 %) | 96.4 | 0.068 | 0 |
+| mp_05_overrun | 4,469 / 13,756 | 56 | 1,905 | 1.65 | 0.9 | 28 / 35 | 378 / 378 | 378 / 378 (100.0 %) | 100.0 | 0.059 | 0 |
+| mp_05_tdm | 4,520 / 13,865 | 57 | 1,984 | 1.7 | 1.2 | 49 / 62 | 1128 / 1176 | 1128 / 1176 (95.9 %) | 96.1 | 0.063 | 0 |
+| mp_06_domination | 3,747 / 10,773 | 50 | 2,582 | 1.89 | 1.4 | 38 / 46 | 703 / 703 | 703 / 703 (100.0 %) | 95.0 | 0.043 | 0 |
+| mp_06_elimination | 3,752 / 10,784 | 51 | 2,578 | 1.89 | 1.3 | 25 / 27 | 300 / 300 | 300 / 300 (100.0 %) | 92.0 | 0.046 | 0 |
+| mp_06_overrun | 3,712 / 10,710 | 51 | 2,586 | 1.88 | 1.0 | 27 / 31 | 351 / 351 | 351 / 351 (100.0 %) | 92.6 | 0.055 | 0 |
+| mp_06_tdm | 3,747 / 10,773 | 50 | 2,582 | 1.89 | 1.4 | 37 / 43 | 666 / 666 | 666 / 666 (100.0 %) | 94.6 | 0.048 | 0 |
+| mp_07_koth | 1,758 / 5,751 | 23 | 816 | 0.76 | 0.8 | 28 / 30 | 378 / 378 | 378 / 378 (100.0 %) | 100.0 | 0.031 | 0 |
+| mp_08_domination | 3,849 / 8,673 | 104 | 2,064 | 1.5 | 1.3 | 34 / 44 | 561 / 561 | 561 / 561 (100.0 %) | 100.0 | 0.085 | 3 |
+| mp_08_overrun | 3,858 / 8,714 | 103 | 2,066 | 1.5 | 1.3 | 27 / 31 | 351 / 351 | 351 / 351 (100.0 %) | 100.0 | 0.069 | 3 |
+| mp_08_tdm | 3,849 / 8,673 | 104 | 2,064 | 1.5 | 0.9 | 34 / 41 | 561 / 561 | 561 / 561 (100.0 %) | 100.0 | 0.102 | 3 |
+| mp_09_domination | 3,497 / 9,907 | 65 | 1,847 | 1.39 | 1.1 | 47 / 58 | 1081 / 1081 | 1081 / 1081 (100.0 %) | 100.0 | 0.039 | 0 |
+| mp_09_elimination | 3,458 / 9,801 | 65 | 1,825 | 1.38 | 0.7 | 30 / 32 | 435 / 435 | 435 / 435 (100.0 %) | 100.0 | 0.055 | 0 |
+| mp_09_overrun | 3,457 / 9,787 | 65 | 1,833 | 1.37 | 1.0 | 25 / 29 | 300 / 300 | 300 / 300 (100.0 %) | 92.3 | 0.035 | 0 |
+| mp_09_tdm | 3,497 / 9,907 | 65 | 1,847 | 1.39 | 0.9 | 47 / 55 | 1081 / 1081 | 1081 / 1081 (100.0 %) | 100.0 | 0.039 | 0 |
+| mp_10_domination | 2,677 / 7,964 | 22 | 1,497 | 1.26 | 1.1 | 32 / 44 | 496 / 496 | 496 / 496 (100.0 %) | 89.8 | 0.034 | 0 |
+| mp_10_overrun | 2,677 / 7,963 | 23 | 1,498 | 1.26 | 1.3 | 22 / 26 | 231 / 231 | 231 / 231 (100.0 %) | 100.0 | 0.035 | 0 |
+| mp_10_tdm | 2,677 / 7,964 | 22 | 1,497 | 1.26 | 1.0 | 32 / 41 | 496 / 496 | 496 / 496 (100.0 %) | 88.9 | 0.033 | 0 |
 
 Not yet: rsnav's 32-bit x86 build for the OPFOR core (BOT_PLAN step 3), and a bot following a path in game.
 

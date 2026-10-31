@@ -10,17 +10,21 @@ reads a one-way edge as RSNV's drop kind and walks it.
 Rules (on the build's kept surfaces, per stage and pitch):
   - regions: kept surfaces joined to their 8 neighbours by a height step of at most navbuild.LINK_STEP (components;
     numpy labelling, no recursion);
-  - a candidate: a kept surface k of any region but the largest and at least DROP_MIN_AREA, a column up to DROP_REACH
-    away in one of 8 directions holding a kept surface n of a larger region DROP_MIN .. DROP_MAX below k, with no surface
+  - a candidate: a kept surface k of any region but the largest and at least DROP_MIN_AREA, a column at most DROP_REACH
+    away (metres, diagonals by their length: at 0.8 m pitch two cells straight, one diagonally) in one of 8 directions
+    holding a kept surface n of a larger region DROP_MIN .. DROP_MAX below k, with no surface
     in between from k's height + mohsoldier.STEP up to k's height + the soldier's height (no wall at the ledge), every
     column on the way holding a surface at or below k's height + mohsoldier.STEP (a column with none is one the
-    sampler's cast stopped in: inside solid geometry, 2026-10-30), and nothing above n in its own column below k's
-    height + the soldier's height (the landing is open);
+    sampler's cast stopped in: inside solid geometry, 2026-10-30), no column on the way whose surfaces within
+    mohsoldier.STEP of k's height are all capsule-blocked (a wall taller than the soldier: the sampler records only
+    its top, above the body range, and the floor at the ledge's height under it is too cramped for the capsule -
+    mp_09_overrun's links through a facade, 2026-10-31), and nothing above n in its own column below k's height + the
+    soldier's height (the landing is open);
   - floor within reach of a run off the ledge: the first column on the way with a surface DROP_MIN .. DROP_MAX below
     k (kept or not: floor too cramped for the capsule at a curb's foot is still floor to land on, mp_10's 0.5 m curbs)
     no farther out than the soldier runs (mohsoldier.RUN) while it falls that far, plus one cell; from there it walks
     to n (mp_09_overrun had a 1 m drop to a landing 2.8 m out with no floor before it, through a wall);
-  - a diagonal step blocked by a wall in either of the two straight columns beside it (a corner);
+  - a diagonal step blocked by a wall (either kind above) in either of the two straight columns beside it (a corner);
   - at most DROP_PER_PAIR links per pair of regions, DROP_SPACING apart, the shortest first.
 """
 import math
@@ -29,6 +33,7 @@ from collections import defaultdict
 import numpy as np
 
 import mohsoldier
+import navsample
 
 DROP_MIN = 0.5            # m: lower than this, a walk link (LINK_STEP) or the step rule joins the floors
 DROP_MAX = 3.0            # m: the highest ledge a soldier drops from (7.7 m/s at the landing; MOH's data has no soldier
@@ -112,8 +117,9 @@ def find(s, keep, link_step, pitch):
     largest = max(size, key=size.get)
     y = s.y.astype(np.float64)
     col = np.repeat(np.arange(s.nx * s.nz), np.diff(s.start[:s.nx * s.nz + 1]))
-    reach = max(1, int(math.ceil(DROP_REACH / pitch)))
+    reach = max(1, int(math.ceil(DROP_REACH / pitch)) + 1)
     head = mohsoldier.HEIGHT
+    blocked = navsample.BLOCKED | navsample.FAULT
     cands = defaultdict(list)                       # (upper region, lower region) -> [(horizontal distance, k, n)]
     small = max(1, int(math.ceil(DROP_MIN_AREA / (pitch * pitch))))
     for k in ks[lab[ks] != largest].tolist():
@@ -123,27 +129,40 @@ def find(s, keep, link_step, pitch):
         i, j = c % s.nx, c // s.nx
         yk = y[k]
 
+        def cramped(rng):
+            # floor at the ledge's height (within a step) only where the capsule does not fit, under something above
+            # the head: inside a wall whose surfaces in the body range the sampler never recorded (a mesh wall: only
+            # its top - mp_09_overrun's facades). Without anything overhead it is the cramped edge of open ground,
+            # which a soldier crosses (mp_10's 0.5 m curbs, 2026-10-31)
+            near = [m for m in rng if abs(y[m] - yk) <= mohsoldier.STEP]
+            return (bool(near) and all(s.flags[m] & blocked for m in near) and
+                    any(y[m] >= yk + head for m in rng))
+
         def wall(a, b):
             cc = b * s.nx + a
-            return any(yk + mohsoldier.STEP < y[m] < yk + head for m in range(s.start[cc], s.start[cc + 1]))
+            rng = range(s.start[cc], s.start[cc + 1])
+            return any(yk + mohsoldier.STEP < y[m] < yk + head for m in rng) or cramped(rng)
         for di, dj in DIRS:
             land = None                                     # how far out the first floor at drop height lies
             for r in range(1, reach + 1):
                 a, b = i + di * r, j + dj * r
-                if not (0 <= a < s.nx and 0 <= b < s.nz):
-                    break
+                dist = r * pitch * math.hypot(di, dj)
+                if dist > DROP_REACH + pitch * math.hypot(di, dj) + 1e-6 or not (0 <= a < s.nx and 0 <= b < s.nz):
+                    break                                   # DROP_REACH in metres to the first floor, the walkable
+                                                            # landing a cell past it at most (a curb's cramped foot)
                 cc = b * s.nx + a
                 rng = range(s.start[cc], s.start[cc + 1])
                 if not any(y[m] <= yk + mohsoldier.STEP for m in rng):
                     break                                   # no floor under the way: inside solid geometry
-                dist = r * pitch * math.hypot(di, dj)
+                if cramped(rng):
+                    break                                   # in a wall too tall for the sampled body range
                 if land is None and any(DROP_MIN <= yk - y[m] <= DROP_MAX for m in rng):
                     land = (dist, max(y[m] for m in rng if DROP_MIN <= yk - y[m] <= DROP_MAX))
                 hit = None
                 for n in rng:
                     if (keep[n] and lab[n] != lab[k] and size[int(lab[n])] > size[int(lab[k])] and
                             DROP_MIN <= yk - y[n] <= DROP_MAX and land is not None and
-                            land[0] <= run_reach(yk - land[1], pitch)):
+                            land[0] <= DROP_REACH + 1e-6 and land[0] <= run_reach(yk - land[1], pitch)):
                         if not any(y[n] + 0.1 < y[m] < yk + head for m in rng):   # the landing is open
                             hit = n
                             break

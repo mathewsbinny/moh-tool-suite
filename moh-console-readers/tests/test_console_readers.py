@@ -3,7 +3,11 @@ r"""The console readers on images built here:
 - xiso.py: XDVDFS discs with the partition at offset 0 and at the XGD3 offset; a directory tree (binary
   tree entries, a nested folder, an empty folder); list and extract, with a filter; no volume found;
 - stfs.py: STFS packages of both kinds (read-only: one hash table per level; others: two), with a
-  consecutive file, a fragmented file (hash-entry chain), a folder; info, list and extract, with a filter.
+  consecutive file, a fragmented file (hash-entry chain), a folder; info, list and extract, with a filter;
+- malformed images: a folder named '..' or a name with backslashes / a drive is refused by extract
+  (nothing written outside the output folder); a file past the end of the image and a folder that
+  contains itself (XDVDFS), an entry that is its own parent and two that point at each other (STFS)
+  end with an error instead of hanging.
 
 With --game, also the user's own Xbox 360 files when they are on this PC (else skipped): the disc image
 (the XGD2 game partition, default.xex) and the three Update packages: Onslaught path data from Update #2
@@ -147,6 +151,101 @@ def build_stfs(path, read_only):
             f.seek(base + (tables + b) * 0x1000)
             f.write(blob.ljust(0x1000, b'\0'))
     return files
+
+
+def stfs_package(path, table, blocks=()):
+    """A read-only STFS package: the file table (0x40-byte entries) in data block 0, then the given blocks."""
+    h = bytearray(0x1000)
+    h[0:4] = b'LIVE'
+    struct.pack_into('>I', h, 0x340, 0x971A)
+    h[0x37B] = 1
+    struct.pack_into('<H', h, 0x37C, 1)
+    base = (0x971A + 0xFFF) & ~0xFFF
+    with open(path, 'wb') as f:
+        f.write(h)
+        f.seek(base)
+        f.write(bytes(0x1000))                            # the level-0 hash table
+        for blob in (table, *blocks):
+            f.write(blob.ljust(0x1000, b'\0'))
+
+
+def stfs_entry(name, flags, start, count, parent, size):
+    e = bytearray(0x40)
+    e[:len(name)] = name.encode('latin-1')
+    e[0x28] = len(name) | flags
+    e[0x29:0x2C] = count.to_bytes(3, 'little')
+    e[0x2F:0x32] = start.to_bytes(3, 'little')
+    struct.pack_into('>H', e, 0x32, parent)
+    struct.pack_into('>I', e, 0x34, size)
+    return bytes(e)
+
+
+def plain_xiso(path, root, blobs):
+    """An XDVDFS image at offset 0: root table at sector 33, {sector: bytes} elsewhere, 48 sectors long."""
+    with open(path, 'wb') as f:
+        f.seek(32 * SECTOR)
+        f.write(xiso.MAGIC + struct.pack('<II', 33, len(root)))
+        f.seek(33 * SECTOR)
+        f.write(root)
+        for sec, blob in blobs.items():
+            f.seek(sec * SECTOR)
+            f.write(blob)
+        f.seek(48 * SECTOR - 1)
+        f.write(b'\0')
+
+
+def malformed_checks(c, work):
+    """Hostile names and broken tables: refused or reported, never written outside the folder, never a hang."""
+    def run(script, *args):
+        try:
+            return subprocess.run([sys.executable, os.path.join(ROOT, script, script + '.py'), *args],
+                                  capture_output=True, text=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            return None
+    for name in ('..', 'a\\..\\..', 'C:'):
+        tag = name.replace('\\', '_').replace(':', '_').replace('.', 'd')
+        box = os.path.join(work, f'evil_{tag}')
+        out = os.path.join(box, 'out')
+        os.makedirs(out)
+        iso = os.path.join(box, 'evil.iso')
+        sub = dir_table([('escaped.txt', 40, 5, 0x80)])
+        plain_xiso(iso, dir_table([(name, 34, len(sub), 0x10)]), {34: sub, 40: b'owned'})
+        r = run('xiso', 'extract', iso, out)
+        written = [os.path.join(d, f) for d, _, fs in os.walk(box) for f in fs if f == 'escaped.txt']
+        c.check(r is not None and r.returncode != 0 and 'escapes the output folder' in r.stderr and not written
+                and not os.path.exists(os.path.join(work, 'escaped.txt')) and not os.path.exists(r'C:\escaped.txt'),
+                f'xiso: a folder named "{name}" is refused, nothing written', r and (r.stdout + r.stderr) + str(written))
+        pkg = os.path.join(box, 'evil.stfs')
+        stfs_package(pkg, stfs_entry(name, 0x80, 0, 0, 0xFFFF, 0) + stfs_entry('escaped.txt', 0x40, 1, 1, 0, 5), [b'owned'])
+        r = run('stfs', 'extract', pkg, out)
+        written = [os.path.join(d, f) for d, _, fs in os.walk(box) for f in fs if f == 'escaped.txt']
+        c.check(r is not None and r.returncode != 0 and 'escapes the output folder' in r.stderr and not written
+                and not os.path.exists(os.path.join(work, 'escaped.txt')),
+                f'stfs: a folder named "{name}" is refused, nothing written', r and (r.stdout + r.stderr) + str(written))
+    good = os.path.join(work, 'good_names')
+    c.check(xiso.safe_dest(good, 'a/b.txt') == os.path.join(os.path.realpath(good), 'a', 'b.txt')
+            and stfs.safe_dest(good, 'x..y/z') == os.path.join(os.path.realpath(good), 'x..y', 'z'),
+            'xiso / stfs: ordinary names (dots inside a name included) extract under the output folder')
+
+    trunc = os.path.join(work, 'trunc.iso')
+    plain_xiso(trunc, dir_table([('big.bin', 40, 10_000_000, 0x80)]), {})
+    r = run('xiso', 'extract', trunc, os.path.join(work, 'trunc_out'))
+    c.check(r is not None and r.returncode != 0 and 'short of this file' in r.stderr
+            and not os.path.exists(os.path.join(work, 'trunc_out', 'big.bin')),
+            'xiso: a file running past the end of the image is an error, not a hang', r and r.stdout + r.stderr)
+    loop = os.path.join(work, 'loop.iso')
+    plain_xiso(loop, dir_table([('self', 33, 64, 0x10), ('f.txt', 40, 2, 0x80)]), {40: b'ok'})
+    r = run('xiso', 'list', loop)
+    c.check(r is not None and r.returncode == 0 and 'f.txt' in r.stdout, 'xiso: a folder that contains itself is listed once',
+            r and r.stdout + r.stderr)
+
+    for label, table in (('an entry its own parent', stfs_entry('d', 0x80, 0, 0, 0, 0)),
+                         ('two entries each other\'s parent', stfs_entry('a', 0x80, 0, 0, 1, 0) + stfs_entry('b', 0x80, 0, 0, 0, 0))):
+        pkg = os.path.join(work, 'loop.stfs')
+        stfs_package(pkg, table)
+        r = run('stfs', 'list', pkg)
+        c.check(r is not None and r.returncode != 0 and 'form a loop' in r.stderr, f'stfs: {label} is an error, not a hang',
+                r and r.stdout + r.stderr)
 
 
 def stfs_cli(*args):
@@ -370,6 +469,7 @@ def main(argv):
             code, out = stfs_cli('info', path)
             c.check(code == 0 and '4 entries' in out, f'stfs: info ({label})')
 
+        malformed_checks(c, work)
         apt_checks(c, work)
 
         if '--game' in argv:

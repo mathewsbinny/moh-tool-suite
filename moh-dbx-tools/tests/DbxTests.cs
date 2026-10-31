@@ -372,6 +372,19 @@ static class DbxTests
         Check(ed.SetField(G1, "Scale".Replace("Scale", "One"), "2.5") && Value(f, G1, "One") == "2.5", "setfield: decimal");
         Check(ed.SetField(G1, "Name", "New/Name") && Value(f, G1, "Name") == "New/Name", "setfield: text");
         Check(!ed.SetField(G1, "Missing", "1"), "setfield: no such field");
+        // typed like the present value (as the window and the import encode it): a decimal field set to a whole
+        // number stays a decimal; exponent notation is a decimal; an integer field stays an integer
+        f = Sample().Reload();
+        ed = new Editor(f);
+        Check(ed.SetField(G1, "Scale", "2") && Value(f, G1, "Scale") == "2"
+              && BigEndian.U32(Field(f, G1, "Scale").Payload, 2) == BitConverter.ToUInt32(BitConverter.GetBytes(2f), 0),
+              "setfield: a decimal field set to 2 holds the decimal 2.0, not the integer bits 00000002");
+        Check(ed.SetField(G1, "One", "1E-05") && Value(f, G1, "One") == "1E-05", "setfield: 1E-05 is a decimal");
+        Check(ed.SetField(G1, "Count", "3") && BigEndian.U32(Field(f, G1, "Count").Payload, 2) == 3, "setfield: an integer field stays an integer");
+        Check(ed.SetField(G1, "Enabled", "false") && Value(f, G1, "Enabled") == "false", "setfield: a bool field");
+        bool refused = false;
+        try { ed.SetField(G1, "Count", "many"); } catch (InvalidDataException) { refused = true; }
+        Check(refused, "setfield: a value the field cannot hold is refused");
         ed.SetPartitionGuid(G4);
         Check(f.Get(f.TopLevel[0], "guid") == G4, "partguid");
         f = Sample().Reload();
@@ -492,6 +505,15 @@ static class DbxTests
         Check(code == 2 && o.Contains("unknown command"), "edit: unknown command exit code 2");
         o = RunExe("xml \"" + a + "\"", out code);
         Check(code == 0 && File.Exists(Path.ChangeExtension(a, ".xml")) && o.Contains("converted 1 file(s)"), "xml");
+        string folder = Path.Combine(temp, "xmlfolder");
+        Directory.CreateDirectory(folder);
+        File.WriteAllBytes(Path.Combine(folder, "good.dbx"), Sample().Bytes());
+        File.WriteAllText(Path.Combine(folder, "plain.dbx"), "<?xml version=\"1.0\"?>\r\n<partition />\r\n");
+        File.WriteAllBytes(Path.Combine(folder, "broken.dbx"), Encoding.ASCII.GetBytes("{binary}\0\0\0\x7f garbage"));
+        o = RunExe("xml \"" + folder + "\"", out code);
+        Check(code == 1 && o.Contains("converted 1 file(s)") && o.Contains("skipped 1 not binary DBX") && o.Contains("1 FAILED")
+              && o.Contains("broken.dbx") && !File.Exists(Path.Combine(folder, "plain.xml")),
+              "xml: a file that fails gives exit code 1; a non-binary file is skipped, not counted (" + o.Trim() + ")");
         o = RunExe("import \"" + Path.ChangeExtension(a, ".xml") + "\" \"" + b + "\"", out code);
         Check(code == 0 && File.ReadAllBytes(b).SequenceEqual(File.ReadAllBytes(a)), "import (original next to the XML) gives the original back");
         o = RunExe("roundtrip \"" + a + "\"", out code);
@@ -527,6 +549,39 @@ static class DbxTests
         Check(File.ReadAllBytes(saved).SequenceEqual(cli.Serialize()), "window: saving an edit gives the command line's bytes");
         Call(w, "Undo");
         Check(((DbxFile)Field(w, "doc")).Serialize().SequenceEqual(File.ReadAllBytes(file)), "window: undo restores the original");
+        Check((bool)Field(w, "modified"), "window: edit, save, undo - the file differs from the saved one again (closing asks)");
+        Call(w, "Save", saved);
+        Check(!(bool)Field(w, "modified"), "window: saved again - unmodified");
+
+        // the edit script replays what the window did: a decimal field set to a whole number
+        var script = (List<string>)Field(w, "script");
+        doc = (DbxFile)Field(w, "doc");
+        inst = tree.Nodes[0].Nodes[0];
+        inst.Expand();
+        tree.SelectedNode = inst.Nodes.Cast<System.Windows.Forms.TreeNode>().First(n => doc.Get((Element)n.Tag, "name") == "Scale");
+        ((System.Windows.Forms.TextBox)Field(w, "value")).Text = "2";
+        Call(w, "ApplyEdit");
+        string line = script.LastOrDefault() ?? "";
+        var replay = Sample().Reload();
+        string[] p = line.StartsWith("setfield=") ? line.Substring(9).Split('|') : new string[0];
+        Check(p.Length == 3 && new Editor(replay).SetField(p[0], p[1], p[2])
+              && replay.Serialize().SequenceEqual(((DbxFile)Field(w, "doc")).Serialize()),
+              "window: the script's setfield for a decimal set to 2 replays to the same bytes (" + line + ")");
+        Call(w, "Undo");
+
+        // an edit of an attribute only (a reference) has no command form: a comment, not a setfield that drops it
+        doc = (DbxFile)Field(w, "doc");
+        var other = tree.Nodes[0].Nodes[1];
+        other.Expand();
+        tree.SelectedNode = other.Nodes.Cast<System.Windows.Forms.TreeNode>().First(n => doc.Get((Element)n.Tag, "name") == "Partner");
+        var grid = (System.Windows.Forms.DataGridView)Field(w, "attributes");
+        var refRow = grid.Rows.Cast<System.Windows.Forms.DataGridViewRow>().First(r => Convert.ToString(r.Cells[0].Value) == "ref");
+        refRow.Cells[1].Value = G3;
+        Call(w, "ApplyEdit");
+        line = script.LastOrDefault() ?? "";
+        Check(line.StartsWith("# edited") && line.Contains("ref=\"" + G3 + "\"") && !line.Contains("setfield="),
+              "window: a changed reference is noted as a comment line (" + line + ")");
+        Check(((DbxFile)Field(w, "doc")).Get(((DbxFile)Field(w, "doc")).Instance(G2).Children[0], "ref") == G3, "window: the reference changed");
         w.GetType().GetField("modified", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(w, false);
         w.Close();
     }

@@ -242,7 +242,7 @@ def load(level, opfor=None, terrain_stride=2, log=print, geometry=True):
     except Exception as e:                    # no terrain bundle, FbrbTool missing, unexpected layout
         lvl.notes.append(f'terrain height field not read: {e}')
     try:
-        lvl.water = water.read(os.path.join(root, 'work', 'levels', lv, 'terrain'), terrain_name(f.instances) or lv)
+        lvl.water = water_in(root, lv, terrain_name(f.instances) or lv)
     except Exception as e:
         lvl.notes.append(f'water not read: {e}')
     if lvl.heightfield is not None:
@@ -385,13 +385,50 @@ def water_of(root, lv, log=print):
                 part = part or f
     name = (terrain_name(dbx.read(part).instances) if part else None) or lv
     heightfield_of(root, lv, log, name)                  # unpacks the terrain bundle when it is not there yet
-    return water.read(os.path.join(root, 'work', 'levels', lv, 'terrain'), name)
+    return water_in(root, lv, name)
+
+
+def water_in(root, lv, name):
+    """The water of terrain <name> from the unpacked terrain layers: the patch's copy (terrain.patch) first, as the
+    game loads its entries over the base's (water.py, test_water.py); then the base layer's. None when neither has
+    water files. (2026-10-31: only work\\levels\\<lv>\\terrain was read, so a patched base level got the base's
+    water.)"""
+    dest = os.path.join(root, 'work', 'levels', lv, 'terrain')
+    for d in (dest + '.patch', dest):
+        if os.path.isdir(d):
+            w = water.read(d, name)
+            if w is not None:
+                return w
+    return None
+
+
+def unpack_once(tool, bundle, d):
+    """Unpacks a bundle into folder d unless d is there: into d + '.tmp' first, renamed to d when FbrbTool
+    succeeds and deleted when it fails, so an interrupted or failed unpack never leaves a partial folder that is
+    taken as unpacked from then on (2026-10-31). tool: FbrbTool.exe's path, or a command list. A failure raises
+    RuntimeError with FbrbTool's output."""
+    import shutil
+    import subprocess
+    if os.path.isdir(d):
+        return False
+    tmp = d + '.tmp'
+    shutil.rmtree(tmp, ignore_errors=True)               # left by an earlier run that was stopped
+    cmd = (list(tool) if isinstance(tool, (list, tuple)) else [tool]) + ['unpack', bundle, tmp]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, errors='replace')
+        if r.returncode != 0:
+            out = ' / '.join(l.strip() for l in (r.stdout + '\n' + r.stderr).splitlines() if l.strip())
+            raise RuntimeError(f'FbrbTool unpack {os.path.basename(bundle)} failed (exit {r.returncode}): '
+                               f'{out[-800:] or "no output"}')
+        os.replace(tmp, d)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return True
 
 
 def heightfield_of(root, lv, log=print, name=None):
     """The level's terrain height field, unpacking its terrain-00.fbrb into work\\levels\\<lv>\\terrain once.
     name: from terrain_name(); read from the level partition if not given."""
-    import subprocess
     import navkit
     if name is None:
         part = None
@@ -411,7 +448,7 @@ def heightfield_of(root, lv, log=print, name=None):
         if not os.path.isdir(d):
             log(f'{lv}: unpacking {os.path.relpath(bundle, root)}')
             tool = tool or navkit.find_tool(root, 'FbrbTool.exe', 'moh-fbrb-tool')
-            subprocess.run([tool, 'unpack', bundle, d], check=True, capture_output=True)
+            unpack_once(tool, bundle, d)
         path = path or terrain.find(d, name)
     if path is None:
         return None

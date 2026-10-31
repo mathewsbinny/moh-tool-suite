@@ -1,5 +1,5 @@
 r"""navtune.py, the navigation side files (no game data): every operation kind saves and loads unchanged, undo
-and redo, removing one operation, author and time are recorded (the PC's name by default), invalid
+and redo (a removal undone in place), removing one operation, author and time are recorded (the PC's name by default), invalid
 operations are refused with a reason, a DICE base refuses region edits, the base file's hash is checked,
 and a newer format version is refused.
 
@@ -59,6 +59,24 @@ def main(argv):
         check(not t.redo_stack, 'a new edit clears what could be redone')
         removed = t.remove(0)
         check(removed['op'] == 'walkable' and t.operations[0]['op'] == 'unwalkable', 'one operation removed from the middle of the list')
+        # 2026-10-31: undo after a removal puts the removed operation back where it was (it used to drop the last
+        # edit instead, and the removed one was lost); redo removes it again, and earlier actions undo in order
+        before = [o['op'] for o in t.operations]
+        mid = t.operations[3]
+        t.remove(3)
+        undone = t.undo()
+        check(undone is mid and t.operations[3] is mid and [o['op'] for o in t.operations] == before,
+              'undo after a removal puts it back at its place (not the last edit removed)')
+        t.redo()
+        check(len(t.operations) == len(before) - 1 and mid not in t.operations, 'redo removes it again')
+        t.undo(); t.undo()
+        check([o['op'] for o in t.operations] == ['walkable'] + before and t.undo_stack[-1][0] == 'add',
+              'undo again: both removals undone in order (the first one at index 0), the adds next')
+        t.redo(); t.redo()
+        check(len(t.operations) == len(before) - 1 and not t.redo_stack, 'and redo replays both')
+        t.save(p)
+        check(json.load(open(p))['operations'] == t.operations and set(json.load(open(p))) == set(t.to_json()),
+              'the file format is unchanged (operations only; undo history not saved)')
         check(all(isinstance(t.summary(k), str) for k in range(len(t.operations))), 'every operation has a summary line')
 
         bad = [nt.op('fly', at=(0, 0, 0)), {'op': 'seed'}, nt.op('route-edge', a=(0, 0, 0), b=(1, 1, 1), action='swap'),
