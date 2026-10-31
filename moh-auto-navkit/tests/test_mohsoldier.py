@@ -104,7 +104,7 @@ def main(argv):
         import navkit
         try:
             root = navkit.find_opfor(None)
-        except Exception:                   # no OPFOR next to the suite: the game check is skipped
+        except navkit.NavKitError:          # no OPFOR next to the suite: the game check is skipped
             root = None
     diff = ms.differences(root) if root else None
     if diff is None:

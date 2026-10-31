@@ -9,13 +9,14 @@ Any XML-matching code should go through instances() and field_ref() rather than 
 elements (<complex name=...>, <array name=...>, <item ref=...>) are not affected."""
 import re
 import struct
+from collections.abc import Iterator
 
 _INSTANCE = re.compile(r'<instance\b([^>]*)>(.*?)</instance>', re.S)
 _ATTR = re.compile(r'(\w+)="([^"]*)"')
 _FIELD = re.compile(r'<field\b([^>]*?)/?>')
 
 
-def instances(text, type_suffix=None):
+def instances(text: str, type_suffix: str | None = None) -> Iterator[tuple[str, str, str]]:
     """(type, guid, body) of each <instance> in document order; with type_suffix, only those whose type ends with
     it (e.g. 'Entity.ReferenceObjectData', '.SoldierSpawnEntityData')."""
     for m in _INSTANCE.finditer(text):
@@ -29,7 +30,7 @@ ROTATION_SLOTS = (0, 1, 2, 4, 5, 6, 8, 9, 10)     # of a 4 x 4 transform's 16 va
 DENORMAL_MIN = 1000                               # an integer token at least this big in a rotation slot is a denormal's bits
 
 
-def transform(text):
+def transform(text: str) -> list[float]:
     """A 4 x 4 transform's 16 values from its XML text ('a/b/.../p'), as floats - or several, for an array of them.
 
     DbxEdit writes a 4-byte value whose top byte is 0 as an integer (DBX numbers carry no type), so a denormal float
@@ -38,7 +39,7 @@ def transform(text):
     across the whole map and cut its route network in two (NavKit, 2026-10-30). Here such a token in a rotation slot is
     reinterpreted as the float its bits are."""
     toks = text.split('/')
-    out = []
+    out: list[float] = []
     for k, t in enumerate(toks):
         if (k % 16) in ROTATION_SLOTS and t.isdigit() and DENORMAL_MIN <= int(t) < (1 << 24):
             out.append(struct.unpack('<f', struct.pack('<I', int(t)))[0])
@@ -47,7 +48,7 @@ def transform(text):
     return out
 
 
-def field_ref(body, name):
+def field_ref(body: str, name: str) -> str | None:
     """The ref attribute of the first field named <name> that has one, whatever the attribute order (DICE: ref then
     name; Napisal: name then ref); None when there is none."""
     for m in _FIELD.finditer(body):

@@ -110,7 +110,7 @@ def band_of(d):
 
 
 def level_report(root, lv, candidate, log=print):
-    from mohcore import level as levelmod, terrain as terrainmod, water as watermod
+    from mohcore import level as levelmod, water as watermod
     ref = navparity.reference_of(root, lv)
     name = None
     for b in ('pkg', 'dist'):

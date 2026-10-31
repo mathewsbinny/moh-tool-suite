@@ -852,7 +852,6 @@ def _apply(pr, lv, navtune_path, out, log):
     sys.path.insert(0, os.path.join(HERE, '..', 'core'))
     from mohcore import navtune
     import navbuild
-    import navregress
     import hpdtool
     navtune_path = navtune_path or navtune.default_path(pr.root, lv)
     if not os.path.isfile(navtune_path):
@@ -886,8 +885,8 @@ def _apply(pr, lv, navtune_path, out, log):
         log(f'== apply {lv}: {len(tune.operations)} edit(s) on a copy of DICE\'s file -> {os.path.relpath(out, pr.root)} '
             f'(for this PC only)')
         if tune.base_changed(src):
-            log(f'  note: DICE\'s file is not the one the edits were made on (another game version?); the edits are '
-                f'by position and are applied, but check them')
+            log('  note: DICE\'s file is not the one the edits were made on (another game version?); the edits are '
+                'by position and are applied, but check them')
         shutil.copyfile(src, out)
     if graph:
         before = _sha256(out)

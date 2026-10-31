@@ -7,7 +7,7 @@ import os
 import sys
 
 
-def levels():
+def levels() -> list[tuple[str, str]]:
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'moh-auto-navkit'))
     import navkit
     pr = navkit.Project()
@@ -19,7 +19,7 @@ def levels():
     return out
 
 
-def pick_level(title):
+def pick_level(title: str) -> str | None:
     import tkinter as tk
     from tkinter import messagebox, ttk
     try:
@@ -36,12 +36,12 @@ def pick_level(title):
         pass
     try:
         items = levels()
-    except Exception as e:
+    except Exception as e:                              # noqa: BLE001 - GUI boundary: any failure to list the levels
         messagebox.showerror(title, f'No game copy found: {e}\nPut the suite next to the project-opfor-moh folder (with its game\\ copy), '
                                     f'or set OPFOR_ROOT.')
         root.destroy()
         return None
-    chosen = []
+    chosen: list[str] = []
     ttk.Label(root, text='Choose a level to open:', padding=(10, 10, 10, 4)).pack(anchor='w')
     tree = ttk.Treeview(root, columns=('state',), selectmode='browse', height=16)
     tree.heading('#0', text='Level')
@@ -52,7 +52,7 @@ def pick_level(title):
         tree.insert('', 'end', iid=lv, text=lv, values=(state,))
     tree.pack(fill='both', expand=True, padx=10)
 
-    def ok(*_):
+    def ok(*_: object) -> None:
         sel = tree.selection()
         if sel:
             chosen.append(sel[0])

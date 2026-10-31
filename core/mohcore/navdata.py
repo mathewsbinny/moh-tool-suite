@@ -19,11 +19,15 @@ import json
 import os
 import pickle
 import sys
+import zipfile
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import List
+from typing import Any, BinaryIO
 
 import numpy as np
+
+from .terrain import Heightfield
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', '..', 'moh-auto-navkit', 'tools'))
@@ -44,20 +48,21 @@ LADDER_SLOPE = 1.5                          # ... and more than this many metres
 class NavArea:
     sector: int
     index: int                              # within its sector
-    tile: tuple
+    tile: tuple[int, int]
     layer: int
     pitch: float
     min_y: float
     max_y: float
-    outline: List[np.ndarray] = field(default_factory=list)      # polylines (ground + 0.95 m)
-    portals: List[tuple] = field(default_factory=list)           # (p0, p1, target area index in the sector)
-    borders: List[tuple] = field(default_factory=list)           # (p0, p1)
+    outline: list[np.ndarray] = field(default_factory=list)      # polylines (ground + 0.95 m)
+    # (p0, p1, target area index in the sector)
+    portals: list[tuple[np.ndarray, np.ndarray, int]] = field(default_factory=list)
+    borders: list[tuple[np.ndarray, np.ndarray]] = field(default_factory=list)       # (p0, p1)
     island: int = -1                                             # index into NavData.islands
     cells: int = 0
     ladder: bool = False                                         # ground reached only through a ladder link
 
     @property
-    def detailed(self):
+    def detailed(self) -> bool:
         return self.pitch < DETAILED
 
 
@@ -72,7 +77,7 @@ class Island:
 @dataclass
 class NavData:
     path: str
-    areas: List[NavArea]
+    areas: list[NavArea]
     cell_xz: np.ndarray                     # (n, 2) cell centres
     cell_y: np.ndarray                      # (n,) ground height
     cell_area: np.ndarray                   # (n,) index into areas
@@ -81,15 +86,15 @@ class NavData:
     edges: np.ndarray                       # (k, 2) node indices, source -> destination
     edge_cost: np.ndarray                   # (k,) metres, as stored (the tag's floor(distance * 16) / 16)
     node_island: np.ndarray                 # (m,) index into islands
-    islands: List[Island]
-    ladder_edge: np.ndarray = None          # (k,) bool: the edge is a ladder link (LADDER_DY / LADDER_SLOPE)
+    islands: list[Island]
+    ladder_edge: np.ndarray | None = None   # (k,) bool: the edge is a ladder link (LADDER_DY / LADDER_SLOPE)
 
     @property
-    def sectors(self):
+    def sectors(self) -> list[int]:
         return sorted({a.sector for a in self.areas})
 
 
-def _terrain_id(heightfield):
+def _terrain_id(heightfield: Heightfield | None) -> str:
     """A fingerprint of a height field's content (its bounds and samples), kept on the object."""
     if heightfield is None:
         return 'est'
@@ -105,13 +110,13 @@ def _terrain_id(heightfield):
     return fp
 
 
-def _key(path, heightfield=None):
+def _key(path: str, heightfield: Heightfield | None = None) -> str:
     st = os.stat(path)
     hf = _terrain_id(heightfield)
     return hashlib.sha1(f'{CACHE_VERSION}|{os.path.abspath(path).lower()}|{st.st_size}|{st.st_mtime_ns}|{hf}'.encode()).hexdigest()[:20]
 
 
-def _ground(xz, est, heightfield):
+def _ground(xz: np.ndarray, est: np.ndarray, heightfield: Heightfield | None) -> np.ndarray:
     """Cell heights: the terrain height field's where the cell lies on terrain (within 1.5 m of navdiff's
     estimate), else the estimate."""
     if heightfield is None or not len(xz):
@@ -120,7 +125,7 @@ def _ground(xz, est, heightfield):
     return np.where(np.abs(t - est) < 1.5, t, est)
 
 
-def _write_atomic(path, write):
+def _write_atomic(path: str, write: Callable[[BinaryIO], object]) -> None:
     """write(file object) into path + '.tmp', then renamed over path: an interrupted write leaves no half file."""
     tmp = path + '.tmp'
     try:
@@ -132,7 +137,8 @@ def _write_atomic(path, write):
             os.remove(tmp)
 
 
-def _cells(f, heightfield, cache_dir, path):
+def _cells(f: Any, heightfield: Heightfield | None, cache_dir: str | None,
+           path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     if cache_dir:
         cp = os.path.join(cache_dir, _key(path) + '.npz')
         if os.path.isfile(cp):
@@ -142,7 +148,7 @@ def _cells(f, heightfield, cache_dir, path):
                 with np.load(cp) as z:
                     xz, est, area = z['xz'], z['est'], z['area']
                 return xz, _ground(xz, est, heightfield), area, est
-            except Exception:
+            except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
                 pass
     xz, ys, area_of = [], [], []
     k = 0
@@ -165,7 +171,7 @@ def _cells(f, heightfield, cache_dir, path):
     return xz, y, area, est
 
 
-def load(path, heightfield=None, cache_dir=None):
+def load(path: str, heightfield: Heightfield | None = None, cache_dir: str | None = None) -> NavData:
     """The file as NavData. With cache_dir, the whole result is kept there per file (and per height source), so
     opening a level again takes about a second."""
     if cache_dir:
@@ -179,7 +185,7 @@ def load(path, heightfield=None, cache_dir=None):
                     nav = pickle.load(fh)
                 nav.path = os.path.abspath(path)
                 return nav
-            except Exception:
+            except Exception:   # noqa: BLE001 - unpickling a damaged or stale entry can raise almost anything
                 pass                                         # an unreadable cache entry is rebuilt
         nav = _load(os.path.abspath(path), heightfield, cache_dir)
         os.makedirs(cache_dir, exist_ok=True)
@@ -188,7 +194,7 @@ def load(path, heightfield=None, cache_dir=None):
     return _load(path, heightfield, None)
 
 
-def _load(path, heightfield, cache_dir):
+def _load(path: str, heightfield: Heightfield | None, cache_dir: str | None) -> NavData:
     f = hpdtool.parse(open(path, 'rb').read())
     areas = []
     for s in f.sectors:
@@ -219,7 +225,7 @@ def _load(path, heightfield, cache_dir):
     edges = np.array(edges, dtype=np.int64).reshape(-1, 2)
     parent = np.arange(len(pos))
 
-    def find(a):
+    def find(a: int) -> int:
         while parent[a] != a:
             parent[a] = parent[parent[a]]
             a = parent[a]
@@ -239,7 +245,7 @@ def _load(path, heightfield, cache_dir):
         ladder_edge = np.zeros(0, bool)
     walk = np.arange(len(pos))
 
-    def wfind(a):
+    def wfind(a: int) -> int:
         while walk[a] != a:
             walk[a] = walk[walk[a]]
             a = walk[a]
@@ -293,17 +299,17 @@ def _load(path, heightfield, cache_dir):
                    node_island, islands, ladder_edge)
 
 
-def compare_cells(cand, ref):
+def compare_cells(cand: NavData, ref: NavData) -> tuple[np.ndarray, np.ndarray]:
     """Per cell of each file: True where the other file has the same ground (navdiff's rule: the same 0.8 m
     cell; one floor on each side is the same ground, stacked floors pair by height within 4 m)."""
-    def keyed(nav):
+    def keyed(nav: NavData) -> np.ndarray:
         ij = np.round(nav.cell_xz / GRID).astype(np.int64)
         return (ij[:, 0] + 50_000) * 100_000 + (ij[:, 1] + 50_000)
 
     kc, kr = keyed(cand), keyed(ref)
     yc, yr = np.asarray(cand.cell_y, np.float64), np.asarray(ref.cell_y, np.float64)
 
-    def same(keys, y, okeys, oy):
+    def same(keys: np.ndarray, y: np.ndarray, okeys: np.ndarray, oy: np.ndarray) -> np.ndarray:
         """For each (key, y): does the other file have the key, and (one floor each) or a floor within STACK_TOL?"""
         uk, counts = np.unique(keys, return_counts=True)
         mine_n = counts[np.searchsorted(uk, keys)]
@@ -326,7 +332,7 @@ def compare_cells(cand, ref):
     return same(kc, yc, kr, yr), same(kr, yr, kc, yc)
 
 
-def summary(nav):
+def summary(nav: NavData) -> dict[str, int]:
     return {'areas': len(nav.areas), 'detailed areas': sum(a.detailed for a in nav.areas), 'cells': int(len(nav.cell_xz)),
             'nodes': int(len(nav.node_pos)), 'edges': int(len(nav.edges)), 'islands': len(nav.islands),
             'large islands (25+ nodes)': sum(i.nodes >= 25 for i in nav.islands), 'sectors': len(nav.sectors),

@@ -19,9 +19,12 @@ import sys
 import threading
 import traceback
 import warnings
+from collections.abc import Iterator
+from types import TracebackType
+from typing import Any
 
 KEEP = 20
-_state = {'tool': None, 'path': None, 'gui': True}
+_state: dict[str, Any] = {'tool': None, 'path': None, 'gui': True}
 
 # (test on the error, the cause in words, what to do)
 CAUSES = [
@@ -51,25 +54,25 @@ CAUSES = [
 PIP_NAMES = {'imgui_bundle': 'imgui-bundle', 'PIL': 'pillow', 'capstone': 'capstone', 'pefile': 'pefile'}
 
 
-def log_dir():
+def log_dir() -> str:
     base = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')
     d = os.path.join(base, 'moh-tool-suite', 'logs')
     os.makedirs(d, exist_ok=True)
     return d
 
 
-def explain(e):
+def explain(e: BaseException) -> tuple[str, str]:
     """(cause, what to do) for an exception, in words; a generic pair when it is not a known case."""
     for test, cause, fix in CAUSES:
         try:
             if test(e):
                 return cause(e), fix(e)
-        except Exception:
+        except Exception:                       # noqa: BLE001 - a test failing on an odd error must not stop the report
             continue
     return f'{type(e).__name__}: {e}', 'If it happens again, send the log file to the tool\'s author.'
 
 
-def setup(tool, gui=True, level=logging.INFO):
+def setup(tool: str, gui: bool = True, level: int = logging.INFO) -> logging.Logger:
     """The tool's log file, warnings into it, and uncaught errors (main thread and others) logged and reported."""
     _state.update(tool=tool, gui=gui)
     stamp = datetime.date.today().isoformat()
@@ -94,7 +97,7 @@ def setup(tool, gui=True, level=logging.INFO):
     return log
 
 
-def _prune(tool):
+def _prune(tool: str) -> None:
     # only this tool's own logs, <tool>-<YYYY-MM-DD>.log as setup() names them: a glob of '<tool>-*.log' also took
     # another tool's whose name starts with this one's ('navkit' pruned 'navkit-gui-...' and kept too few of its own)
     own = re.compile(re.escape(tool) + r'-\d{4}-\d{2}-\d{2}\.log', re.IGNORECASE)
@@ -106,11 +109,12 @@ def _prune(tool):
             pass
 
 
-def logger():
+def logger() -> logging.Logger:
     return logging.getLogger('moh')
 
 
-def report(e, tb=None, where=None, show=True):
+def report(e: BaseException, tb: TracebackType | None = None, where: str | None = None,
+           show: bool = True) -> str | None:
     """Logs an error with its traceback and tells the user (a window for GUI tools, else a short message)."""
     tool = _state['tool'] or 'tool'
     cause, fix = explain(e)
@@ -123,7 +127,7 @@ def report(e, tb=None, where=None, show=True):
     return _state['path']
 
 
-def warn(message, show=False):
+def warn(message: str, show: bool = False) -> None:
     """A warning: logged, printed, and shown in a window when show is set (GUI tools)."""
     logger().warning(message)
     print(f'warning: {message}', file=sys.stderr)
@@ -131,7 +135,7 @@ def warn(message, show=False):
         _window(f'{_state["tool"] or "tool"} - warning', message, kind='warning')
 
 
-def _window(title, text, kind='error'):
+def _window(title: str, text: str, kind: str = 'error') -> None:
     try:
         import tkinter as tk
         from tkinter import messagebox
@@ -143,12 +147,12 @@ def _window(title, text, kind='error'):
         (messagebox.showerror if kind == 'error' else messagebox.showwarning)(title, text, parent=root)
         if own:
             root.destroy()
-    except Exception:
+    except Exception:                           # noqa: BLE001 - the window is best effort (no tkinter, no display)
         pass                                    # no display: the message was printed and logged
 
 
 @contextlib.contextmanager
-def guard(tool=None, gui=None):
+def guard(tool: str | None = None, gui: bool | None = None) -> Iterator[None]:
     """Around a tool's main(): any error is logged and reported, and the tool exits with code 1."""
     if tool and _state['tool'] != tool:
         setup(tool, gui if gui is not None else True)
@@ -159,6 +163,6 @@ def guard(tool=None, gui=None):
     except KeyboardInterrupt:
         logger().info('stopped (Ctrl+C)')
         raise SystemExit(130)
-    except BaseException as e:
+    except BaseException as e:                  # noqa: BLE001 - the tool's top level: every error is reported
         report(e)
         raise SystemExit(1)

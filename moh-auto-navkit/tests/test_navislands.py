@@ -6,7 +6,6 @@ as they were.
 
   python test_navislands.py
 """
-import math
 import os
 import sys
 

@@ -7,7 +7,6 @@ sectors are sampled (detailed.py); a level without 0.8 m samples gets its 0.8 m 
 the build need them). --smoke: that level first; if it fails, nothing else runs (a broken sampler stops the night's
 run at once). Other failures are logged and the run goes on. A summary at the end.
 """
-import functools
 import os
 import sys
 import time

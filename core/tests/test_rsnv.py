@@ -215,7 +215,7 @@ def corruptions(sections, header, tmp):
             out.append((what, None))
         except ValueError as e:
             out.append((what, str(e)))
-        except Exception as e:                   # a crash, not a refusal
+        except Exception as e:  # noqa: BLE001 - test harness: anything but ValueError is a recorded crash
             out.append((what, f'CRASH {type(e).__name__}: {e}'))
     return out
 
@@ -342,7 +342,7 @@ if __name__ == '__main__':
                 w.nearest_node(k, 1.0, 1.0)
         except ValueError:
             refused += 1
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - test harness: anything but ValueError is a recorded crash
             crashes.append(f'{type(e).__name__}: {e}')
     check(not crashes, f'3,000 random byte corruptions: {refused} refused, the rest loaded and searched, '
                        f'{len(crashes)} crashes {crashes[:2]}')

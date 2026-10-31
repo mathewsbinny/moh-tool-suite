@@ -52,7 +52,6 @@ tanks, crates) and static vehicles, whose 'e' is their only collision - and the 
 Clean room: only the level's data files are read (Havok packfiles through hkpack.py, the height field through
 core's terrain.py); no game code runs.
 """
-import glob
 import json
 import math
 import os
@@ -873,7 +872,7 @@ def capsule_blocked(grid, cols, ys, tris, bottoms, hf=None, radius=RADIUS, heigh
     skey = key[o]
     if len(tris):
         a = tris
-        xs, zs, yy = a[:, :, 0], a[:, :, 2], a[:, :, 1]
+        xs, zs = a[:, :, 0], a[:, :, 2]
         i0, i1 = _ranges(xs.min(1) - radius, xs.max(1) + radius, grid.min_x, grid.pitch, grid.nx)
         j0, j1 = _ranges(zs.min(1) - radius, zs.max(1) + radius, grid.min_z, grid.pitch, grid.nz)
         diff = {b: np.zeros(len(ys) + 1, np.int64) for b in bottoms}
@@ -1274,7 +1273,7 @@ def stock_mp(root, levels=None, log=print, steps=ALL_STEPS):
                 report[lv] = r
                 json.dump(report, open(rep_path, 'w'), indent=1)
             r['ok'] = True
-        except Exception as e:           # one map's failure does not stop the batch
+        except Exception as e:  # noqa: BLE001 - batch boundary: one map's failure (any step) does not stop the batch
             import traceback
             r['ok'] = False
             r['error'] = f'{type(e).__name__}: {e}'
@@ -1304,7 +1303,6 @@ def parity(root, levels, name='offline', log=print):
     """For levels with in-game samples (and DICE path data): offline samples on the in-game files' grids, NavKit
     built from each, and the measures: navdiff of the offline build against the in-game build (same code, only the
     samples differ), and navparity of both against DICE's file. Saved as work\\navkit_offline\\parity_<name>.json."""
-    import shutil
     import navdiff
     import navparity
     import navregress

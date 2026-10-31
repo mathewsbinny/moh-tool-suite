@@ -1,6 +1,6 @@
 r"""Runs the suite's tests: one line per test, the failures' output at the end, exit code 1 if any failed.
 
-  python run_tests.py [quick | game | full] [--only <name>] [--list]
+  python run_tests.py [quick | game | full] [--only <name>] [--list] [--coverage]
 
   quick   no game data, about a minute: repository rules, DbxEdit unit tests, and on files built by the
           tests: FbrbTool, LevelDiff, the crash reader and exeref, the console readers, the menu tools, the test
@@ -17,6 +17,10 @@ r"""Runs the suite's tests: one line per test, the failures' output at the end, 
           1-2 hours)
 
 Run `quick` before every commit and `game` before every push; `full` after changes to a format reader.
+
+--coverage runs the Python tests under coverage.py (pyproject.toml [tool.coverage]: the suite's own modules, branch
+coverage, the tools the tests start as their own processes included) and writes .coverage-data\report.txt (per file)
+and .coverage-data\html\index.html. Needs coverage==7.17.0 (pyproject.toml's dev dependencies).
 """
 import os
 import subprocess
@@ -56,6 +60,7 @@ def tests():
     """(name, tier, argv). Game paths are only looked up for the tiers that need them."""
     t = [
         ('repository rules', 'quick', [PY, os.path.join(SUITE, 'tests', 'test_repo.py')]),
+        ('lint policy (ruff: unused names, blind excepts)', 'quick', [PY, os.path.join(SUITE, 'tests', 'test_lint.py')]),
         ('DbxEdit unit tests', 'quick', ['cmd', '/c', os.path.join(SUITE, 'moh-dbx-tools', 'tests', 'run_tests.bat')]),
         ('FbrbTool build', 'quick', ['cmd', '/c', os.path.join(SUITE, 'moh-fbrb-tool', 'build.bat')]),
         ('FbrbTool round trip, built bundle', 'quick', [PY, os.path.join(SUITE, 'core', 'tests', 'test_fbrb.py')]),
@@ -164,12 +169,26 @@ def main(argv):
         for name, t, _ in chosen:
             print(f'{t:6s} {name}')
         return 0
+    cover = '--coverage' in argv
+    if cover:
+        try:
+            import coverage  # noqa: F401 - only whether it is installed
+        except ImportError:
+            return refuse('--coverage needs coverage.py', 'python -m pip install coverage==7.17.0', 2)
+        cdir = os.path.join(SUITE, '.coverage-data')
+        if os.path.isdir(cdir):
+            for f in os.listdir(cdir):
+                if f.startswith('.coverage'):
+                    os.remove(os.path.join(cdir, f))
+        os.makedirs(cdir, exist_ok=True)
     root = opfor() if any(callable(a) or t != 'quick' for _, t, a in chosen) else None
     print(f'MOH Tool Suite tests: {tier}, {len(chosen)} test(s)' + (f', OPFOR at {root}' if root else ''))
     failures, start = [], time.time()
     for name, t, args in chosen:
         if callable(args):
             args = args(root)
+        if cover and args[0] == PY and len(args) > 1 and args[1].endswith('.py'):
+            args = [PY, '-m', 'coverage', 'run', '--rcfile', os.path.join(SUITE, 'pyproject.toml')] + args[1:]
         t0 = time.time()
         r = subprocess.run(args, capture_output=True, text=True, encoding='utf-8', errors='replace', cwd=SUITE)
         out = (r.stdout + r.stderr).strip()
@@ -183,7 +202,22 @@ def main(argv):
         print(f'\n--- {name} (last 25 lines) ---')
         print('\n'.join(out.splitlines()[-25:]))
     print(f'\n{len(chosen) - len(failures)} of {len(chosen)} passed in {time.time() - start:.0f} s')
+    if cover:
+        coverage_report()
     return 1 if failures else 0
+
+
+def coverage_report():
+    # the run's coverage data combined: .coverage-data\report.txt and html\, the total printed
+    rc = ['--rcfile', os.path.join(SUITE, 'pyproject.toml')]
+    cov = [PY, '-m', 'coverage']
+    subprocess.run(cov + ['combine'] + rc, cwd=SUITE, capture_output=True)
+    rep = subprocess.run(cov + ['report'] + rc, cwd=SUITE, capture_output=True, text=True)
+    path = os.path.join(SUITE, '.coverage-data', 'report.txt')
+    open(path, 'w', encoding='utf-8').write(rep.stdout)
+    subprocess.run(cov + ['html'] + rc, cwd=SUITE, capture_output=True)
+    total = next((ln.split()[-1] for ln in rep.stdout.splitlines() if ln.startswith('TOTAL')), 'no data')
+    print(f"coverage: {total} of the suite's lines and branches (.coverage-data\\report.txt, html\\index.html)")
 
 
 if __name__ == '__main__':

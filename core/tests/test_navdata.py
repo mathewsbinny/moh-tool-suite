@@ -76,7 +76,7 @@ def cache_checks(check):
         try:
             xz, y, area, est = navdata._cells(NoSectors(), None, cache, hpd)
             ok = len(xz) == 0 and open(cp, 'rb').read() == good
-        except Exception as ex:
+        except Exception as ex:  # noqa: BLE001 - test harness: any failure is recorded in the check
             ok = f'{type(ex).__name__}: {ex}'
         check(ok is True, f'a truncated cells cache entry is rebuilt, not an error ({ok})')
         check(not [f for f in os.listdir(cache) if f.endswith('.tmp')], 'cache entries leave no temporary file')

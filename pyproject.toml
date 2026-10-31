@@ -1,0 +1,63 @@
+# MOH Tool Suite - the Python side's dependencies and checks. The suite is run from its folder (run_tests.py, the
+# hub, each tool's own script); it is not installed as a package. The C# tools build with each folder's build.bat.
+#
+#   python -m pip install -r <(this file's [project] dependencies)   or simply: python -m pip install -e .[dev]
+#   python -m ruff check .                    the lint policy below (run_tests.py quick runs it)
+#   python run_tests.py quick --coverage      the quick tier under coverage: .coverage-data\report.txt and html\
+
+[project]
+name = "moh-tool-suite"
+version = "2026.10.31"
+description = "Clean-room tools for Medal of Honor (2010) modding and Project OPFOR's offline bots"
+requires-python = ">=3.13"
+# exact pins: the versions the suite is tested with (2026-10-31); NavKit's builds are byte-for-byte reproducible only
+# with the same numpy
+dependencies = [
+    "numpy==2.5.4",
+    "matplotlib==3.11.2",        # NavKit's pictures and the studio's 2D views
+    "pillow==12.3.0",            # screenshots in the error reports and the 3D tools' tests
+    "moderngl==5.13.0",          # the 3D tools (Map Inspector, Navigation Studio)
+    "imgui-bundle==1.92.900",    # the 3D tools' panels
+    "glfw==2.11.0",              # the 3D tools' windows (through imgui-bundle; the hub checks it)
+    "pefile==2024.8.26",         # the crash reader and exeref (MoHMPGame.exe)
+    "capstone==5.0.9",           # the crash reader's code view
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff==0.17.3",
+    "coverage==7.17.0",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+extend-exclude = ["research"]
+
+[tool.ruff.lint]
+# F: pyflakes (unused imports and variables, undefined names, f-strings without fields), E9: syntax errors,
+# BLE: blind `except Exception` - allowed only at a real boundary, marked `# noqa: BLE001` with the reason beside it
+# (a GUI's top level, an optional side file, a test that reports any failure as a check)
+select = ["F", "E9", "BLE"]
+
+[tool.ruff.lint.per-file-ignores]
+# the scripts put their own folders on sys.path before importing the suite's modules
+"**/*.py" = ["E402"]
+
+[tool.coverage.run]
+branch = true
+source = ["core", "moh-auto-navkit", "moh-automated-map-and-bot-test-harness", "moh-console-readers",
+          "moh-menu-tools", "moh-navigation-studio", "moh-map-inspector", "moh-stockmp-ai", "moh-config",
+          "moh-diff-workbench"]
+omit = ["*/tests/*", "research/*"]
+parallel = true
+patch = ["subprocess"]          # the tools the tests start as their own Python processes are measured too
+data_file = ".coverage-data/.coverage"
+
+[tool.coverage.report]
+skip_empty = true
+show_missing = false
+precision = 1
+
+[tool.coverage.html]
+directory = ".coverage-data/html"

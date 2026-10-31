@@ -448,9 +448,47 @@ def walkable(s, forbid_tris=None, slope=mohsoldier.SLOPE, step=mohsoldier.STEP, 
     ny = np.maximum(s.normal[:, 1], 0.05)
     gx_all, gz_all = -s.normal[:, 0] / ny, -s.normal[:, 2] / ny
     stair = np.zeros(len(y), bool)
-    terrain = (s.hit[:, 0] == TERRAIN_SHAPE_VTABLE) if s.hit is not None else np.ones(len(y), bool)
+    terrain, clear, character = clearance(s, soldier_points, dynamic_tris, exclude_tris)
+    ok = clear & (s.normal[:, 1] >= math.cos(math.radians(slope)) - 0.01) & ~character
+    if STEEP_TERRAIN:
+        gx_all, gz_all = accept_steep_terrain(s, ok, terrain, clear, character, slope, gx_all, gz_all)
+    if LIP_WIDTH and s.pitch < 0.5:
+        gx_all, gz_all = accept_lips(s, ok, terrain, clear, character, slope, gx_all, gz_all)
+    on_stair = np.zeros(len(y), bool)
+    if stair_tris is not None and len(stair_tris):
+        # staircase objects: surfaces on / right beside them are not blocked by the staircase itself
+        on_stair = near_objects(s, stair_tris, grow=0.4, below=0.6, above=0.6) & ~terrain & ((s.flags & 2) == 0)
+    if stairs:
+        stair, gx_all, gz_all = accept_stairs(s, ok, terrain, on_stair, slope, high_capsule, gx_all, gz_all)
+    onf = on_objects(s, forbid_tris, tol=forbid_tol)
+    slope_ok = s.normal[:, 1] >= math.cos(math.radians(slope)) - 0.01
+    ok = object_rules(s, ok, onf, slope_ok, terrain, character, dynamic_tris, exclude_tris, exclude_footprint_tris,
+                      raised_bars, narrow_capsule)
+    ok &= ~character                    # last, before hand edits: the stair / landing / bar rules above re-added 68 of
+                                        # sp_004_b's 468 soldier surfaces as floor (2026-10-19)
+    if OBJECTIVE_FLOOR and objective_points and onf.any():
+        ok |= objective_floor(s, onf, ok, character, slope_ok, objective_points)
+    if force_walkable is not None:
+        ok |= force_walkable
+    if force_unwalkable is not None:
+        ok &= ~force_unwalkable
+    keep = connected_floor(s, ok, terrain, terrain_seeds_only, extra_seeds, ladders, gx_all, gz_all, stair, step)
+    drop_unseeded(s, keep, unseeds, gx_all, gz_all, stair, step)
+    if ROOF_PRUNE:
+        anchor_k = roof_anchors(s, ok, keep, anchors, ladders)
+        drop = roof_islands(s, keep, gx_all, gz_all, stair, step, terrain, anchor_k)
+        keep &= ~drop
+    if return_gradients:
+        return (keep, gx_all, gz_all, stair) if return_stairs else (keep, gx_all, gz_all)
+    return keep
+
+
+def clearance(s, soldier_points, dynamic_tris, exclude_tris):
+    """(terrain, clear, character) per surface: terrain hits, capsule clearance with absent things not blocking, soldiers."""
+    n = len(s.y)
+    terrain = (s.hit[:, 0] == TERRAIN_SHAPE_VTABLE) if s.hit is not None else np.ones(n, bool)
     clear = (s.flags & 3) == 0
-    character = (s.hit[:, 0] == CHARACTER_SHAPE_VTABLE) if (s.hit is not None and CHARACTERS_ABSENT) else np.zeros(len(y), bool)
+    character = (s.hit[:, 0] == CHARACTER_SHAPE_VTABLE) if (s.hit is not None and CHARACTERS_ABSENT) else np.zeros(n, bool)
     if character.any():
         clear |= near_characters(s, character) & ((s.flags & 2) == 0)
     if soldier_points is not None and len(soldier_points) and CHARACTERS_ABSENT:
@@ -463,107 +501,102 @@ def walkable(s, forbid_tris=None, slope=mohsoldier.SLOPE, step=mohsoldier.STEP, 
     if exclude_tris is not None and len(exclude_tris):
         # excluded objects do not block clearance; their upper parts are not floor
         clear |= near_objects(s, exclude_tris) & ((s.flags & 2) == 0)
-    ok = clear & (s.normal[:, 1] >= math.cos(math.radians(slope)) - 0.01) & ~character
-    if STEEP_TERRAIN:
-        steep = terrain & clear & ~character & ~ok & (s.normal[:, 1] >= math.cos(math.radians(STEEP_TERRAIN_MAX)))
-        if steep.any():
-            r = max(1, int(round(STEEP_TERRAIN_SPAN / s.pitch)))
-            gs_t, tgx, tgz = stair_slope(s, steep, r=r, tol=max(0.7, 1.2 * r * s.pitch))
-            accept = steep & (gs_t <= slope)
-            ok |= accept
-            # the link rule predicts steps from these gradients: the heights', not the steep normals'
-            gx_all = np.where(accept, tgx, gx_all)
-            gz_all = np.where(accept, tgz, gz_all)
-            STEEP_STATS['accepted'] = STEEP_STATS.get('accepted', 0) + int(accept.sum())
-            STEEP_STATS['candidates'] = STEEP_STATS.get('candidates', 0) + int(steep.sum())
-    if LIP_WIDTH and s.pitch < 0.5:
-        steep_c = clear & ~character & ~ok & (s.normal[:, 1] >= math.cos(math.radians(STEEP_TERRAIN_MAX)))
-        lips = narrow_lips(s, ok, terrain & steep_c, slope, LIP_WIDTH)
-        if LIP_OBJECT_RISE is not None:
-            # on objects any steepness: the height limit alone keeps it to sills (an aircraft door sill's sides are
-            # steeper than 55 deg - sp_009's aft cabin stayed cut off under the terrain cap)
-            obj_c = ~terrain & clear & ~character & ~ok
-            lips |= narrow_lips(s, ok, obj_c & steep_c, slope, LIP_WIDTH, rise=LIP_OBJECT_RISE)
-            if not LIP_OBJECT_SLOPE_MAX:
-                # steeper than STEEP_TERRAIN_MAX: only between flat floors (a door sill's sides; a rock mesh meeting
-                # sloped terrain is not a sill - sp_007's cliff top joined the level through one, 2026-10-22)
-                lips |= narrow_lips(s, ok, obj_c & ~steep_c, slope, LIP_WIDTH, rise=LIP_OBJECT_RISE,
-                                    flat=LIP_OBJECT_FLAT)
-        if lips.any():
-            _gs, lgx, lgz = stair_slope(s, lips)
-            ok |= lips
-            gx_all = np.where(lips, lgx, gx_all)
-            gz_all = np.where(lips, lgz, gz_all)
-        STEEP_STATS['lips'] = STEEP_STATS.get('lips', 0) + int(lips.sum())
-    on_stair = np.zeros(len(y), bool)
-    if stair_tris is not None and len(stair_tris):
-        # staircase objects: surfaces on / right beside them are not blocked by the staircase itself
-        on_stair = near_objects(s, stair_tris, grow=0.4, below=0.6, above=0.6) & ~terrain & ((s.flags & 2) == 0)
-    if stairs:
-        cand = ~terrain & ((s.flags & 2) == 0)
-        gs, hgx, hgz = stair_slope(s, cand)
-        stair = cand & (gs >= 12) & (gs <= slope)
-        stair_obj = on_stair & (gs <= 45)
-        ok |= stair_obj
-        stair |= stair_obj & (gs >= 12)
-        hi = matched_flags(s, high_capsule) if high_capsule is not None else s.flags
-        # landings: object surfaces within two samples of a stair surface on the same level also take the
-        # high-capsule clearance (the normal capsule touches the top steps / rail ends there)
-        landing = np.zeros(len(y), bool)
-        col_of_l = np.repeat(np.arange(s.nx * s.nz), np.diff(s.start))
-        for k in np.nonzero(stair)[0]:
-            c = col_of_l[k]
-            i, j = c % s.nx, c // s.nx
-            for dj in range(-2, 3):
-                for di in range(-2, 3):
-                    a, b = i + di, j + dj
-                    if 0 <= a < s.nx and 0 <= b < s.nz:
-                        cc = b * s.nx + a
-                        for n in range(s.start[cc], s.start[cc + 1]):
-                            if cand[n] and abs(y[n] - y[k]) <= 0.9:
-                                landing[n] = True
-        ok |= (stair | (landing & (s.normal[:, 1] >= math.cos(math.radians(slope)) - 0.01))) & ((hi & 3) == 0)
-        # on stairs the treads are flat: take the incline from the neighbour heights, not the tread normals
-        gx_all = np.where(stair, hgx, gx_all)
-        gz_all = np.where(stair, hgz, gz_all)
-    onf = on_objects(s, forbid_tris, tol=forbid_tol)
-    slope_ok = s.normal[:, 1] >= math.cos(math.radians(slope)) - 0.01
-    col_of_w = np.repeat(np.arange(s.nx * s.nz), np.diff(s.start))
+    return terrain, clear, character
 
-    def same_layer(i, j, yref, tol=0.7):
-        if not (0 <= i < s.nx and 0 <= j < s.nz):
-            return []
-        c = j * s.nx + i
-        return [n for n in range(s.start[c], s.start[c + 1]) if abs(y[n] - yref) <= tol]
-    if raised_bars:
-        # a forbidden object's raised bar (barrier arm, low overhang) 0.7..1.9 m above the ground within one
-        # sample does not block clearance there; the bar itself stays forbidden (onf)
-        bar = np.zeros(len(y), bool)
-        for k in np.nonzero(onf & ~terrain)[0]:
-            c = col_of_w[k]
-            i, j = c % s.nx, c // s.nx
-            for dj in (-1, 0, 1):
-                for di in (-1, 0, 1):
-                    a, b = i + di, j + dj
-                    if not (0 <= a < s.nx and 0 <= b < s.nz):
-                        continue
+
+def accept_steep_terrain(s, ok, terrain, clear, character, slope, gx_all, gz_all):
+    """STEEP_TERRAIN: adds steep terrain within the slope limit over its heights to ok (in place); returns the gradients."""
+    steep = terrain & clear & ~character & ~ok & (s.normal[:, 1] >= math.cos(math.radians(STEEP_TERRAIN_MAX)))
+    if steep.any():
+        r = max(1, int(round(STEEP_TERRAIN_SPAN / s.pitch)))
+        gs_t, tgx, tgz = stair_slope(s, steep, r=r, tol=max(0.7, 1.2 * r * s.pitch))
+        accept = steep & (gs_t <= slope)
+        ok |= accept
+        # the link rule predicts steps from these gradients: the heights', not the steep normals'
+        gx_all = np.where(accept, tgx, gx_all)
+        gz_all = np.where(accept, tgz, gz_all)
+        STEEP_STATS['accepted'] = STEEP_STATS.get('accepted', 0) + int(accept.sum())
+        STEEP_STATS['candidates'] = STEEP_STATS.get('candidates', 0) + int(steep.sum())
+    return gx_all, gz_all
+
+
+def accept_lips(s, ok, terrain, clear, character, slope, gx_all, gz_all):
+    """LIP_WIDTH: adds narrow steep lips (terrain, sills on objects) to ok (in place); returns the gradients."""
+    steep_c = clear & ~character & ~ok & (s.normal[:, 1] >= math.cos(math.radians(STEEP_TERRAIN_MAX)))
+    lips = narrow_lips(s, ok, terrain & steep_c, slope, LIP_WIDTH)
+    if LIP_OBJECT_RISE is not None:
+        # on objects any steepness: the height limit alone keeps it to sills (an aircraft door sill's sides are
+        # steeper than 55 deg - sp_009's aft cabin stayed cut off under the terrain cap)
+        obj_c = ~terrain & clear & ~character & ~ok
+        lips |= narrow_lips(s, ok, obj_c & steep_c, slope, LIP_WIDTH, rise=LIP_OBJECT_RISE)
+        if not LIP_OBJECT_SLOPE_MAX:
+            # steeper than STEEP_TERRAIN_MAX: only between flat floors (a door sill's sides; a rock mesh meeting
+            # sloped terrain is not a sill - sp_007's cliff top joined the level through one, 2026-10-22)
+            lips |= narrow_lips(s, ok, obj_c & ~steep_c, slope, LIP_WIDTH, rise=LIP_OBJECT_RISE,
+                                flat=LIP_OBJECT_FLAT)
+    if lips.any():
+        _gs, lgx, lgz = stair_slope(s, lips)
+        ok |= lips
+        gx_all = np.where(lips, lgx, gx_all)
+        gz_all = np.where(lips, lgz, gz_all)
+    STEEP_STATS['lips'] = STEEP_STATS.get('lips', 0) + int(lips.sum())
+    return gx_all, gz_all
+
+
+def accept_stairs(s, ok, terrain, on_stair, slope, high_capsule, gx_all, gz_all):
+    """The stair rule: adds stair and landing surfaces to ok (in place); returns (stair, gradients)."""
+    cand = ~terrain & ((s.flags & 2) == 0)
+    gs, hgx, hgz = stair_slope(s, cand)
+    stair = cand & (gs >= 12) & (gs <= slope)
+    stair_obj = on_stair & (gs <= 45)
+    ok |= stair_obj
+    stair |= stair_obj & (gs >= 12)
+    hi = matched_flags(s, high_capsule) if high_capsule is not None else s.flags
+    landing = stair_landings(s, stair, cand)
+    ok |= (stair | (landing & (s.normal[:, 1] >= math.cos(math.radians(slope)) - 0.01))) & ((hi & 3) == 0)
+    # on stairs the treads are flat: take the incline from the neighbour heights, not the tread normals
+    gx_all = np.where(stair, hgx, gx_all)
+    gz_all = np.where(stair, hgz, gz_all)
+    return stair, gx_all, gz_all
+
+
+def stair_landings(s, stair, cand):
+    """Landings (bool per surface): candidate surfaces within two samples of a stair surface on the same level."""
+    # landings: object surfaces within two samples of a stair surface on the same level also take the
+    # high-capsule clearance (the normal capsule touches the top steps / rail ends there)
+    y = s.y.astype(float)
+    landing = np.zeros(len(y), bool)
+    col_of_l = np.repeat(np.arange(s.nx * s.nz), np.diff(s.start))
+    for k in np.nonzero(stair)[0]:
+        c = col_of_l[k]
+        i, j = c % s.nx, c // s.nx
+        for dj in range(-2, 3):
+            for di in range(-2, 3):
+                a, b = i + di, j + dj
+                if 0 <= a < s.nx and 0 <= b < s.nz:
                     cc = b * s.nx + a
                     for n in range(s.start[cc], s.start[cc + 1]):
-                        if 0.7 <= y[k] - y[n] <= mohsoldier.HEADROOM and (s.flags[n] & 2) == 0:
-                            bar[n] = True
-        ok |= bar & slope_ok & ~onf
+                        if cand[n] and abs(y[n] - y[k]) <= 0.9:
+                            landing[n] = True
+    return landing
+
+
+def same_layer(s, y, i, j, yref, tol=0.7):
+    """The surfaces of column (i, j) within tol of height yref ([] off the grid)."""
+    if not (0 <= i < s.nx and 0 <= j < s.nz):
+        return []
+    c = j * s.nx + i
+    return [n for n in range(s.start[c], s.start[c + 1]) if abs(y[n] - yref) <= tol]
+
+
+def object_rules(s, ok, onf, slope_ok, terrain, character, dynamic_tris, exclude_tris, exclude_footprint_tris,
+                 raised_bars, narrow_capsule):
+    """The object rules on ok: raised bars, narrow passages, forbidden / dynamic / excluded objects, headroom, dynamic floor."""
+    y = s.y.astype(float)
+    if raised_bars:
+        ok |= raised_bar_floor(s, onf, terrain) & slope_ok & ~onf
     if narrow_capsule is not None:
-        # narrow passages: blocked for the normal capsule, clear for the narrow one, with walkable floor on the
-        # same level on opposite sides (left/right or front/back)
-        nf = matched_flags(s, narrow_capsule)
-        base = ok.copy()
-        for k in np.nonzero(~base & ((nf & 3) == 0) & slope_ok & ((s.flags & 2) == 0) & ~onf)[0]:
-            c = col_of_w[k]
-            i, j = c % s.nx, c // s.nx
-            for (d1, d2) in (((1, 0), (-1, 0)), ((0, 1), (0, -1)), ((1, 1), (-1, -1)), ((1, -1), (-1, 1))):
-                if any(base[n] for n in same_layer(i + d1[0], j + d1[1], y[k])) and                         any(base[n] for n in same_layer(i + d2[0], j + d2[1], y[k])):
-                    ok[k] = True
-                    break
+        narrow_passages(s, ok, onf, slope_ok, narrow_capsule)
     ok &= ~onf
     ondyn = on_objects(s, dynamic_tris) if dynamic_tris is not None and len(dynamic_tris) else np.zeros(len(y), bool)
     if ondyn.any() or (dynamic_tris is not None and len(dynamic_tris)):
@@ -580,24 +613,69 @@ def walkable(s, forbid_tris=None, slope=mohsoldier.SLOPE, step=mohsoldier.STEP, 
     if HEADROOM_BAND is not None:
         ok &= ~low_headroom(s, (character | ondyn) if DYNAMIC_ABSENT_HEADROOM else character, *HEADROOM_BAND)
     if DYNAMIC_FLOOR is not None and ondyn.any():
-        base = ok.copy()
-        for k in np.nonzero(ondyn & ((s.flags & 2) == 0) & slope_ok & ~onf)[0]:
-            c = col_of_w[k]
-            i, j = c % s.nx, c // s.nx
-            # not where the column has its own floor just under the prop
-            if any(not ondyn[n] and 0 < y[k] - y[n] <= DYNAMIC_FLOOR for n in range(s.start[c], s.start[c + 1])):
-                continue
-            if any(base[n] for di in (-1, 0, 1) for dj in (-1, 0, 1) if di or dj
-                   for n in same_layer(i + di, j + dj, y[k], DYNAMIC_FLOOR)):
+        dynamic_floor(s, ok, ondyn, onf, slope_ok)
+    return ok
+
+
+def raised_bar_floor(s, onf, terrain):
+    """Surfaces 0.7 m..HEADROOM under a forbidden object's surface within one sample (bool per surface)."""
+    # a forbidden object's raised bar (barrier arm, low overhang) 0.7..1.9 m above the ground within one
+    # sample does not block clearance there; the bar itself stays forbidden (onf)
+    y = s.y.astype(float)
+    col_of_w = np.repeat(np.arange(s.nx * s.nz), np.diff(s.start))
+    bar = np.zeros(len(y), bool)
+    for k in np.nonzero(onf & ~terrain)[0]:
+        c = col_of_w[k]
+        i, j = c % s.nx, c // s.nx
+        for dj in (-1, 0, 1):
+            for di in (-1, 0, 1):
+                a, b = i + di, j + dj
+                if not (0 <= a < s.nx and 0 <= b < s.nz):
+                    continue
+                cc = b * s.nx + a
+                for n in range(s.start[cc], s.start[cc + 1]):
+                    if 0.7 <= y[k] - y[n] <= mohsoldier.HEADROOM and (s.flags[n] & 2) == 0:
+                        bar[n] = True
+    return bar
+
+
+def narrow_passages(s, ok, onf, slope_ok, narrow_capsule):
+    """Adds to ok (in place) the narrow-capsule surfaces with walkable floor on opposite sides on the same level."""
+    # narrow passages: blocked for the normal capsule, clear for the narrow one, with walkable floor on the
+    # same level on opposite sides (left/right or front/back)
+    y = s.y.astype(float)
+    col_of_w = np.repeat(np.arange(s.nx * s.nz), np.diff(s.start))
+    nf = matched_flags(s, narrow_capsule)
+    base = ok.copy()
+    for k in np.nonzero(~base & ((nf & 3) == 0) & slope_ok & ((s.flags & 2) == 0) & ~onf)[0]:
+        c = col_of_w[k]
+        i, j = c % s.nx, c // s.nx
+        for (d1, d2) in (((1, 0), (-1, 0)), ((0, 1), (0, -1)), ((1, 1), (-1, -1)), ((1, -1), (-1, 1))):
+            if (any(base[n] for n in same_layer(s, y, i + d1[0], j + d1[1], y[k]))
+                    and any(base[n] for n in same_layer(s, y, i + d2[0], j + d2[1], y[k]))):
                 ok[k] = True
-    ok &= ~character                    # last, before hand edits: the stair / landing / bar rules above re-added 68 of
-                                        # sp_004_b's 468 soldier surfaces as floor (2026-10-19)
-    if OBJECTIVE_FLOOR and objective_points and onf.any():
-        ok |= objective_floor(s, onf, ok, character, slope_ok, objective_points)
-    if force_walkable is not None:
-        ok |= force_walkable
-    if force_unwalkable is not None:
-        ok &= ~force_unwalkable
+                break
+
+
+def dynamic_floor(s, ok, ondyn, onf, slope_ok):
+    """DYNAMIC_FLOOR: adds to ok (in place) the dynamic-prop surfaces next to walkable floor at their height."""
+    y = s.y.astype(float)
+    col_of_w = np.repeat(np.arange(s.nx * s.nz), np.diff(s.start))
+    base = ok.copy()
+    for k in np.nonzero(ondyn & ((s.flags & 2) == 0) & slope_ok & ~onf)[0]:
+        c = col_of_w[k]
+        i, j = c % s.nx, c // s.nx
+        # not where the column has its own floor just under the prop
+        if any(not ondyn[n] and 0 < y[k] - y[n] <= DYNAMIC_FLOOR for n in range(s.start[c], s.start[c + 1])):
+            continue
+        if any(base[n] for di in (-1, 0, 1) for dj in (-1, 0, 1) if di or dj
+               for n in same_layer(s, y, i + di, j + dj, y[k], DYNAMIC_FLOOR)):
+            ok[k] = True
+
+
+def connected_floor(s, ok, terrain, terrain_seeds_only, extra_seeds, ladders, gx_all, gz_all, stair, step):
+    """The kept surfaces (bool per surface): ok surfaces the step rule joins to a seed, then across ladder links."""
+    y = s.y.astype(float)
     col_of = np.repeat(np.arange(s.nx * s.nz), np.diff(s.start))
     per_i = {i for i in range(s.nx) if round((s.min_x + i * s.pitch) % SECTOR, 1) in (1.6, 98.4)}
     per_j = {j for j in range(s.nz) if round((s.min_z + j * s.pitch) % SECTOR, 1) in (1.6, 98.4)}
@@ -620,48 +698,66 @@ def walkable(s, forbid_tris=None, slope=mohsoldier.SLOPE, step=mohsoldier.STEP, 
             if not keep[n]:
                 keep[n] = True
                 q.append(n)
+
     def flood():
-        while q:
-            k = q.popleft()
-            c = col_of[k]
-            i, j = c % s.nx, c // s.nx
-            for dj in (-1, 0, 1):
-                for di in (-1, 0, 1):
-                    a, b = i + di, j + dj
-                    if not (di or dj) or not (0 <= a < s.nx and 0 <= b < s.nz):
-                        continue
-                    cc = b * s.nx + a
-                    for n in range(s.start[cc], s.start[cc + 1]):
-                        if keep[n] or not ok[n]:
-                            continue
-                        if step_fits(y[n] - y[k], (gx_all[k], gz_all[k]), (gx_all[n], gz_all[n]), stair[k], stair[n],
-                                     di, dj, s.pitch, step):
-                            keep[n] = True
-                            q.append(n)
+        flood_step_rule(s, y, col_of, q, keep, ok, gx_all, gz_all, stair, step)
     flood()
     if ladders:
-        # ladder links: a ladder whose one end stands on kept ground seeds the walkable surface at its other end (a roof
-        # or deck reached only by the ladder - no step joins it, so no seed reached it); repeated until no ladder adds
-        # ground (ladders in a chain). ladder_ends gives the end surfaces.
-        done = set()
-        changed = True
-        while changed:
-            changed = False
-            for li, lad in enumerate(ladders):
-                if li in done:
+        ladder_links(s, ok, keep, q, ladders, flood)
+    return keep
+
+
+def flood_step_rule(s, y, col_of, q, keep, ok, gx_all, gz_all, stair, step):
+    """Grows keep (in place) from the queued surfaces to every ok neighbour the step rule joins."""
+    while q:
+        k = q.popleft()
+        c = col_of[k]
+        i, j = c % s.nx, c // s.nx
+        for dj in (-1, 0, 1):
+            for di in (-1, 0, 1):
+                a, b = i + di, j + dj
+                if not (di or dj) or not (0 <= a < s.nx and 0 <= b < s.nz):
                     continue
-                foot, top = ladder_ends(s, ok, keep, lad)
-                kf, kt = foot is not None and keep[foot], top is not None and keep[top]
-                far = top if kf and not kt else foot if kt and not kf else None
-                if far is None:
-                    if kf and kt:
-                        done.add(li)
-                    continue
-                keep[far] = True
-                q.append(far)
-                flood()
-                done.add(li)
-                changed = True
+                cc = b * s.nx + a
+                for n in range(s.start[cc], s.start[cc + 1]):
+                    if keep[n] or not ok[n]:
+                        continue
+                    if step_fits(y[n] - y[k], (gx_all[k], gz_all[k]), (gx_all[n], gz_all[n]), stair[k], stair[n],
+                                 di, dj, s.pitch, step):
+                        keep[n] = True
+                        q.append(n)
+
+
+def ladder_links(s, ok, keep, q, ladders, flood):
+    """Seeds (in place) the far end of every ladder with one end on kept ground, flooding from it, until none adds."""
+    # ladder links: a ladder whose one end stands on kept ground seeds the walkable surface at its other end (a roof
+    # or deck reached only by the ladder - no step joins it, so no seed reached it); repeated until no ladder adds
+    # ground (ladders in a chain). ladder_ends gives the end surfaces.
+    done = set()
+    changed = True
+    while changed:
+        changed = False
+        for li, lad in enumerate(ladders):
+            if li in done:
+                continue
+            foot, top = ladder_ends(s, ok, keep, lad)
+            kf, kt = foot is not None and keep[foot], top is not None and keep[top]
+            far = top if kf and not kt else foot if kt and not kf else None
+            if far is None:
+                if kf and kt:
+                    done.add(li)
+                continue
+            keep[far] = True
+            q.append(far)
+            flood()
+            done.add(li)
+            changed = True
+
+
+def drop_unseeded(s, keep, unseeds, gx_all, gz_all, stair, step):
+    """Hand edits: drops from keep (in place) the island each unseed point lies on."""
+    y = s.y.astype(float)
+    col_of = np.repeat(np.arange(s.nx * s.nz), np.diff(s.start))
     for (sx, sy, sz) in (unseeds or ()):
         # drop the island the point is on: the kept surface at or just below it, and all kept surfaces it
         # connects to by the same step rule
@@ -693,24 +789,24 @@ def walkable(s, forbid_tris=None, slope=mohsoldier.SLOPE, step=mohsoldier.STEP, 
                             drop.add(n)
                             q.append(n)
         keep[list(drop)] = False
-    if ROOF_PRUNE:
-        anchor_k = set()
-        for (sx, sy, sz) in (anchors or ()):
-            i, j = int(round((sx - s.min_x) / s.pitch)), int(round((sz - s.min_z) / s.pitch))
-            if 0 <= i < s.nx and 0 <= j < s.nz:
-                c = j * s.nx + i
-                cand = [n for n in range(s.start[c], s.start[c + 1]) if keep[n] and -2.5 <= y[n] - sy <= 2.5]
-                if cand:
-                    anchor_k.add(min(cand, key=lambda n: abs(y[n] - sy)))
-        for lad in (ladders or ()):
-            for e in ladder_ends(s, ok, keep, lad):
-                if e is not None and keep[e]:
-                    anchor_k.add(int(e))
-        drop = roof_islands(s, keep, gx_all, gz_all, stair, step, terrain, anchor_k)
-        keep &= ~drop
-    if return_gradients:
-        return (keep, gx_all, gz_all, stair) if return_stairs else (keep, gx_all, gz_all)
-    return keep
+
+
+def roof_anchors(s, ok, keep, anchors, ladders):
+    """ROOF_PRUNE's anchor surfaces: the kept surface nearest each anchor point, and the kept ladder ends."""
+    y = s.y.astype(float)
+    anchor_k = set()
+    for (sx, sy, sz) in (anchors or ()):
+        i, j = int(round((sx - s.min_x) / s.pitch)), int(round((sz - s.min_z) / s.pitch))
+        if 0 <= i < s.nx and 0 <= j < s.nz:
+            c = j * s.nx + i
+            cand = [n for n in range(s.start[c], s.start[c + 1]) if keep[n] and -2.5 <= y[n] - sy <= 2.5]
+            if cand:
+                anchor_k.add(min(cand, key=lambda n: abs(y[n] - sy)))
+    for lad in (ladders or ()):
+        for e in ladder_ends(s, ok, keep, lad):
+            if e is not None and keep[e]:
+                anchor_k.add(int(e))
+    return anchor_k
 
 
 def islands_of(s, keep, gx, gz, stair, step):

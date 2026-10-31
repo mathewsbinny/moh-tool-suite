@@ -12,7 +12,6 @@ r"""Tests of the stock-MP AI authoring tool.
                                          MOH's MP exe has no AI runtime, so no MOH level is generated, built or
                                          validated here (the layer's BFBC2 game test built Atacama Conquest)
 """
-import hashlib
 import json
 import os
 import shutil

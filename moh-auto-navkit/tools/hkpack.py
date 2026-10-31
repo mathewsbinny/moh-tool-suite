@@ -11,6 +11,7 @@ import os
 import struct
 import sys
 from collections import Counter
+from typing import Any
 
 MAGIC = bytes.fromhex('57e0e05710c0c010')
 
@@ -27,7 +28,7 @@ VEC = {T_VECTOR4: 4, T_QUATERNION: 4, T_MATRIX3: 12, T_ROTATION: 12, T_QSTRANSFO
 
 
 class Packfile:
-    def __init__(self, data, base=None):
+    def __init__(self, data: bytes, base: int | None = None) -> None:
         if base is None:
             base = data.find(MAGIC)
             if base < 0:
@@ -38,14 +39,14 @@ class Packfile:
         (_m0, _m1, _tag, self.version, layout, self.nsections, self.contents_sec, self.contents_off) = h
         self.ptr_size = layout & 0xFF
         self.contents_version = data[base + 0x28:base + 0x38].split(b'\0')[0].decode('ascii', 'replace')
-        self.sections = []
+        self.sections: list[dict[str, Any]] = []
         for i in range(self.nsections):
             o = base + 0x40 + i * 0x30
             name = data[o:o + 20].split(b'\0')[0].decode()
             start, local, glob, virt, exp, imp, end = struct.unpack_from('<7I', data, o + 20)
             self.sections.append({'name': name, 'start': base + start, 'local': local, 'global': glob,
                                   'virtual': virt, 'exports': exp, 'imports': imp, 'end': end})
-        self.ptr = {}      # absolute file offset of a pointer slot -> absolute file offset of its target
+        self.ptr: dict[int, int] = {}      # absolute file offset of a pointer slot -> absolute file offset of its target
         for s in self.sections:
             st = s['start']
             for k in range(s['local'], min(s['global'], len(data) - st - 7), 8):
@@ -58,7 +59,7 @@ class Packfile:
                 if src == 0xFFFFFFFF:
                     continue
                 self.ptr[st + src] = self.sections[sec]['start'] + dst
-        self.objects = []  # (absolute offset, class name)
+        self.objects: list[tuple[int, str]] = []  # (absolute offset, class name)
         for s in self.sections:
             st = s['start']
             for k in range(s['virtual'], min(s['exports'], len(data) - st - 11), 12):
@@ -68,18 +69,18 @@ class Packfile:
                 cname = self.cstr(self.sections[sec]['start'] + name_off)
                 self.objects.append((st + src, cname))
         self.by_offset = {o: c for o, c in self.objects}
-        self.classes = {}
+        self.classes: dict[int, dict[str, Any]] = {}
         self._read_classes()
 
-    def cstr(self, off):
+    def cstr(self, off: int) -> str:
         e = self.d.index(b'\0', off)
         return self.d[off:e].decode('ascii', 'replace')
 
-    def deref(self, slot):
+    def deref(self, slot: int) -> int | None:
         return self.ptr.get(slot)
 
     # --- hkClass reflection --------------------------------------------------------------------------
-    def _read_classes(self):
+    def _read_classes(self) -> None:
         for off, cname in self.objects:
             if cname != 'hkClass':
                 continue
@@ -100,26 +101,26 @@ class Packfile:
             self.classes[off] = {'name': name, 'parent': parent, 'size': size, 'members': members}
         self.class_by_name = {c['name']: off for off, c in self.classes.items()}
 
-    def all_members(self, cname):
+    def all_members(self, cname: str) -> list[dict[str, Any]]:
         """Members of a class including inherited ones, as (name, member)."""
         off = self.class_by_name.get(cname)
-        chain = []
+        chain: list[dict[str, Any]] = []
         while off is not None:
             chain.append(self.classes[off])
             off = self.classes[off]['parent']
-        out = []
+        out: list[dict[str, Any]] = []
         for c in reversed(chain):
             out.extend(c['members'])
         return out
 
-    def member_class_name(self, m):
+    def member_class_name(self, m: dict[str, Any]) -> str | None:
         return self.classes[m['class']]['name'] if m['class'] in self.classes else None
 
-    def struct_size(self, cname):
+    def struct_size(self, cname: str | None) -> int | None:
         off = self.class_by_name.get(cname)
         return self.classes[off]['size'] if off is not None else None
 
-    def read_value(self, at, mtype, sub, mclass_name, carray=0):
+    def read_value(self, at: int, mtype: int, sub: int, mclass_name: str | None, carray: int = 0) -> Any:
         d = self.d
         if carray:
             size = self.elem_size(mtype, mclass_name)
@@ -150,7 +151,7 @@ class Packfile:
             return [self.read_value(data_p + i * size, sub, 0, mclass_name) for i in range(n)]
         return None
 
-    def elem_size(self, t, mclass_name):
+    def elem_size(self, t: int, mclass_name: str | None) -> int | None:
         if t in SIMPLE:
             return SIMPLE[t][1]
         if t in VEC:
@@ -161,8 +162,8 @@ class Packfile:
             return self.struct_size(mclass_name)
         return None
 
-    def read_object(self, at, cname):
-        out = {}
+    def read_object(self, at: int, cname: str) -> dict[str, Any]:
+        out: dict[str, Any] = {}
         for m in self.all_members(cname):
             if m['type'] in (T_ZERO, T_VOID, T_FUNCTIONPOINTER):
                 continue
@@ -170,15 +171,15 @@ class Packfile:
                                              m['carray'])
         return out
 
-    def objects_of(self, cname):
+    def objects_of(self, cname: str) -> list[int]:
         return [off for off, c in self.objects if c == cname]
 
 
-def load(path):
+def load(path: str) -> Packfile:
     return Packfile(open(path, 'rb').read())
 
 
-def short(v, depth=0):
+def short(v: Any, depth: int = 0) -> str:
     if isinstance(v, dict):
         return '{' + ', '.join(f'{k}: {short(x, depth + 1)}' for k, x in v.items()) + '}'
     if isinstance(v, list):
@@ -194,7 +195,7 @@ def short(v, depth=0):
     return str(v)
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
     if len(argv) < 3:
         print(__doc__)
         return 1

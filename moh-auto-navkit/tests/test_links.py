@@ -14,7 +14,6 @@ import shutil
 import sys
 import tempfile
 
-import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 NAVKIT = os.path.abspath(os.path.join(HERE, '..'))

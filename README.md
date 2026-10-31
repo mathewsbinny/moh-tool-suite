@@ -5,9 +5,9 @@ share one core: level loading, a 3D view, picking and the game's data formats.
 
 ## Getting started
 
-1. Install Python 3.10 or newer, then the libraries the tools use:
-   `pip install numpy matplotlib moderngl glfw imgui-bundle pillow` (and `pefile capstone` for the crash
-   reader's code view).
+1. Install Python 3.13 or newer, then the libraries the tools use, at the versions `pyproject.toml` pins (the ones
+   the suite is tested with; NavKit's builds repeat byte for byte only with the same numpy): `pip install -e .` in
+   this folder, or `pip install -e .[dev]` for ruff and coverage too (the lint and coverage runs below).
 2. Put this folder next to your `project-opfor-moh` folder (or set `OPFOR_ROOT` to it): the tools read the
    game copy in its `game\` folder (`game\MP\MoHMPGame.exe` and its data; `core\mohcore\gamecopy.py` has the layout).
 3. Double-click **`MOH Tool Suite.pyw`**. One window has every tool:
@@ -108,10 +108,19 @@ python run_tests.py quick      before every commit: no game data, about a minute
 python run_tests.py game       before every push: uses Project OPFOR's game copy, about 10 minutes
 python run_tests.py full       after changing a format reader: every unpacked file, about 30 minutes
 python run_tests.py --list     what each tier runs;   --only <name> runs the tests whose name contains it
+python run_tests.py quick --coverage   the same under coverage.py: .coverage-data\report.txt and html\index.html
+python -m ruff check .         the lint policy alone (the quick tier runs it too)
 ```
+
+The lint policy (`pyproject.toml` `[tool.ruff]`, 2026-10-31): pyflakes' rules (unused imports and variables,
+undefined names, f-strings without fields), syntax errors, and no blind `except Exception` - except at a real
+boundary (a GUI's or command line's top level that reports any failure, an optional side file, a test turning any
+failure into a check), marked `# noqa: BLE001` with the reason beside it. There is no CI server (the game tier
+needs the game copy on this PC): run `quick` before every commit and `game` before every push.
 
 | Test | Tier | Checks |
 |---|---|---|
+| `tests/test_lint.py` | quick | the lint policy: ruff over every Python file (skipped, and said so, when ruff is not installed) |
 | `tests/test_repo.py` | quick | no game files or large files in the history, no co-author lines, no build output tracked, READMEs, LICENSE, every Python file compiles |
 | `tests/test_review_fixes.py` | quick | four defects from a code review (2026-10-26): NavKit's apply builds with the normal build's inputs (detailed zones, ladders); the stock-MP installer reinstalls a rebuilt file and keeps the original as its backup; the Navigation Studio's `--edit` is a flag; the navigation cache key follows the terrain's content |
 | DbxEdit unit tests | quick | 93 checks of the format, XML export and import, edits, level check, cull-slot fixer, command line, window |

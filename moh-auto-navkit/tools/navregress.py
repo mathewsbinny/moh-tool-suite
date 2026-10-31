@@ -134,7 +134,7 @@ def area_orders_of(root, lv):
         import levelobjects
         x = navparity.level_xml(root, lv)
         return levelobjects.area_orders(open(x, encoding='utf-8', errors='replace').read()) if x else None
-    except Exception:
+    except (ImportError, OSError, ValueError):       # no levelobjects, no level XML, or a transform not read
         return None
 
 
@@ -300,7 +300,7 @@ def estimates(root, levels, *runs):
     for lv in set(levels) | set(known):
         try:
             size[lv] = os.path.getsize(inputs(root, lv)[0]) / 1e6
-        except Exception:
+        except (RuntimeError, OSError, ValueError, KeyError, AttributeError):   # inputs missing or not read
             pass
     rates = sorted(known[lv] / size[lv] for lv in known if size.get(lv))
     rate = rates[len(rates) // 2] if rates else None
@@ -400,7 +400,7 @@ def main(argv):
             else:
                 print(f'      self-check: no DICE path data ({duration(time.time() - t0)} in)')
                 row = self_check(root, lv, out)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - batch boundary: a level whose build or measure fails is counted FAIL
             failed += 1
             done_est += est[lv]
             print(f'FAIL {lv}: {e}')

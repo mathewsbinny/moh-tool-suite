@@ -3,3 +3,6 @@ __pycache__/
 
 # hello_imgui window layout, per user
 MOH_*.ini
+
+# coverage data and report (run_tests.py --coverage)
+.coverage-data/

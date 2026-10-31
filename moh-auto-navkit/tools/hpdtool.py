@@ -15,8 +15,8 @@ from the structured model (areas, portals, outlines, cells, neighbour links).
 import os
 import struct
 import sys
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
-from typing import List, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -33,7 +33,7 @@ MESH_MARKER = b'KynogonRuntimeMesh'
 class Node:
     id: int                  # node id; high bit = border node shared with a neighbouring sector
                              # (same id and position appear in that sector too)
-    pos: Tuple[float, float, float]  # world position, Y up
+    pos: tuple[float, float, float]  # world position, Y up
     flags: int               # always 0x80000000
     value: float             # DistEdgeMax on the first node of a sector (infantry 15, vehicle 50), else 0
     a: int                   # index of this node's first outgoing edge + 1 (edges are sorted by source)
@@ -51,19 +51,19 @@ class Edge:
 @dataclass
 class Sector:
     id: int                  # grid coordinates, 0xXXYY
-    bounds: Tuple[float, ...]  # minX, maxX, minY, maxY, minZ, maxZ
+    bounds: tuple[float, ...]  # minX, maxX, minY, maxY, minZ, maxZ
     reserved: int            # always 0 so far
     date: int                # build date YYMMDD, zero-based month (100007 = 2010-01-07)
     time: int                # build time HHMMSScc
-    nodes: List[Node] = field(default_factory=list)
-    edges: List[Edge] = field(default_factory=list)
+    nodes: list[Node] = field(default_factory=list)
+    edges: list[Edge] = field(default_factory=list)
     mesh: bytes = b''        # runtime mesh record (starts with "KynogonRuntimeMesh"), raw for now
 
 
 @dataclass
 class HpdFile:
-    header: Tuple[int, ...]  # the 36 header words (word 2 = sector count, rewritten on save)
-    sectors: List[Sector]
+    header: tuple[int, ...]  # the 36 header words (word 2 = sector count, rewritten on save)
+    sectors: list[Sector]
 
 
 def parse(data: bytes) -> HpdFile:
@@ -72,7 +72,7 @@ def parse(data: bytes) -> HpdFile:
     header = struct.unpack_from(f'<{HEADER_WORDS}I', data, 12)
     count = header[2]
     blocks = HEADER_SIZE + count * TABLE_ENTRY.size
-    sectors = []
+    sectors: list[Sector] = []
     for i in range(count):
         e = TABLE_ENTRY.unpack_from(data, HEADER_SIZE + i * TABLE_ENTRY.size)
         sid, bounds, reserved, size, offset, date, time = e[0], e[1:7], e[7], e[8], e[9], e[10], e[11]
@@ -80,12 +80,12 @@ def parse(data: bytes) -> HpdFile:
         block = data[start:start + size]
         n_nodes, n_edges = struct.unpack_from('<2I', block, 0)
         pos = 8
-        nodes = []
+        nodes: list[Node] = []
         for _ in range(n_nodes):
             v = NODE.unpack_from(block, pos)
             nodes.append(Node(v[0], (v[1], v[2], v[3]), v[4], v[5], v[6], v[7], v[8]))
             pos += NODE.size
-        edges = []
+        edges: list[Edge] = []
         for _ in range(n_edges):
             edges.append(Edge(*EDGE.unpack_from(block, pos)))
             pos += EDGE.size
@@ -101,7 +101,8 @@ def parse(data: bytes) -> HpdFile:
 MESH_OBJECT_HEADER = 0x50
 
 
-def mesh_layout(m: bytes):
+def mesh_layout(m: bytes) -> tuple[list[tuple[int, int, str]], list[tuple[int, list[tuple], int | None]],
+                                   dict[int, int], list[tuple[int, int, int]], list[int]]:
     """Walk a runtime mesh record (offsets relative to its start) and return a list of
     (start, end, label) regions plus the parsed structure. Raises ValueError on inconsistencies."""
     u32 = lambda o: struct.unpack_from('<I', m, o)[0]
@@ -113,8 +114,8 @@ def mesh_layout(m: bytes):
     tile_count = nx * nz
     regions.append((0x50, 0x50 + (tile_count + 1) * 4, 'tile table'))
     tile_offs = [u32(0x50 + i * 4) for i in range(tile_count + 1)]
-    objects = {}
-    tiles = []
+    objects: dict[int, int] = {}
+    tiles: list[tuple[int, list[tuple], int | None]] = []
     for t in range(tile_count):
         to = tile_offs[t]
         n = u32(to)
@@ -134,7 +135,7 @@ def mesh_layout(m: bytes):
     if u32(len(m) - 8) != len(m) - 8 or u32(len(m) - 4) != 0:
         raise ValueError('mesh trailer not found')
     regions.append((len(m) - 8, len(m), 'trailer'))
-    links = []
+    links: list[tuple[int, int, int]] = []
     if links_n:
         regions.append((links_off, links_off + links_n * 12, 'link table'))
         for k in range(links_n):
@@ -165,10 +166,12 @@ def _object_end(m: bytes, o: int) -> int:
     return end
 
 
-def mesh_coverage(m: bytes):
+def mesh_coverage(m: bytes) -> tuple[list[tuple[int, int]], list[tuple[int, int, str]]]:
     regions, *_ = mesh_layout(m)
     regions.sort()
-    gaps, overlaps, pos = [], [], 0
+    gaps: list[tuple[int, int]] = []
+    overlaps: list[tuple[int, int, str]] = []
+    pos = 0
     for s, e, label in regions:
         if s > pos:
             gaps.append((pos, s))
@@ -204,7 +207,7 @@ def write(f: HpdFile) -> bytes:
     return bytes(out)
 
 
-def _files(args):
+def _files(args: Iterable[str]) -> Iterator[str]:
     for a in args:
         if os.path.isdir(a):
             for dp, _, fs in os.walk(a):
@@ -215,7 +218,7 @@ def _files(args):
             yield a
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
     if len(argv) < 3:
         print(__doc__)
         return 1
@@ -242,7 +245,7 @@ def main(argv):
         return 0
     if cmd == 'coverage':
         total = clean = 0
-        gap_kinds = {}
+        gap_kinds: dict[tuple, int] = {}
         for p in _files(argv[2:]):
             f = parse(open(p, 'rb').read())
             for s in f.sectors:
@@ -268,13 +271,13 @@ def main(argv):
     if cmd == 'meshtrip':
         import kymesh
         total = same = 0
-        reasons = {}
+        reasons: dict[str, int] = {}
         for p in _files(argv[2:]):
             for s in parse(open(p, 'rb').read()).sectors:
                 total += 1
                 try:
                     out = kymesh.write_mesh(kymesh.parse_mesh(s.mesh))
-                except Exception as ex:
+                except Exception as ex:     # noqa: BLE001 - a survey: every failure is tallied by its type
                     reasons[type(ex).__name__ + ': ' + str(ex)[:60]] = reasons.get(type(ex).__name__ + ': ' + str(ex)[:60], 0) + 1
                     continue
                 if out == s.mesh:

@@ -22,7 +22,7 @@ import struct
 from collections import Counter, defaultdict
 
 import dbxbin
-from levelmodel import local, text
+from levelmodel import text
 
 NS = 'opfor:stockmp'
 PATHFINDING = ['ai/pathfinding/infantry/3096da77-3146-479c-ae35-c822273a54a7',
@@ -217,7 +217,7 @@ class Author:
         self.report[f'AI spawners {s["team"]}'] += 1
 
     def order(self, o, triggers):
-        cfg, d = self.cfg, self.d
+        cfg = self.cfg
         g = self.guid('order', o['id'])
         self.guid_of[o['id']] = g
         e = self.instance(self.p_order, self.donor, g)

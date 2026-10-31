@@ -67,7 +67,7 @@ def timed(fn, *a, **k):
     t0 = time.time()
     try:
         r = fn(*a, **k)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - harness boundary: any failure of a test becomes its 'error' result
         from mohcore import errors
         errors.logger().exception(f'test failed to run: {e}')
         r = checks.Result('error', f'{type(e).__name__}: {e}', details=['the traceback is in the log'])
@@ -91,7 +91,7 @@ def parity_row(root, lv, path, cache):
         run = json.load(open(p))
         try:
             when = time.mktime(time.strptime(run['date'], '%Y-%m-%d %H:%M'))
-        except Exception:
+        except (KeyError, TypeError, ValueError, OverflowError):     # no date, or not one strptime/mktime reads
             continue
         for row in run['levels']:
             if row.get('level') == lv and os.path.normcase(os.path.abspath(row.get('candidate', ''))) == os.path.normcase(os.path.abspath(path)) \
@@ -145,7 +145,7 @@ def run_level(root, lv, opts, cache, log=print):
     t0 = time.time()
     try:
         info = levelinfo.gather(root, lv, cache, log=lambda *a: None)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - harness boundary: a level that cannot be read is reported, the run goes on
         from mohcore import errors
         errors.logger().exception(f'{lv}: level not read')
         L['notes'].append(f'level not read: {type(e).__name__}: {e}')
@@ -315,9 +315,10 @@ def runs_folder(args):
     given = opt(args, '--runs')
     if given:
         return given
+    import navkit
     try:
         return runs.runs_dir(opfor(opt(args, '--opfor')))
-    except Exception:
+    except (navkit.NavKitError, OSError):
         return os.getcwd()            # paths to .json files still work without Project OPFOR
 
 

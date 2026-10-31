@@ -310,7 +310,7 @@ def main(argv):
     cand = navdata.load(cand_path)
     try:
         hf = levelmod.heightfield_of(root, lv, log=lambda *a: None)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - optional terrain (FbrbTool unpack, terrain file): maps without slope
         print(f'no terrain heights ({e}); maps without slope')
         hf = None
     summary, cells, edges, portals, only = diagnose(ref, cand, hf)

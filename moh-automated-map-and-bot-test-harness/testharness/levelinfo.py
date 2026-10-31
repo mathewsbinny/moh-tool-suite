@@ -16,7 +16,9 @@ import glob
 import hashlib
 import json
 import os
+import struct
 import sys
+import zlib
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -224,7 +226,8 @@ def game_level(root, lv, info, cache_dir, log):
             real = next(n for n in _real_names(holder, cache_dir) if n.lower() == name)
             el = dbx.parse(bundle_read(holder, [real], cache_dir)[real]).instances[0]
             info.assets[kind] = (int(dbx.value(el.child('XOffset'))), int(dbx.value(el.child('ZOffset'))))
-        except Exception as e:                           # present but not readable as expected
+        except (OSError, ValueError, KeyError, IndexError, StopIteration, AttributeError, struct.error,
+                zlib.error) as e:                        # present but not readable as expected (no XOffset child...)
             info.assets[kind] = 'unread'
             info.notes.append(f'{kind} SectorOffsets asset not read: {e}')
     # the templates the AI spawners use: read each one's partition where the load set has it, for its own refs
@@ -239,7 +242,7 @@ def game_level(root, lv, info, cache_dir, log):
             for el in dbx.parse(bundle_read(holder, [real], cache_dir)[real]).instances:
                 _refs(el, refs)
             info.template_refs[tpl] = sorted(refs - {tpl})
-        except Exception as e:
+        except (OSError, ValueError, KeyError, IndexError, StopIteration, struct.error, zlib.error) as e:
             info.template_refs[tpl] = []
             info.notes.append(f'template {tpl} not read: {e}')
     from mohcore import gamecopy
@@ -328,11 +331,11 @@ def points(root, lv, info, log):
     # terrain and water, for the ground classes (classify.Ground); a level without them classifies by path data only
     try:
         info.heightfield = level.heightfield_of(root, lv, log)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - optional terrain (FbrbTool unpack, terrain file): never stops the level
         info.notes.append(f'terrain not read: {e}')
     try:
         info.water = level.water_of(root, lv, log)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - optional water (FbrbTool unpack, water files): never stops the level
         info.notes.append(f'water not read: {e}')
     return lvl
 
@@ -381,7 +384,7 @@ def _is_dice(path):
     import hpdtool
     try:
         f = hpdtool.parse(open(path, 'rb').read())
-    except Exception:
+    except (OSError, ValueError, IndexError, struct.error):
         return False
     return bool(f.sectors) and all(s.date < 200000 for s in f.sectors[:5])
 

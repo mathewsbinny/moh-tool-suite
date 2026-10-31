@@ -12,7 +12,6 @@ import math
 import struct
 from decimal import ROUND_HALF_UP, Decimal
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
 
 CONTAINER, TEXT, NUMBERS = 0xA, 2, 7
 MAGIC = b'{binary}'
@@ -24,18 +23,18 @@ WHOLE_NUMBER_FIELDS = {'OriginalHashedWaveName', 'HashedName', 'HashedWaveName',
 class Element:
     tag: str
     kind: int
-    attributes: List[Tuple[str, str]] = field(default_factory=list)
+    attributes: list[tuple[str, str]] = field(default_factory=list)
     text: str = ''                         # TEXT
     raw: bytes = b''                       # NUMBERS: count/size varints + values; other kinds: the two bytes
-    children: Optional[List['Element']] = None
+    children: list['Element'] | None = None
 
-    def attr(self, name, default=None):
+    def attr(self, name: str, default: str | None = None) -> str | None:
         for k, v in self.attributes:
             if k == name:
                 return v
         return default
 
-    def child(self, name):
+    def child(self, name: str) -> 'Element | None':
         """The first direct child with attribute name == name."""
         for c in self.children or ():
             if c.attr('name') == name:
@@ -45,18 +44,18 @@ class Element:
 
 @dataclass
 class DbxFile:
-    strings: List[str]
-    roots: List[Element]
+    strings: list[str]
+    roots: list[Element]
 
     @property
-    def partition(self):
+    def partition(self) -> Element:
         return self.roots[0]
 
     @property
-    def instances(self):
+    def instances(self) -> list[Element]:
         return [e for e in self.roots[0].children if e.tag == 'instance']
 
-    def instance(self, guid):
+    def instance(self, guid: str) -> Element | None:
         g = guid.lower()
         for e in self.instances:
             if (e.attr('guid') or '').lower() == g:
@@ -64,15 +63,15 @@ class DbxFile:
         return None
 
     @staticmethod
-    def get(e, name):
+    def get(e: Element, name: str) -> str | None:
         return e.attr(name)
 
 
-def is_binary(data):
+def is_binary(data: bytes) -> bool:
     return len(data) > 24 and data[:8] == MAGIC
 
 
-def _varint(data, pos):
+def _varint(data: bytes, pos: int) -> tuple[int, int]:
     value, shift = 0, 0
     while True:
         if pos >= len(data):
@@ -85,19 +84,19 @@ def _varint(data, pos):
         shift += 7
 
 
-def _byte(data, pos):
+def _byte(data: bytes, pos: int) -> int:
     if pos >= len(data):
         raise ValueError('truncated file: an element cut short')
     return data[pos]
 
 
-def _string(strings, k):
+def _string(strings: list[str], k: int) -> str:
     if k >= len(strings):
         raise ValueError(f'string {k} out of range ({len(strings)} strings): a damaged or truncated file')
     return strings[k]
 
 
-def _strings(data, tolerant):
+def _strings(data: bytes, tolerant: bool) -> tuple[list[str], int]:
     # 2026-10-31: truncated input raises ValueError('truncated ...') everywhere, never IndexError or struct.error
     if len(data) < 24:
         raise ValueError('truncated file: no string table header')
@@ -124,15 +123,15 @@ class DeletedEntry(ValueError):
     """The file is a bundle's zero-byte *deleted* marker: there is nothing to read (it is not a broken file)."""
 
 
-def parse(data):
+def parse(data: bytes) -> DbxFile:
     """A binary .dbx file as an element tree (FORMAT.md sections 1-2)."""
     if not data:
         raise DeletedEntry('empty file: a *deleted* bundle entry (older FbrbTool unpacks wrote them as files)')
     if not is_binary(data):
         raise ValueError('not a binary .dbx file')
     strings, pos = _strings(data, tolerant=False)
-    roots = []
-    stack = []
+    roots: list[Element] = []
+    stack: list[Element] = []
     n = len(data)
     while pos < n:
         tag, pos = _varint(data, pos)
@@ -180,21 +179,21 @@ def parse(data):
     return DbxFile(strings, roots)
 
 
-def read(path):
+def read(path: str) -> DbxFile:
     with open(path, 'rb') as f:
         return parse(f.read())
 
 
 # ------------------------------------------------------------------------------------------------ values
 
-def numbers(e):
+def numbers(e: Element) -> tuple[int, list[bytes]]:
     """(size, [raw big-endian bytes per value]) of a NUMBERS element."""
     count, p = _varint(e.raw, 0)
     size, p = _varint(e.raw, p)
     return size, [e.raw[p + i * size:p + (i + 1) * size] for i in range(count)]
 
 
-def floats(e):
+def floats(e: Element) -> list[float]:
     """The values of a 4-byte NUMBERS element read as decimals (e.g. a Transform)."""
     size, vals = numbers(e)
     if size != 4:
@@ -202,7 +201,7 @@ def floats(e):
     return [struct.unpack('>f', v)[0] for v in vals]
 
 
-def _net_g(value, precision):
+def _net_g(value: float, precision: int) -> str:
     """.NET's "G<precision>" formatting of a finite double (what "R" builds on): the exact binary value rounded
     to <precision> significant digits, a tie rounded away from zero; scientific notation (E+XX / E-XX) for an
     exponent below -4 or from <precision> up; trailing zeros dropped."""
@@ -228,7 +227,7 @@ def _net_g(value, precision):
     return sign + '0.' + '0' * (-exp - 1) + digits
 
 
-def _net_r_single(bits):
+def _net_r_single(bits: bytes) -> str:
     v = struct.unpack('>f', bits)[0]
     s = _net_g(v, 7)
     if struct.unpack('>f', struct.pack('>f', float(s)))[0] != v:
@@ -236,7 +235,7 @@ def _net_r_single(bits):
     return s
 
 
-def _net_r_double(raw):
+def _net_r_double(raw: bytes) -> str:
     v = struct.unpack('>d', raw)[0]
     if math.isnan(v):
         return 'NaN'
@@ -248,7 +247,7 @@ def _net_r_double(raw):
     return s
 
 
-def _number_text(raw, size, field_name):
+def _number_text(raw: bytes, size: int, field_name: str) -> str:
     if size == 4:
         whole = struct.unpack('>i', raw)[0]
         if field_name in WHOLE_NUMBER_FIELDS or (whole >> 24) == 0 or ((whole >> 23) & 0xFF) == 0xFF:
@@ -259,7 +258,7 @@ def _number_text(raw, size, field_name):
     return str(raw[0] << 8 | raw[1])
 
 
-def value(e):
+def value(e: Element) -> str:
     """A non-container element's value as the XML shows it (unescaped)."""
     if e.kind == TEXT:
         return e.text
@@ -273,16 +272,16 @@ def value(e):
 
 # ------------------------------------------------------------------------------------------------ XML
 
-def _escape(s):
+def _escape(s: str) -> str:
     return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 
 
-def to_xml(data):
+def to_xml(data: bytes) -> str:
     """FORMAT.md section 3: the readable XML, identical to `DbxEdit xml` (string reading tolerant to a missing
     terminator at the end, as the export is)."""
     strings, pos = _strings(data, tolerant=True)
     out = ['<?xml version="1.0"?>\r\n']
-    open_tags = []
+    open_tags: list[str] = []
     n = len(data)
     while pos < n:
         tag, pos = _varint(data, pos)

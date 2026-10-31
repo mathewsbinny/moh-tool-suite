@@ -10,6 +10,7 @@ MOH changes:
 - 2026-10-31: validate() refuses an edge kind past the known ones (EDGE_KINDS, 7), as MOH's rsn_load does: kinds 7-255
   loaded silently, and rsnav closed kinds over 31 while this module searched them (kinds 7-31 raised IndexError in
   edge_cost's kind_extra).
+- 2026-10-31: type hints on the functions and fields (no change in behaviour).
 
     w = rsnv.load(path_or_bytes)       # either byte order
     w.node_pos, w.edge_target, w.edge_kind, w.edge_cost, w.areas, ...
@@ -56,8 +57,9 @@ CEDG / OREF yet: they need NavKit's blocker attribution (design section 3.1).
 import json
 import math
 import struct
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Any
 
 import numpy as np
 
@@ -128,7 +130,7 @@ for _t, _f in SCHEMA.items():
                                          'CEDG': 16, 'OREF': 4}[_t], _t
 
 
-def heuristic_scale(node_pos, src, dst, cost):
+def heuristic_scale(node_pos: np.ndarray, src: np.ndarray, dst: np.ndarray, cost: np.ndarray) -> int:
     """The heuristic's scale for a graph (u32, 1/2^24 units, for the header): the least cost / (16 x length) over the
     edges of nonzero length (lengths between the float32 node positions, as the search measures them), at most
     H_SCALE_LEGACY, rounded down; 1 (about 0) when such an edge costs 0. Every path then costs at least 16 x scale x its
@@ -146,20 +148,21 @@ def heuristic_scale(node_pos, src, dst, cost):
     return max(int(math.floor(s * H_SCALE_ONE)) - 1, 1)          # one unit down: safe against the division's rounding
 
 
-def fnv1a(text):
+def fnv1a(text: str) -> int:
     h = 0x811C9DC5
     for b in text.encode('utf-8'):
         h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
     return h
 
 
-def write(path, sections: Dict[str, object], header: dict, big_endian=False):
+def write(path: str, sections: dict[str, list[tuple] | bytes | bytearray], header: dict[str, Any],
+          big_endian: bool = False) -> int:
     """Writes the file. sections: tag -> list of tuples (by SCHEMA) or bytes (BMAP, META). header: level, sea_level,
     radius, height, step, water_depth, hpd_sha256 (hex)."""
     e = '>' if big_endian else '<'
     order = [t for t in ('SECT', 'NODE', 'NAUX', 'EDGE', 'AREA', 'PORT', 'BMAP', 'HGHT', 'GBKT', 'GLST', 'ANOD', 'LADR',
                          'OFFM', 'ISLD', 'OBJT', 'CEDG', 'OREF', 'META') if t in sections]
-    blobs = []
+    blobs: list[tuple[str, bytes, int, int]] = []
     for t in order:
         v = sections[t]
         if isinstance(v, (bytes, bytearray)):
@@ -169,7 +172,8 @@ def write(path, sections: Dict[str, object], header: dict, big_endian=False):
             blobs.append((t, b''.join(st.pack(*r) for r in v), len(v), st.size))
     off = HEADER + 16 * len(order)
     off = (off + 15) & ~15
-    directory, body = [], bytearray()
+    directory: list[tuple[str, int, int, int]] = []
+    body = bytearray()
     for t, b, count, stride in blobs:
         directory.append((t, off + len(body), count, stride))
         body += b
@@ -216,10 +220,10 @@ class Area:
     hstep_mm: int = 0
 
     @property
-    def pitch_mm_(self):
+    def pitch_mm_(self) -> int:
         return int(round(self.pitch * 1000))
 
-    def cell(self, x, z):
+    def cell(self, x: float, z: float) -> tuple[int, int] | None:
         """(i, j) of the bitmap cell at (x, z), or None outside the bitmap."""
         i = int(round((x - self.x0) / self.pitch))
         j = int(round((z - self.z0) / self.pitch))
@@ -235,28 +239,28 @@ class World:
     agent_height: float
     step: float
     water_depth: float
-    sections: Dict[str, tuple] = field(default_factory=dict)       # tag -> (offset, count, stride)
+    sections: dict[str, tuple[int, int, int]] = field(default_factory=dict)  # tag -> (offset, count, stride)
     h_scale_q: int = 0              # the heuristic's scale in 1/2^24 (header); 0: H_SCALE_LEGACY
 
     @property
-    def h_scale(self):
+    def h_scale(self) -> float:
         """The search heuristic's scale: h = floor(16 x distance x h_scale). The exporter writes the least cost per
         1/16 m of length over the file's edges (heuristic_scale), so h never exceeds the cost of any path: admissible
         (with 0.999, many short edges each rounded down could sum below h, and a costlier path came back)."""
         return self.h_scale_q / H_SCALE_ONE if self.h_scale_q else H_SCALE_LEGACY
     raw: bytes = b''
-    sectors: list = field(default_factory=list)
-    areas: List[Area] = field(default_factory=list)
-    meta: dict = field(default_factory=dict)
+    sectors: list[tuple] = field(default_factory=list)
+    areas: list[Area] = field(default_factory=list)
+    meta: dict[str, Any] = field(default_factory=dict)
 
     # -- bitmaps and heights
-    def walkable(self, a: Area, i, j):
+    def walkable(self, a: Area, i: int, j: int) -> bool:
         if not (0 <= i < a.width and 0 <= j < a.height):
             return False
         row = (a.width + 7) >> 3
         return bool(self.bmap[a.bmap + j * row + (i >> 3)] >> (i & 7) & 1)
 
-    def ground(self, a: Area, x, z):
+    def ground(self, a: Area, x: float, z: float) -> float:
         """The area's ground height at (x, z) from its height grid: bilinear between the four block centres around
         the point; up to half a block past the outermost centres the slope continues (linear extrapolation, so an
         area's edge on a slope is not flattened). Where one of the four has no cells, the others' weights (within
@@ -293,7 +297,7 @@ class World:
             return a.min_y + (s / ws) / 100.0
         gi = min(max(math.floor(u / cpb), 0), a.hw - 1)
         gj = min(max(math.floor(v / cpb), 0), a.hh - 1)
-        best = None
+        best: tuple[int, float] | None = None
         for dj in range(-1, 2):
             for di in range(-1, 2):
                 ii, jj = gi + di, gj + dj
@@ -303,9 +307,9 @@ class World:
                         best = (abs(di) + abs(dj), a.min_y + v / 100.0)
         return best[1] if best else a.min_y
 
-    def areas_near(self, x, z):
+    def areas_near(self, x: float, z: float) -> list[int]:
         """Area ids of the 4 m bucket holding (x, z) in every sector that contains it, each bucket's lowest first."""
-        out = []
+        out: list[int] = []
         for s in self.sectors:
             _id, _layer, _pc, x0, z0, x1, z1, first_bucket, _fa, _na, _r = s
             if x0 <= x < x1 and z0 <= z < z1:
@@ -315,14 +319,15 @@ class World:
                 out += [int(a) for a in self.glst[first:first + count]]
         return out
 
-    def locate(self, x, y, z, max_dist=3.0, dy=None):
+    def locate(self, x: float, y: float, z: float, max_dist: float = 3.0,
+               dy: float | None = None) -> tuple[int, tuple[int, int], float] | None:
         """(area index, (i, j), horizontal distance) of the walkable cell nearest (x, z) whose area's ground is within
         dy of y (default: the step plus half a metre), searching outward up to max_dist; None when there is none.
         Areas in index order, cells by rows then columns, the first nearest kept; all in double precision with a fixed
         order of operations, so the C runtime (rsnav) gives the same answer."""
         dy = self.step + 0.5 if dy is None else dy
-        best = None
-        cand = set()
+        best: tuple[int, tuple[int, int], float] | None = None
+        cand: set[int] = set()
         r = math.ceil(max_dist / BUCKET)
         for bj in range(-r, r + 1):
             for bi in range(-r, r + 1):
@@ -344,9 +349,10 @@ class World:
                             best = (k, (i, j), d)
         return best
 
-    def nearest_node(self, k, x, z):
+    def nearest_node(self, k: int, x: float, z: float) -> int | None:
         """The node of area k nearest (x, z) horizontally (the first in ANOD order on a tie), or None."""
-        a, best = self.areas[k], None
+        a = self.areas[k]
+        best: tuple[int, float] | None = None
         for t in range(a.first_node, a.first_node + a.nodes):
             nd = int(self.anod[t])
             dx, dz = self.node_pos[nd][0] - x, self.node_pos[nd][2] - z
@@ -356,16 +362,16 @@ class World:
         return best[0] if best else None
 
     # -- line of sight (rsnav's rsn_los, the same rule and order of operations)
-    def _cell_of(self, a, x, z):
+    def _cell_of(self, a: Area, x: float, z: float) -> tuple[int, int, bool]:
         i, j = math.floor((x - a.x0) / a.pitch + 0.5), math.floor((z - a.z0) / a.pitch + 0.5)
         return i, j, 0 <= i < a.width and 0 <= j < a.height
 
     @staticmethod
-    def _lean(f):
+    def _lean(f: float) -> int:
         """-1, 0 or 1: the side a sample at fraction f (-0.5 .. 0.5) from its cell's centre leans to (LOS_GRAZE)."""
         return 0 if abs(f) < 0.5 - LOS_GRAZE else (1 if f > 0 else -1)
 
-    def on_cell(self, a, x, z):
+    def on_cell(self, a: Area, x: float, z: float) -> bool:
         """Whether (x, z) lies on area a's walkable ground: its nearest cell is walkable or it lies within LOS_GRAZE
         of the square of a walkable cell beside it (rsnav's raw_ok; in 0.8 m areas too from 2026-10-26)."""
         u, v = (x - a.x0) / a.pitch, (z - a.z0) / a.pitch
@@ -376,13 +382,13 @@ class World:
         return bool((si and self.walkable(a, i + si, j)) or (sj and self.walkable(a, i, j + sj))
                     or (si and sj and self.walkable(a, i + si, j + sj)))
 
-    def _raw_ok(self, a, x, z):
+    def _raw_ok(self, a: Area, x: float, z: float) -> bool:
         return self.on_cell(a, x, z)
 
-    def _near_los(self, x, z):
+    def _near_los(self, x: float, z: float) -> list[int]:
         """Line of sight's area lookup (rsnav_los.c near_areas): the 4 m bucket holding (x, z) in every sector whose
         rectangle grown by LOS_SEAM holds it, bucket indices clamped to the grid, at most LOS_NEAR areas."""
-        out = []
+        out: list[int] = []
         for s in self.sectors:
             _id, _layer, _pc, x0, z0, x1, z1, first_bucket, _fa, _na, _r = s
             if x0 - LOS_SEAM <= x < x1 + LOS_SEAM and z0 - LOS_SEAM <= z < z1 + LOS_SEAM:
@@ -395,11 +401,11 @@ class World:
                     out.append(int(a))
         return out
 
-    def _allowed(self, k1, k2):
+    def _allowed(self, k1: int, k2: int) -> float:
         return LOS_COARSE_DY if self.areas[k1].pitch_mm_ >= COARSE_MM or self.areas[k2].pitch_mm_ >= COARSE_MM \
             else LOS_DY
 
-    def _other_ok(self, skip, x, z, y):
+    def _other_ok(self, skip: int, x: float, z: float, y: float) -> bool:
         for k in self._near_los(x, z):
             b = self.areas[k]
             if k == skip or not self._raw_ok(b, x, z):
@@ -408,7 +414,7 @@ class World:
                 return True
         return False
 
-    def _cell_ok(self, k, x, z):
+    def _cell_ok(self, k: int, x: float, z: float) -> bool:
         a = self.areas[k]
         if a.pitch_mm_ < COARSE_MM:
             return self.on_cell(a, x, z)
@@ -428,14 +434,14 @@ class World:
                 return False
         return True
 
-    def _compatible(self, f, t, x, z, gy=None):
+    def _compatible(self, f: int, t: int, x: float, z: float, gy: float | None = None) -> bool:
         """Whether the line may go on in area t at (x, z): t's ground there within the allowance of the followed
         ground gy (LOS_FOLLOWED; of area f's ground at (x, z) without it), and t's cell test passes."""
         ref = self.ground(self.areas[f], x, z) if gy is None or not LOS_FOLLOWED else gy
         d = self.ground(self.areas[t], x, z) - ref
         return abs(d) <= self._allowed(f, t) and self._cell_ok(t, x, z)
 
-    def _neighbour(self, cur, x, z, gy=None):
+    def _neighbour(self, cur: int, x: float, z: float, gy: float | None = None) -> int | None:
         a = self.areas[cur]
         for p in self.ports[a.first_portal:a.first_portal + a.portals]:
             if p[6] != cur and self._compatible(cur, p[6], x, z, gy):
@@ -445,11 +451,11 @@ class World:
                 return k
         return None
 
-    def _los_start(self, a):
+    def _los_start(self, a: Sequence[float]) -> int | None:
         """The area line of sight starts on (LOS_START_NEAREST): of the areas with ground under a (on_cell) within the
         step plus half a metre of its height, the one whose ground is nearest a's height (the first in _near_los order
         on a tie); None when there is none (then locate's nearest cell within 1 m)."""
-        best = None
+        best: tuple[int, float] | None = None
         lim = self.step + 0.5
         for k in self._near_los(a[0], a[2]):
             ar = self.areas[k]
@@ -460,7 +466,7 @@ class World:
                 best = (k, d)
         return best[0] if best else None
 
-    def los(self, a, b, trace=None):
+    def los(self, a: Sequence[float], b: Sequence[float], trace: dict[str, Any] | None = None) -> bool:
         """Whether a soldier walks straight from a to b (x, y, z; pass float32 values for parity with rsnav): every
         sample, a quarter of the finest pitch apart, on a walkable cell (on_cell: in fine areas within LOS_GRAZE of
         one); between areas through portals or the buckets, to ground within LOS_DY (LOS_COARSE_DY where either area
@@ -536,11 +542,11 @@ class World:
             trace.update(rule='end', area=cur, d=d, lim=lim, excess=abs(d) - lim, x=b[0], z=b[2], along=ln)
         return abs(d) <= lim
 
-    def validate(self):
+    def validate(self) -> list[str]:
         """Problems with the file's contents ([] when none): every index and range the readers follow, the checks of
         rsnav's rsn_load (rsnav_load.c) and with its messages, so a file this accepts the runtime accepts and the other
         way round (2026-10-26: an ANOD node id past the nodes passed and crashed nearest_node)."""
-        out = []
+        out: list[str] = []
         n = len(self.node_pos)
         n_edge, n_area, n_sect = len(self.edge_target), len(self.areas), len(self.sectors)
         coord = lambda v: -1e6 < v < 1e6                    # rsnav's coordinate(): finite, inside +-1e6 m
@@ -621,12 +627,12 @@ class World:
         return list(dict.fromkeys(out))
 
 
-def _array(raw, e, off, count, fmt):
+def _array(raw: bytes, e: str, off: int, count: int, fmt: str) -> list[tuple]:
     st = struct.Struct(e + fmt)
     return [st.unpack_from(raw, off + k * st.size) for k in range(count)]
 
 
-def load(src):
+def load(src: str | bytes | bytearray) -> World:
     raw = src if isinstance(src, (bytes, bytearray)) else open(src, 'rb').read()
     if len(raw) < HEADER:
         raise ValueError('RSNV: shorter than its header')
@@ -717,7 +723,9 @@ def load(src):
 DONE, PARTIAL = 'done', 'partial'
 
 
-def edge_cost(w, n, k, water_scale=(256, 256, 256), kind_extra=None, penalty=None, destroyed=None, tight_extra=0):
+def edge_cost(w: World, n: int, k: int, water_scale: Sequence[int] = (256, 256, 256),
+              kind_extra: Sequence[int] | None = None, penalty: dict[int, int] | None = None,
+              destroyed: Collection[int] | None = None, tight_extra: int = 0) -> int | None:
     """The filter's cost of edge k from node n (rsnav's rsn_edge_cost), or None when it is closed: floor(cost x
     water_scale[class] / 256) + kind_extra[kind] + tight_extra (a tight edge) + penalty, class the deeper end's (0 dry,
     1 shallow, 2 wading); a
@@ -725,7 +733,7 @@ def edge_cost(w, n, k, water_scale=(256, 256, 256), kind_extra=None, penalty=Non
     if int(w.edge_flags[k]) & EDGEF_COND and not (destroyed is not None and all(o in destroyed for o in w.cond.get(k, [None]))):
         return None
 
-    def cls(m):
+    def cls(m: int) -> int:
         f = int(w.node_flags[m])
         return 2 if f & NAUX_WADE else 1 if f & NAUX_SHALLOW else 0
     c = int(w.edge_cost[k]) * water_scale[max(cls(n), cls(int(w.edge_target[k])))] >> 8
@@ -738,8 +746,10 @@ def edge_cost(w, n, k, water_scale=(256, 256, 256), kind_extra=None, penalty=Non
     return c
 
 
-def search(w, start, goal, max_expansions=1 << 30, kind_mask=None, water_scale=(256, 256, 256), kind_extra=None,
-           penalty=None, destroyed=None, tight_extra=0):
+def search(w: World, start: int, goal: int, max_expansions: int = 1 << 30, kind_mask: int | None = None,
+           water_scale: Sequence[int] = (256, 256, 256), kind_extra: Sequence[int] | None = None,
+           penalty: dict[int, int] | None = None, destroyed: Collection[int] | None = None,
+           tight_extra: int = 0) -> tuple[str, int, list[int], int]:
     """The reference search (design sections 2.6 and 6.3), which the C runtime (rsnav) must match exactly: integer
     costs in 1/16 m; heuristic floor(16 x Euclidean x w.h_scale) in double precision (admissible: exporter 1.4 rounds
     each cost up to 16 x its length, and heuristic_scale bounds the scale by the costs), summed x, y, then z; the open list
@@ -750,23 +760,23 @@ def search(w, start, goal, max_expansions=1 << 30, kind_mask=None, water_scale=(
     Returns (status, cost, [nodes], expansions)."""
     import heapq
     pos = w.node_pos
-    fe, tgt, cost, kind = w.node_first_edge, w.edge_target, w.edge_cost, w.edge_kind
+    fe, tgt, kind = w.node_first_edge, w.edge_target, w.edge_kind
     gx, gy, gz = (float(v) for v in pos[goal])
 
     scale = getattr(w, 'h_scale', H_SCALE_LEGACY)
 
-    def h(n):
+    def h(n: int) -> int:
         dx, dy, dz = float(pos[n][0]) - gx, float(pos[n][1]) - gy, float(pos[n][2]) - gz
         return math.floor(16.0 * math.sqrt((dx * dx + dy * dy) + dz * dz) * scale)
     g = {start: 0}
     hv = {start: h(start)}
     parent = {start: -1}
     heap = [(hv[start], start)]
-    closed = set()
+    closed: set[int] = set()
     exp = 0
-    best = None
+    best: tuple[int, int, int] | None = None
 
-    def path_to(n):
+    def path_to(n: int) -> list[int]:
         p = [n]
         while parent[p[-1]] != -1:
             p.append(parent[p[-1]])
@@ -806,7 +816,8 @@ def search(w, start, goal, max_expansions=1 << 30, kind_mask=None, water_scale=(
     return PARTIAL, g[end], path_to(end), exp
 
 
-def astar(w, start, goal, max_expansions=1 << 30, kind_mask=None):
+def astar(w: World, start: int, goal: int, max_expansions: int = 1 << 30,
+          kind_mask: int | None = None) -> tuple[int | None, list[int], int]:
     """search() for a complete path: (cost, [nodes], expansions), or (None, [], expansions) when the goal is not
     reached."""
     status, c, path, exp = search(w, start, goal, max_expansions, kind_mask)

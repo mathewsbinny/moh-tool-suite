@@ -33,7 +33,6 @@ Usage: navbuild.py <samples.bin> <forbid_tris.npy> <XOffset> <ZOffset> <out.hpd>
 import heapq
 import math
 import os
-import struct
 import sys
 import time
 from collections import defaultdict, deque
@@ -858,8 +857,41 @@ def stage(samples_path, high_path, xoff, zoff, tris_path=None, step=mohsoldier.S
     t0 = t0 or time.time()
     f, _ = navsample.load(samples_path)
     s = navwalk.coarse(f) if abs(f.pitch - PITCH) > 1e-3 else f
-    hand = {}
     soldiers = list(seeds or [])                 # the level's soldier spawn points (navwalk.CHARACTERS_ABSENT)
+    hand, seeds = stage_hand_rules(s, seeds, edits, water, max_water_depth, bounds, log)
+    level, keep = stage_walkable(s, step, hand, seeds, soldiers, seed_points, order_points, area_orders, ladders,
+                                 tris_path, dynamic_path, high_path, narrow_path, stairs_path, exclude_path,
+                                 exclude_foot_path, log, t0)
+    ladder_pairs, drop_pairs = stage_link_pairs(s, keep, ladders, log)
+    sectors = kept_sectors(s, level, keep, xoff, zoff, sector_filter, log)
+
+    # Pass 1: areas per sector, and which area each surface belongs to.
+    info = sector_areas(level, sectors, xoff, zoff, grid_min, samples_path, log, t0)
+
+    # Graph: border nodes shared between sector pairs (global ids), then inner nodes.
+    next_id = [id_start]
+
+    def new_id():
+        next_id[0] += 1
+        return next_id[0]
+
+    border_nodes = shared_border_nodes(level, info, new_id)
+    dropped = attach_carried(level, info, carried, border_nodes)
+    edge_sets = traced_edge_sets(level, info, log)
+    graphs, meshes = [], {}
+    for (X, Y), inf in sorted(info.items()):
+        mesh, graph = sector_output(level, info, X, Y, inf, edge_sets[(X, Y)], border_nodes[(X, Y)], new_id,
+                                    order_points, ladder_pairs, drop_pairs)
+        meshes[(X, Y)] = mesh
+        graphs.append(graph)
+    return {'level': level, 'info': info, 'graphs': graphs, 'border_nodes': border_nodes, 'next_id': next_id[0],
+            'dropped': dropped, 'pitch': PITCH, 'meshes': meshes, 'sectors': set(info)}
+
+
+def stage_hand_rules(s, seeds, edits, water, max_water_depth, bounds, log):
+    """The surfaces forced walkable / unwalkable before the walk (hand edits, the water rule, the reference extent),
+    as walkable()'s keyword arguments, and the seeds with the edits' own added. Returns (hand, seeds)."""
+    hand = {}
     if edits:
         import navedits
         e = navedits.edits_for(s, edits)
@@ -884,6 +916,13 @@ def stage(samples_path, high_path, xoff, zoff, tris_path=None, step=mohsoldier.S
         hand['force_unwalkable'] = outside if fu is None else (fu | outside)
         log(f'reference extent x {bounds[0]:.1f}..{bounds[2]:.1f}, z {bounds[1]:.1f}..{bounds[3]:.1f}: '
             f'{int(outside.sum())} surfaces outside left out')
+    return hand, seeds
+
+
+def stage_walkable(s, step, hand, seeds, soldiers, seed_points, order_points, area_orders, ladders, tris_path,
+                   dynamic_path, high_path, narrow_path, stairs_path, exclude_path, exclude_foot_path, log, t0):
+    """The walkable surfaces of the grid s (navwalk.walkable with the stage's side inputs) and the Level over them.
+    Returns (level, keep)."""
     tris = np.load(tris_path) if tris_path else None
     dyn = np.load(dynamic_path) if dynamic_path else None
     hi = on_grid(high_path, s, 'high-capsule') if high_path else None
@@ -908,6 +947,11 @@ def stage(samples_path, high_path, xoff, zoff, tris_path=None, step=mohsoldier.S
            if navwalk.OBJECTIVE_FLOOR else ''))
     navwalk.ROOF_STATS.clear()
     navwalk.OBJECTIVE_STATS.clear()
+    return level, keep
+
+
+def stage_link_pairs(s, keep, ladders, log):
+    """The (from, to) kept-surface pairs of the ladder links and the drop links. Returns (ladder_pairs, drop_pairs)."""
     # ladder links: the kept surfaces at each ladder's foot and top (navwalk.ladder_ends)
     ladder_pairs = []
     for lad in (ladders or ()):
@@ -918,8 +962,11 @@ def stage(samples_path, high_path, xoff, zoff, tris_path=None, step=mohsoldier.S
     if DROP_LINKS:
         log(f'drop links: {len(drop_pairs)} ({navdrops.STATS.get("regions", 0)} regions, '
             f'{navdrops.STATS.get("candidates", 0)} candidate ledges)')
+    return ladder_pairs, drop_pairs
 
-    # Sectors that contain kept surfaces.
+
+def kept_sectors(s, level, keep, xoff, zoff, sector_filter, log):
+    """The sorted (X, Y) sectors that contain kept surfaces (only those of sector_filter when given)."""
     sectors = set()
     for k in np.nonzero(keep)[0]:
         c = level.col_of[k]
@@ -929,13 +976,17 @@ def stage(samples_path, high_path, xoff, zoff, tris_path=None, step=mohsoldier.S
         sectors &= set(sector_filter)
     sectors = sorted(sectors)
     log(f'{len(sectors)} sectors (pitch {PITCH:g})')
+    return sectors
 
-    # Pass 1: areas per sector, and which area each surface belongs to.
+
+def sector_areas(level, sectors, xoff, zoff, grid_min, samples_path, log, t0):
+    """Pass 1: per sector its areas (tiled, layered), the area of each surface, its origin and tile start.
+    Returns {(X, Y): {'areas', 'area_of', 'origin', 'start'}}."""
     info = {}
     have = set(sectors)
     if not sectors and grid_min is None:
         # the level's own stage (not a detailed pass, whose caller keeps sectors without ground at the normal pitch)
-        raise ValueError(f'{samples_path}: no walkable ground kept ({len(s.y)} surfaces) - nothing to build')
+        raise ValueError(f'{samples_path}: no walkable ground kept ({len(level.s.y)} surfaces) - nothing to build')
     min_x_sector, min_z_sector = grid_min or (min(X for X, _ in sectors), min(Y for _, Y in sectors))
     for X, Y in sectors:
         gi0, gj0, ox, oz = sector_origin_index(level, X, Y, xoff, zoff)
@@ -954,40 +1005,43 @@ def stage(samples_path, high_path, xoff, zoff, tris_path=None, step=mohsoldier.S
         area_of = {c[2]: ai for ai, a in enumerate(areas) for c in a['cells']}
         info[(X, Y)] = {'areas': areas, 'area_of': area_of, 'origin': (gi0, gj0, ox, oz), 'start': start}
     log(f'{sum(len(v["areas"]) for v in info.values())} areas ({time.time() - t0:.0f} s)')
+    return info
 
-    # Graph: border nodes shared between sector pairs (global ids), then inner nodes.
-    next_id = [id_start]
+
+def border_line_runs(level, gi0, gj0, line, dX):
+    """Every kept surface on a sector's border line (all layers: floors under roofs too), grouped into connected runs
+    along it, one run per layer: [[(t, k)]]."""
+    runs, active = [], []
+    for t in WINDOW:
+        i, j = (line, t) if dX else (t, line)
+        nxt = []
+        for k in level.surfaces(gi0 + i, gj0 + j):
+            for r in active:
+                if r[-1][0] == t - 1 and level.connected(r[-1][1], k, 0 if dX else 1, 1 if dX else 0):
+                    r.append((t, k))
+                    nxt.append(r)
+                    active.remove(r)
+                    break
+            else:
+                r = [(t, k)]
+                runs.append(r)
+                nxt.append(r)
+        active = nxt
+    return runs
+
+
+def shared_border_nodes(level, info, new_id):
+    """The border nodes shared between neighbouring sectors, spaced along each run of a border line (global ids).
+    Returns {sector: [(id, pos, k)]}."""
     border_nodes = defaultdict(list)     # sector -> [(id, pos, k)]
     border_at = {}                       # surface -> (id, pos) of the border node on it
-
-    def new_id():
-        next_id[0] += 1
-        return next_id[0]
-
     for (X, Y), inf in info.items():
         gi0, gj0, ox, oz = inf['origin']
         for (dX, dY), line in (((1, 0), SECTOR_SAMPLES + 1), ((0, 1), SECTOR_SAMPLES + 1)):
             other = (X + dX, Y + dY)
             if other not in info:
                 continue
-            # every kept surface on the line (all layers: floors under roofs too), grouped into connected runs
-            # along it, one run per layer
-            runs, active = [], []
-            for t in WINDOW:
-                i, j = (line, t) if dX else (t, line)
-                nxt = []
-                for k in level.surfaces(gi0 + i, gj0 + j):
-                    for r in active:
-                        if r[-1][0] == t - 1 and level.connected(r[-1][1], k, 0 if dX else 1, 1 if dX else 0):
-                            r.append((t, k))
-                            nxt.append(r)
-                            active.remove(r)
-                            break
-                    else:
-                        r = [(t, k)]
-                        runs.append(r)
-                        nxt.append(r)
-                active = nxt
+            runs = border_line_runs(level, gi0, gj0, line, dX)
             for run in runs:
                 n = max(1, int(math.ceil(len(run) * PITCH / BORDER_NODE_SPACING)))
                 for q in range(n):
@@ -1007,6 +1061,13 @@ def stage(samples_path, high_path, xoff, zoff, tris_path=None, step=mohsoldier.S
                     border_at[k] = (nid, pos)
                     border_nodes[(X, Y)].append((nid, pos, k))
                     border_nodes[other].append((nid, pos, k))
+    return border_nodes
+
+
+def attach_carried(level, info, carried, border_nodes):
+    """Shared nodes from another stage (seams with sectors at another pitch) added to border_nodes on this grid's
+    ground at the node. Returns the ids of those with no ground (dropped)."""
+    s = level.s
     # shared nodes from another stage (seams with sectors at another pitch): on this grid's ground at the node, the
     # nearest kept surface of the sector within 0.6 m of its height; nodes with no such ground are reported dropped
     dropped = set()
@@ -1014,7 +1075,6 @@ def stage(samples_path, high_path, xoff, zoff, tris_path=None, step=mohsoldier.S
         if sec not in info:
             dropped.update(nid for nid, _pos in nodes)
             continue
-        gi0, gj0, ox, oz = info[sec]['origin']
         own = info[sec]['area_of']
         for nid, pos in nodes:
             # within CARRY_RADIUS of the node, on its floor; ground of a larger area first (not a stray speck), then
@@ -1037,8 +1097,12 @@ def stage(samples_path, high_path, xoff, zoff, tris_path=None, step=mohsoldier.S
                 continue
             k = min(cand)[2]
             border_nodes[sec].append((nid, pos, k))
+    return dropped
 
-    # boundary edges of every sector, then the one-way portal pieces decided level-wide
+
+def traced_edge_sets(level, info, log):
+    """Boundary edges of every sector, then the one-way portal pieces decided level-wide (ONE_WAY_PORTALS) and the
+    others dropped. Returns {sector: (per_area, one_way)}."""
     edge_sets = {}
     for (X, Y), inf in sorted(info.items()):
         gi0, gj0, ox, oz = inf['origin']
@@ -1056,59 +1120,69 @@ def stage(samples_path, high_path, xoff, zoff, tris_path=None, step=mohsoldier.S
     for sec, (per_area, one_way) in edge_sets.items():
         drop_one_way(per_area, one_way, keep.get(sec, set()))
     log(f'one-way portal pieces: {n_cand}, kept one-way {sum(len(v) for v in keep.values())} ({ONE_WAY_PORTALS})')
-    graphs, meshes = [], {}
-    for (X, Y), inf in sorted(info.items()):
-        gi0, gj0, ox, oz = inf['origin']
-        areas, area_of = inf['areas'], inf['area_of']
-        level.blocked = set()            # D sides of this sector only (another sector may hold the cells in two areas)
-        details = (detail_pass(level, areas, edge_sets[(X, Y)][0], ox, oz, gi0, gj0) if DETAIL_FEATURES
-                   else [([], [])] * len(areas))
-        traced = trace_emit(level, areas, edge_sets[(X, Y)][0], gi0, gj0, ox, oz)
-        sid = ((X & 0xFF) << 8) | (Y & 0xFF)
-        mesh_areas = []
-        ntiles = tiling(sid)[1]
-        tiles = [[] for _ in range(ntiles * ntiles)]
-        for ai, (a, (portals, borders, outline), (d_lines, f_cells)) in enumerate(zip(areas, traced, details)):
-            ys = [level.y[c[2]] for c in a['cells']]
-            # DICE's area height range: from its lowest ground to its highest ground + 1.52 m (all normal-pitch
-            # areas of sp_004_b: median +0.000 / +1.520; NavKit had -0.95 / +1.55, a metre of extra room below
-            # each area, so a lower floor's range reached the deck above it - 2026-10-19)
-            lo, hi = min(ys) + AREA_Y_MIN, max(ys) + AREA_Y_MAX
-            mesh_areas.append(kymesh.Area(sid, a['tile'][0], a['tile'][1], a['layer'], RADIUS, PITCH, hi, lo,
-                                          portals, [b[0] for b in borders], d_lines, outline, f_cells))
-            a['borders'] = borders
-            tiles[a['tile'][0] * ntiles + a['tile'][1]].append(kymesh.TileItem(ai, lo, hi))
-        mesh_links = sector_links(X, Y, areas, mesh_areas, same_grid_resolver(level, info, X, Y))
-        # the runtime's tile grid starts at the rectangle's minimum (DICE: tile lines 39.6 m past it on 3,748 sector
-        # axes) - so an edge sector, whose tiles start at its own edge, starts its rectangle there too (DICE 0x101:
-        # -800.0 instead of -800.8). The maximum side keeps the 1.1-pitch margin (DICE drops it at the grid's maximum).
-        sx, sz = inf['start']
-        rect = (ox + sx * PITCH, ox + 100 + 1.1 * PITCH, oz + sz * PITCH, oz + 100 + 1.1 * PITCH)
-        mesh = kymesh.Mesh(2, 0, 0, sid, RESOLUTION, PITCH, rect, ntiles, ntiles, RADIUS, tiles, mesh_areas,
-                           mesh_links, b'\0' * 4)
-        meshes[(X, Y)] = mesh
-        orders = [p for p in (order_points or ()) if ox <= p[0] < ox + 100 and oz <= p[2] < oz + 100]
-        lads = [(f_, t_) for f_, t_ in ladder_pairs if f_ in area_of and t_ in area_of]
-        drops = [(f_, t_) for f_, t_ in drop_pairs if f_ in area_of and t_ in area_of]
-        # per sector, a later stage's entry replacing an earlier one's (stage b over a's detailed sectors): build()
-        # counts the sectors written. A drop whose ledge and landing lie in two sectors is not linked (as for
-        # ladders: the graph is per sector)
-        DROP_STATS.setdefault('sectors', {})[sid] = sum(1 for f_, t_ in drop_pairs if (f_ in area_of) != (t_ in area_of))
-        LADDER_STATS.setdefault('sectors', {})[sid] = (
-            len(lads), sum(1 for f_, t_ in ladder_pairs if (f_ in area_of) != (t_ in area_of)))
-        pts, pairs = build_graph(level, areas, area_of, traced, border_nodes[(X, Y)], gi0, gj0, ox, oz, new_id, orders,
-                                 lads, drops)
-        navislands.note_nodes(level, pts)        # which nodes stand on terrain (SHADOW_OBJECTS_ONLY)
-        ys = [a.min_y for a in mesh_areas] + [a.max_y for a in mesh_areas]
-        bounds_ = (rect[0], rect[1], min(ys), max(ys), rect[2], rect[3])
-        graphs.append((sid, bounds_, mesh, pts, pairs, (ox, oz)))
-        # the areas' own cells for the sidecar file (write_file): global cell indices at this pitch, ground heights
-        base_i, base_j = int(round(ox / PITCH)), int(round(oz / PITCH))
-        AREA_CELLS[sid] = [(np.array([base_i + c[0] for c in a['cells']], np.int32),
-                            np.array([base_j + c[1] for c in a['cells']], np.int32),
-                            np.array([level.y[c[2]] for c in a['cells']], np.float32), PITCH) for a in areas]
-    return {'level': level, 'info': info, 'graphs': graphs, 'border_nodes': border_nodes, 'next_id': next_id[0],
-            'dropped': dropped, 'pitch': PITCH, 'meshes': meshes, 'sectors': set(info)}
+    return edge_sets
+
+
+def sector_mesh(level, info, X, Y, inf, edges, sid):
+    """A sector's mesh: its areas (portals, borders, D lines, outline, F cells, height range) in their tiles, the
+    neighbour links and the rectangle. Returns (mesh, traced, rect)."""
+    gi0, gj0, ox, oz = inf['origin']
+    areas = inf['areas']
+    level.blocked = set()            # D sides of this sector only (another sector may hold the cells in two areas)
+    details = (detail_pass(level, areas, edges[0], ox, oz, gi0, gj0) if DETAIL_FEATURES
+               else [([], [])] * len(areas))
+    traced = trace_emit(level, areas, edges[0], gi0, gj0, ox, oz)
+    mesh_areas = []
+    ntiles = tiling(sid)[1]
+    tiles = [[] for _ in range(ntiles * ntiles)]
+    for ai, (a, (portals, borders, outline), (d_lines, f_cells)) in enumerate(zip(areas, traced, details)):
+        ys = [level.y[c[2]] for c in a['cells']]
+        # DICE's area height range: from its lowest ground to its highest ground + 1.52 m (all normal-pitch
+        # areas of sp_004_b: median +0.000 / +1.520; NavKit had -0.95 / +1.55, a metre of extra room below
+        # each area, so a lower floor's range reached the deck above it - 2026-10-19)
+        lo, hi = min(ys) + AREA_Y_MIN, max(ys) + AREA_Y_MAX
+        mesh_areas.append(kymesh.Area(sid, a['tile'][0], a['tile'][1], a['layer'], RADIUS, PITCH, hi, lo,
+                                      portals, [b[0] for b in borders], d_lines, outline, f_cells))
+        a['borders'] = borders
+        tiles[a['tile'][0] * ntiles + a['tile'][1]].append(kymesh.TileItem(ai, lo, hi))
+    mesh_links = sector_links(X, Y, areas, mesh_areas, same_grid_resolver(level, info, X, Y))
+    # the runtime's tile grid starts at the rectangle's minimum (DICE: tile lines 39.6 m past it on 3,748 sector
+    # axes) - so an edge sector, whose tiles start at its own edge, starts its rectangle there too (DICE 0x101:
+    # -800.0 instead of -800.8). The maximum side keeps the 1.1-pitch margin (DICE drops it at the grid's maximum).
+    sx, sz = inf['start']
+    rect = (ox + sx * PITCH, ox + 100 + 1.1 * PITCH, oz + sz * PITCH, oz + 100 + 1.1 * PITCH)
+    mesh = kymesh.Mesh(2, 0, 0, sid, RESOLUTION, PITCH, rect, ntiles, ntiles, RADIUS, tiles, mesh_areas,
+                       mesh_links, b'\0' * 4)
+    return mesh, traced, rect
+
+
+def sector_output(level, info, X, Y, inf, edges, borders, new_id, order_points, ladder_pairs, drop_pairs):
+    """A sector's mesh and route graph, its link counts (DROP_STATS / LADDER_STATS) and its areas' cells
+    (AREA_CELLS). Returns (mesh, (sid, bounds, mesh, pts, pairs, (ox, oz)))."""
+    gi0, gj0, ox, oz = inf['origin']
+    areas, area_of = inf['areas'], inf['area_of']
+    sid = ((X & 0xFF) << 8) | (Y & 0xFF)
+    mesh, traced, rect = sector_mesh(level, info, X, Y, inf, edges, sid)
+    orders = [p for p in (order_points or ()) if ox <= p[0] < ox + 100 and oz <= p[2] < oz + 100]
+    lads = [(f_, t_) for f_, t_ in ladder_pairs if f_ in area_of and t_ in area_of]
+    drops = [(f_, t_) for f_, t_ in drop_pairs if f_ in area_of and t_ in area_of]
+    # per sector, a later stage's entry replacing an earlier one's (stage b over a's detailed sectors): build()
+    # counts the sectors written. A drop whose ledge and landing lie in two sectors is not linked (as for
+    # ladders: the graph is per sector)
+    DROP_STATS.setdefault('sectors', {})[sid] = sum(1 for f_, t_ in drop_pairs if (f_ in area_of) != (t_ in area_of))
+    LADDER_STATS.setdefault('sectors', {})[sid] = (
+        len(lads), sum(1 for f_, t_ in ladder_pairs if (f_ in area_of) != (t_ in area_of)))
+    pts, pairs = build_graph(level, areas, area_of, traced, borders, gi0, gj0, ox, oz, new_id, orders,
+                             lads, drops)
+    navislands.note_nodes(level, pts)        # which nodes stand on terrain (SHADOW_OBJECTS_ONLY)
+    ys = [a.min_y for a in mesh.areas] + [a.max_y for a in mesh.areas]
+    bounds_ = (rect[0], rect[1], min(ys), max(ys), rect[2], rect[3])
+    # the areas' own cells for the sidecar file (write_file): global cell indices at this pitch, ground heights
+    base_i, base_j = int(round(ox / PITCH)), int(round(oz / PITCH))
+    AREA_CELLS[sid] = [(np.array([base_i + c[0] for c in a['cells']], np.int32),
+                        np.array([base_j + c[1] for c in a['cells']], np.int32),
+                        np.array([level.y[c[2]] for c in a['cells']], np.float32), PITCH) for a in areas]
+    return mesh, (sid, bounds_, mesh, pts, pairs, (ox, oz))
 
 
 def sector_links(X, Y, areas, mesh_areas, resolve):
@@ -1273,7 +1347,8 @@ def write_file(graphs, out_path, log, t0):
         f'{sum(len(x.edges) for x in hpd_sectors)} edges, {len(data)} bytes ({time.time() - t0:.0f} s)')
     try:
         write_cells(graphs, out_path, data, log)
-    except Exception as e:                 # the sidecar is optional: the exporter rasterises outlines without it
+    except (OSError, ValueError) as e:     # the sidecar is optional: the exporter rasterises outlines without it
+        # (OSError: the .npz not writable - locked, disk full; ValueError: numpy refusing the recorded arrays)
         log(f'cells: not written ({type(e).__name__}: {e})')
 
 
@@ -1369,6 +1444,44 @@ def line_walkable(level, k0, a, b, gi0, gj0, k1):
 
 
 def build_graph(level, areas, area_of, traced, borders, gi0, gj0, ox, oz, new_id, orders=(), ladders=(), drops=()):
+    """A sector's route graph: nodes (area centres, portals, border nodes, cover), walkable edges, ladder and drop
+    links, the groups joined, detours repaired and order nodes added. Returns (pts, pairs)."""
+    pts, cell_of = place_nodes(level, areas, traced, borders, ox, oz, new_id)
+    pairs = walkable_pairs(level, pts, gi0, gj0)
+    for kf, kt in ladders:
+        # a ladder link: a node on the ground at its foot and at its top, joined directly (the climb is no walkable
+        # line); the runtime's mover walks the bot into the ladder, which takes any soldier who walks into it
+        ends = [link_end_node(level, pts, cell_of, k, ox, oz, new_id) for k in (kf, kt)]
+        pairs.append((ends[0], ends[1], math.dist(pts[ends[0]][1], pts[ends[1]][1])))
+    drop_ends = []
+    for ku, kl in drops:
+        # a drop link: a node on the ledge and one on the ground below, joined one way (DROP_IDS). The nodes now, so the
+        # group joining below walks them into their own floors; the link after it, so it does not count the two
+        # floors joined (it would leave out the walk back up where there is one)
+        ends = [link_end_node(level, pts, cell_of, k, ox, oz, new_id) for k in (ku, kl)]
+        if ends[0] != ends[1]:
+            drop_ends.append(tuple(ends))
+    node_at, cell_ij = join_groups(level, areas, pts, pairs, gi0, gj0, ox, oz, new_id)
+    if DETOUR_REPAIR:
+        for p in range(DETOUR_PASSES):
+            added = repair_detours(level, pts, pairs, node_at, cell_ij, gi0, gj0, ox, oz, new_id)
+            REPAIR_STATS[p] = REPAIR_STATS.get(p, 0) + added
+    if ORDER_NODES and orders:
+        ORDER_STATS['added'] = ORDER_STATS.get('added', 0) + add_order_nodes(level, pts, pairs, node_at, area_of, orders,
+                                                                             gi0, gj0, ox, oz, new_id)
+    joined = {frozenset((a_, b_)) for a_, b_, _d in pairs}
+    for u, l_ in drop_ends:
+        if frozenset((u, l_)) in joined:
+            continue                    # a walk pair joins the two nodes already: no drop (finalize_graph would take
+                                        # the walk's way back up)
+        DROP_IDS.add((pts[u][0], pts[l_][0]))
+        pairs.append((u, l_, math.dist(pts[u][1], pts[l_][1])))
+    return pts, pairs
+
+
+def place_nodes(level, areas, traced, borders, ox, oz, new_id):
+    """The sector's nodes before any edge: area centres, portal midpoints, the border nodes and the NODE_COVER ones,
+    one per surface. Returns (pts [(id, pos, k, local i, local j)], cell_of {surface: (i, j)})."""
     pts = []    # (id, pos, k, local i, local j)
     # one node per surface: an area-centre or portal node whose surface already holds a node (another area's or
     # portal's, or a border node) is not added - DICE's route graphs have no two nodes at one position except a
@@ -1413,6 +1526,12 @@ def build_graph(level, areas, area_of, traced, borders, gi0, gj0, ox, oz, new_id
     cover = NODE_COVER.get('detailed' if abs(PITCH - DETAILED_PITCH) < 1e-6 else 'normal')
     if cover:
         add_cover_nodes(level, areas, pts, add, ox, oz, cover)
+    return pts, cell_of
+
+
+def walkable_pairs(level, pts, gi0, gj0):
+    """The edges: node pairs within DIST_EDGE_MAX whose straight line is walkable (Gabriel-pruned by GABRIEL_EDGES).
+    Returns [(a, b, distance)]."""
     # edges: pairs within DIST_EDGE_MAX whose straight line is walkable
     cell = DIST_EDGE_MAX
     grid = defaultdict(list)
@@ -1431,35 +1550,22 @@ def build_graph(level, areas, area_of, traced, borders, gi0, gj0, ox, oz, new_id
                         pairs.append((idx, q, d))
     if GABRIEL_EDGES == 'all' or (GABRIEL_EDGES == 'detailed' and abs(PITCH - DETAILED_PITCH) < 1e-6):
         pairs = gabriel_prune(pts, pairs)
-    for kf, kt in ladders:
-        # a ladder link: a node on the ground at its foot and at its top, joined directly (the climb is no walkable
-        # line); the runtime's mover walks the bot into the ladder, which takes any soldier who walks into it
-        ends = []
-        for k in (kf, kt):
-            idx = next((q for q, p in enumerate(pts) if p[2] == k), None)
-            if idx is None:
-                i, j = cell_of[k]
-                pts.append((new_id(), (ox + i * PITCH, float(level.y[k]) + Y_OFFSET, oz + j * PITCH), k, i, j))
-                idx = len(pts) - 1
-            ends.append(idx)
-        pairs.append((ends[0], ends[1], math.dist(pts[ends[0]][1], pts[ends[1]][1])))
-    drop_ends = []
-    for ku, kl in drops:
-        # a drop link: a node on the ledge and one on the ground below, joined one way (DROP_IDS). The nodes now, so the
-        # group joining below walks them into their own floors; the link after it, so it does not count the two
-        # floors joined (it would leave out the walk back up where there is one)
-        ends = []
-        for k in (ku, kl):
-            idx = next((q for q, p in enumerate(pts) if p[2] == k), None)
-            if idx is None:
-                i, j = cell_of[k]
-                pts.append((new_id(), (ox + i * PITCH, float(level.y[k]) + Y_OFFSET, oz + j * PITCH), k, i, j))
-                idx = len(pts) - 1
-            ends.append(idx)
-        if ends[0] != ends[1]:
-            drop_ends.append(tuple(ends))
-    # Connect remaining groups: grid search (8-connected, step rule) from one group to the nearest node
-    # of another, then string-pull the path into straight walkable legs with waypoint nodes.
+    return pairs
+
+
+def link_end_node(level, pts, cell_of, k, ox, oz, new_id):
+    """The index of the node on surface k (a ladder or drop link's end), added there when it has none."""
+    idx = next((q for q, p in enumerate(pts) if p[2] == k), None)
+    if idx is None:
+        i, j = cell_of[k]
+        pts.append((new_id(), (ox + i * PITCH, float(level.y[k]) + Y_OFFSET, oz + j * PITCH), k, i, j))
+        idx = len(pts) - 1
+    return idx
+
+
+def join_groups(level, areas, pts, pairs, gi0, gj0, ox, oz, new_id):
+    """Connect remaining groups: grid search (8-connected, step rule) from one group to the nearest node of another,
+    then string-pull the path into straight walkable legs with waypoint nodes. Returns (node_at, cell_ij)."""
     parent = list(range(len(pts)))
 
     def find(x):
@@ -1486,43 +1592,10 @@ def build_graph(level, areas, area_of, traced, borders, gi0, gj0, ox, oz, new_id
         for root, members in sorted(groups.items(), key=lambda g: len(g[1])):
             if find(members[0]) != root:
                 continue
-            prev = {pts[m][2]: None for m in members}
-            q = deque(pts[m][2] for m in members)
-            target = None
-            while q and target is None:
-                k = q.popleft()
-                i, j = cell_ij[k]
-                for di in (-1, 0, 1):
-                    for dj in (-1, 0, 1):
-                        if not (di or dj) or (i + di) not in WINDOW or (j + dj) not in WINDOW:
-                            continue
-                        n = level.neighbour(k, gi0 + i, gj0 + j, di, dj)
-                        if n is None or n in prev:
-                            continue
-                        prev[n] = k
-                        cell_ij.setdefault(n, (i + di, j + dj))
-                        if n in node_at and find(node_at[n]) != root:
-                            target = n
-                            break
-                        q.append(n)
-                    if target is not None:
-                        break
-            if target is None:
+            path = path_to_other_group(level, pts, members, root, find, node_at, cell_ij, gi0, gj0)
+            if path is None:
                 continue
-            path = [target]
-            while prev[path[-1]] is not None:
-                path.append(prev[path[-1]])
-            path.reverse()                       # from a member's surface to the target's surface
-            # string pulling
-            way = [path[0]]
-            a = 0
-            while a < len(path) - 1:
-                b = len(path) - 1
-                while b > a + 1 and not (math.dist(cell_ij[path[a]], cell_ij[path[b]]) * PITCH <= DIST_EDGE_MAX and
-                                         line_walkable(level, path[a], cell_ij[path[a]], cell_ij[path[b]], gi0, gj0, path[b])):
-                    b -= 1
-                way.append(path[b])
-                a = b
+            way = string_pull(level, path, cell_ij, gi0, gj0)
             chain = []
             for k in way:
                 if k in node_at:
@@ -1537,21 +1610,55 @@ def build_graph(level, areas, area_of, traced, borders, gi0, gj0, ox, oz, new_id
                 pairs.append((u, v, math.dist(pts[u][1], pts[v][1])))
                 parent[find(u)] = find(v)
             changed = True
-    if DETOUR_REPAIR:
-        for p in range(DETOUR_PASSES):
-            added = repair_detours(level, pts, pairs, node_at, cell_ij, gi0, gj0, ox, oz, new_id)
-            REPAIR_STATS[p] = REPAIR_STATS.get(p, 0) + added
-    if ORDER_NODES and orders:
-        ORDER_STATS['added'] = ORDER_STATS.get('added', 0) + add_order_nodes(level, pts, pairs, node_at, area_of, orders,
-                                                                             gi0, gj0, ox, oz, new_id)
-    joined = {frozenset((a_, b_)) for a_, b_, _d in pairs}
-    for u, l_ in drop_ends:
-        if frozenset((u, l_)) in joined:
-            continue                    # a walk pair joins the two nodes already: no drop (finalize_graph would take
-                                        # the walk's way back up)
-        DROP_IDS.add((pts[u][0], pts[l_][0]))
-        pairs.append((u, l_, math.dist(pts[u][1], pts[l_][1])))
-    return pts, pairs
+    return node_at, cell_ij
+
+
+def path_to_other_group(level, pts, members, root, find, node_at, cell_ij, gi0, gj0):
+    """Breadth-first grid search (8-connected, step rule) from a group's surfaces to the nearest surface holding a node
+    of another group: the surfaces from a member's to the target's, or None."""
+    prev = {pts[m][2]: None for m in members}
+    q = deque(pts[m][2] for m in members)
+    target = None
+    while q and target is None:
+        k = q.popleft()
+        i, j = cell_ij[k]
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                if not (di or dj) or (i + di) not in WINDOW or (j + dj) not in WINDOW:
+                    continue
+                n = level.neighbour(k, gi0 + i, gj0 + j, di, dj)
+                if n is None or n in prev:
+                    continue
+                prev[n] = k
+                cell_ij.setdefault(n, (i + di, j + dj))
+                if n in node_at and find(node_at[n]) != root:
+                    target = n
+                    break
+                q.append(n)
+            if target is not None:
+                break
+    if target is None:
+        return None
+    path = [target]
+    while prev[path[-1]] is not None:
+        path.append(prev[path[-1]])
+    path.reverse()                       # from a member's surface to the target's surface
+    return path
+
+
+def string_pull(level, path, cell_ij, gi0, gj0):
+    """A surface path pulled into straight walkable legs of at most DIST_EDGE_MAX: the surfaces at the legs' ends."""
+    # string pulling
+    way = [path[0]]
+    a = 0
+    while a < len(path) - 1:
+        b = len(path) - 1
+        while b > a + 1 and not (math.dist(cell_ij[path[a]], cell_ij[path[b]]) * PITCH <= DIST_EDGE_MAX and
+                                 line_walkable(level, path[a], cell_ij[path[a]], cell_ij[path[b]], gi0, gj0, path[b])):
+            b -= 1
+        way.append(path[b])
+        a = b
+    return way
 
 
 def add_cover_nodes(level, areas, pts, add, ox, oz, cover):
@@ -1692,64 +1799,10 @@ def repair_detours(level, pts, pairs, node_at, cell_ij, gi0, gj0, ox, oz, new_id
     adj = defaultdict(dict)
     for a_, b_, d in pairs:
         adj[a_][b_] = adj[b_][a_] = min(d, adj[a_].get(b_, 1e18))
-
-    def routes(src, limit):
-        best = {src: 0.0}
-        q = [(0.0, src)]
-        while q:
-            d, u = heapq.heappop(q)
-            if d > best[u] or d > limit:
-                continue
-            for v, w in adj[u].items():
-                if d + w < best.get(v, 1e18):
-                    best[v] = d + w
-                    heapq.heappush(q, (d + w, v))
-        return best
-
-    def walk(k0, k1, limit):
-        """Shortest 8-connected walk over kept surfaces (step rule) from k0 to k1, at most limit metres; list of
-        surfaces or None."""
-        best = {k0: 0.0}
-        prev = {k0: None}
-        q = [(0.0, k0)]
-        while q:
-            d, k = heapq.heappop(q)
-            if k == k1:
-                path = [k]
-                while prev[path[-1]] is not None:
-                    path.append(prev[path[-1]])
-                return path[::-1]
-            if d > best[k]:
-                continue
-            i, j = cell_ij[k]
-            for di in (-1, 0, 1):
-                for dj in (-1, 0, 1):
-                    if not (di or dj) or (i + di) not in WINDOW or (j + dj) not in WINDOW:
-                        continue
-                    n = level.neighbour(k, gi0 + i, gj0 + j, di, dj)
-                    if n is None:
-                        continue
-                    nd = d + (1.4142 if di and dj else 1.0) * PITCH
-                    if nd <= limit and nd < best.get(n, 1e18):
-                        best[n], prev[n] = nd, k
-                        cell_ij.setdefault(n, (i + di, j + dj))
-                        heapq.heappush(q, (nd, n))
-        return None
-
-    def link(u):
-        for q_ in range(len(pts)):
-            if q_ == u or q_ in adj[u]:
-                continue
-            d = math.dist(pts[u][1], pts[q_][1])
-            if d <= DIST_EDGE_MAX and line_walkable(level, pts[u][2], (pts[u][3], pts[u][4]), (pts[q_][3], pts[q_][4]),
-                                                    gi0, gj0, pts[q_][2]):
-                pairs.append((u, q_, d))
-                adj[u][q_] = adj[q_][u] = d
-
     added = 0
     n0 = len(pts)
     for a in range(n0):
-        best = routes(a, DETOUR_TRIGGER * DIST_EDGE_MAX)
+        best = graph_routes(adj, a, DETOUR_TRIGGER * DIST_EDGE_MAX)
         for b in range(a + 1, n0):
             straight = math.dist(pts[a][1], pts[b][1])
             if straight > DIST_EDGE_MAX or straight < 1e-3:
@@ -1757,17 +1810,11 @@ def repair_detours(level, pts, pairs, node_at, cell_ij, gi0, gj0, ox, oz, new_id
             route = best.get(b, 1e18)
             if route <= DETOUR_TRIGGER * straight:
                 continue
-            path = walk(pts[a][2], pts[b][2], DETOUR_MAX * straight)   # the walk itself within DETOUR_MAX x straight
+            # the walk itself within DETOUR_MAX x straight
+            path = surface_walk(level, cell_ij, gi0, gj0, pts[a][2], pts[b][2], DETOUR_MAX * straight)
             if path is None:
                 continue
-            way, s = [path[0]], 0
-            while s < len(path) - 1:
-                e = len(path) - 1
-                while e > s + 1 and not (math.dist(cell_ij[path[s]], cell_ij[path[e]]) * PITCH <= DIST_EDGE_MAX and
-                                         line_walkable(level, path[s], cell_ij[path[s]], cell_ij[path[e]], gi0, gj0, path[e])):
-                    e -= 1
-                way.append(path[e])
-                s = e
+            way = string_pull(level, path, cell_ij, gi0, gj0)
             chain = []
             for k in way:
                 if k in node_at:
@@ -1786,9 +1833,67 @@ def repair_detours(level, pts, pairs, node_at, cell_ij, gi0, gj0, ox, oz, new_id
             if DETOUR_LINK_ALL:
                 for u in chain:
                     if u >= n0:
-                        link(u)
-            best = routes(a, DETOUR_TRIGGER * DIST_EDGE_MAX)
+                        link_by_edge_rule(level, pts, pairs, adj, u, gi0, gj0)
+            best = graph_routes(adj, a, DETOUR_TRIGGER * DIST_EDGE_MAX)
     return added
+
+
+def graph_routes(adj, src, limit):
+    """Shortest route lengths over the graph adj from src (Dijkstra, not expanded past limit): {node: metres}."""
+    best = {src: 0.0}
+    q = [(0.0, src)]
+    while q:
+        d, u = heapq.heappop(q)
+        if d > best[u] or d > limit:
+            continue
+        for v, w in adj[u].items():
+            if d + w < best.get(v, 1e18):
+                best[v] = d + w
+                heapq.heappush(q, (d + w, v))
+    return best
+
+
+def surface_walk(level, cell_ij, gi0, gj0, k0, k1, limit):
+    """Shortest 8-connected walk over kept surfaces (step rule) from k0 to k1, at most limit metres; list of
+    surfaces or None."""
+    best = {k0: 0.0}
+    prev = {k0: None}
+    q = [(0.0, k0)]
+    while q:
+        d, k = heapq.heappop(q)
+        if k == k1:
+            path = [k]
+            while prev[path[-1]] is not None:
+                path.append(prev[path[-1]])
+            return path[::-1]
+        if d > best[k]:
+            continue
+        i, j = cell_ij[k]
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                if not (di or dj) or (i + di) not in WINDOW or (j + dj) not in WINDOW:
+                    continue
+                n = level.neighbour(k, gi0 + i, gj0 + j, di, dj)
+                if n is None:
+                    continue
+                nd = d + (1.4142 if di and dj else 1.0) * PITCH
+                if nd <= limit and nd < best.get(n, 1e18):
+                    best[n], prev[n] = nd, k
+                    cell_ij.setdefault(n, (i + di, j + dj))
+                    heapq.heappush(q, (nd, n))
+    return None
+
+
+def link_by_edge_rule(level, pts, pairs, adj, u, gi0, gj0):
+    """Node u linked (in pairs and adj) to every node within DIST_EDGE_MAX it reaches in a straight walkable line."""
+    for q_ in range(len(pts)):
+        if q_ == u or q_ in adj[u]:
+            continue
+        d = math.dist(pts[u][1], pts[q_][1])
+        if d <= DIST_EDGE_MAX and line_walkable(level, pts[u][2], (pts[u][3], pts[u][4]), (pts[q_][3], pts[q_][4]),
+                                                gi0, gj0, pts[q_][2]):
+            pairs.append((u, q_, d))
+            adj[u][q_] = adj[q_][u] = d
 
 
 def finalize_graph(pts, pairs, linked_ids, origin=None):

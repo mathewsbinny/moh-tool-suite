@@ -15,7 +15,6 @@ Without a path it uses the newest crashreport.xml in Documents\\Project OPFOR\\M
 The game's own crash reporter writes the file; this tool only reads it and the exe. Nothing is sent anywhere.
 """
 import datetime
-import glob
 import os
 import re
 import sys
@@ -203,7 +202,7 @@ def main(argv):
             image = Image(exe)
         except ImportError:
             print('(code view off: pip install pefile capstone)')
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - optional code view (pefile/capstone errors): the report prints without it
             print(f'(code view off: cannot read {exe}: {e})')
 
     when = datetime.datetime.fromtimestamp(os.path.getmtime(report_path)).strftime('%Y-%m-%d %H:%M:%S')

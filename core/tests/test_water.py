@@ -64,7 +64,7 @@ def main(argv):
             else:
                 try:
                     w = level_water(layers, os.path.join(work, lv))
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - test harness: any failure is the level's recorded problem
                     problems.append(f'not read: {e}')
                 if w is None and not problems:
                     problems.append('no water files')

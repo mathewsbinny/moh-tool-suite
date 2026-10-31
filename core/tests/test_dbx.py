@@ -67,7 +67,7 @@ def truncation_checks():
                     wrong.append(f'{name}, {what}: no error')
             except ValueError:
                 pass
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - test harness: anything but ValueError is a recorded wrong result
                 wrong.append(f'{name}, {what}: {type(e).__name__}: {e}')
     print(f'{"ok  " if not wrong else "FAIL"} the file cut at each of its {len(data)} lengths and a string index past '
           f'the table: ValueError every time ({"; ".join(wrong[:3]) or "all"})')
@@ -95,7 +95,7 @@ def main(argv):
         try:
             dbx.parse(data)
             parsed += 1
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - test harness: any parse failure is counted and listed
             failed += 1
             print('PARSE FAILED', f, e)
         if h in golden:

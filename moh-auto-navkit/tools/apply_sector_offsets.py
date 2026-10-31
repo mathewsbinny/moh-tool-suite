@@ -92,7 +92,6 @@ class Dbx:
         self.tree += _varint(0)
 
     def build(self):
-        base = 24 + 4 * len(self.strings)
         offsets, sdata = [], bytearray()
         for s in self.strings:
             offsets.append(len(sdata))

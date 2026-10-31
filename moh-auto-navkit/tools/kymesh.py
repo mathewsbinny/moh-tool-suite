@@ -7,11 +7,10 @@ out again and recomputes every offset.
 """
 import struct
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
 
 NULL = 0xFFFFFFFF
 MARKER = b'KynogonRuntimeMesh\0\0'
-Vec3 = Tuple[float, float, float]
+Vec3 = tuple[float, float, float]
 
 
 @dataclass
@@ -26,13 +25,13 @@ class BorderPortal:           # C: portal on the sector border
     p0: Vec3
     p1: Vec3
     direction: Vec3           # unit vector out of the sector (or "up")
-    runtime: Tuple[int, int] = (NULL, NULL)   # filled by the game at runtime; NULL in files
+    runtime: tuple[int, int] = (NULL, NULL)   # filled by the game at runtime; NULL in files
 
 
 @dataclass
 class Cell:                   # F: special pitch-sized cell (ledge / height break)
     direction: Vec3
-    points: List[Vec3]
+    points: list[Vec3]
 
 
 @dataclass
@@ -45,13 +44,13 @@ class Area:                   # one walkable area inside one tile
     pitch: float
     max_y: float
     min_y: float
-    portals: List[Portal] = field(default_factory=list)
-    border_portals: List[BorderPortal] = field(default_factory=list)
-    d_lines: List[List[Vec3]] = field(default_factory=list)
-    outline: List[List[Vec3]] = field(default_factory=list)      # E
-    cells: List[Cell] = field(default_factory=list)
+    portals: list[Portal] = field(default_factory=list)
+    border_portals: list[BorderPortal] = field(default_factory=list)
+    d_lines: list[list[Vec3]] = field(default_factory=list)
+    outline: list[list[Vec3]] = field(default_factory=list)      # E
+    cells: list[Cell] = field(default_factory=list)
     end_row: Vec3 = (0.0, 0.0, 0.0)          # floats of the F table's terminating row
-    null_offsets: dict = field(default_factory=dict)  # raw offset values stored with count 0
+    null_offsets: dict[int, int] = field(default_factory=dict)  # raw offset values stored with count 0
 
 
 @dataclass
@@ -63,14 +62,14 @@ class TileItem:
 
 @dataclass
 class LinkObject:
-    header: Tuple[int, int, int]
-    refs: List[Tuple[int, int]]   # (area index, byte offset inside that area object)
+    header: tuple[int, int, int]
+    refs: list[tuple[int, int]]   # (area index, byte offset inside that area object)
 
 
 @dataclass
 class NeighbourLink:
     sector_id: int
-    objects: List[LinkObject]
+    objects: list[LinkObject]
 
 
 @dataclass
@@ -81,23 +80,23 @@ class Mesh:
     sector_id: int
     resolution: float
     pitch: float
-    rect: Tuple[float, float, float, float]   # minX, maxX, minZ, maxZ
+    rect: tuple[float, float, float, float]   # minX, maxX, minZ, maxZ
     tiles_x: int
     tiles_z: int
     radius: float
-    tiles: List[List[TileItem]]               # tiles_x * tiles_z
-    areas: List[Area]
-    links: List[NeighbourLink]
+    tiles: list[list[TileItem]]               # tiles_x * tiles_z
+    areas: list[Area]
+    links: list[NeighbourLink]
     end_slot: bytes                           # 4 bytes the loader never reads (uninitialised in DICE files)
     links_null_offset: int = NULL
 
 
-def _u32(m, o): return struct.unpack_from('<I', m, o)[0]
-def _f32(m, o): return struct.unpack_from('<f', m, o)[0]
-def _v3(m, o): return struct.unpack_from('<3f', m, o)
+def _u32(m: bytes, o: int) -> int: return struct.unpack_from('<I', m, o)[0]
+def _f32(m: bytes, o: int) -> float: return struct.unpack_from('<f', m, o)[0]
+def _v3(m: bytes, o: int) -> Vec3: return struct.unpack_from('<3f', m, o)
 
 
-def _points(m, a, b):
+def _points(m: bytes, a: int, b: int) -> list[Vec3]:
     return [_v3(m, q) for q in range(a, b, 12)]
 
 
@@ -114,9 +113,9 @@ def parse_mesh(m: bytes) -> Mesh:
     ntiles = tx * tz
     tile_offs = [_u32(m, tile_tab + i * 4) for i in range(ntiles + 1)]
 
-    area_index = {}           # object offset -> index
-    area_offsets = []
-    tiles_raw = []
+    area_index: dict[int, int] = {}   # object offset -> index
+    area_offsets: list[int] = []
+    tiles_raw: list[list[tuple[int, float, float]]] = []
     for t in range(ntiles):
         to = tile_offs[t]
         n = _u32(m, to)
@@ -128,7 +127,7 @@ def parse_mesh(m: bytes) -> Mesh:
         tiles_raw.append(items)
     tiles = [[TileItem(area_index[p], a, b) for p, a, b in items] for items in tiles_raw]
 
-    areas = []
+    areas: list[Area] = []
     for o in area_offsets:
         hdr = struct.unpack_from('<4I4f', m, o)
         cnt = {k: _u32(m, o + k) for k in (0x20, 0x28, 0x30, 0x38, 0x40, 0x48)}
@@ -163,15 +162,15 @@ def parse_mesh(m: bytes) -> Mesh:
         for p in area.portals:
             p.target = area_index[p.target]
 
-    links = []
+    links: list[NeighbourLink] = []
     for k in range(n_links):
         sid, cnt, lst = struct.unpack_from('<3I', m, links_off + k * 12)
-        objs = []
+        objs: list[LinkObject] = []
         for j in range(cnt):
             lo = _u32(m, lst + j * 4)
             h = struct.unpack_from('<3I', m, lo)
             c = _u32(m, lo + 0xC)
-            refs = []
+            refs: list[tuple[int, int]] = []
             for q in range(c):
                 ptr = _u32(m, lo + 0x10 + q * 4)
                 owner = max(a for a in area_offsets if a <= ptr)
@@ -193,8 +192,8 @@ def write_mesh(mesh: Mesh) -> bytes:
     ntiles = mesh.tiles_x * mesh.tiles_z
     tab = len(out)
     out += b'\0' * ((ntiles + 1) * 4)
-    tile_offs = []
-    area_off = {}
+    tile_offs: list[int] = []
+    area_off: dict[int, int] = {}
     for items in mesh.tiles:
         to = len(out)
         tile_offs.append(to)
@@ -241,11 +240,11 @@ def write_mesh(mesh: Mesh) -> bytes:
     return bytes(out)
 
 
-def _area_body(a: Area):
+def _area_body(a: Area) -> tuple[bytes, int]:
     """Bytes of one area object with B target fields zeroed; returns (bytes, offset of the B records)."""
     hdr_size = 0x50
     blob = bytearray()
-    off = {}
+    off: dict[int, int] = {}
     pos = hdr_size
     portal_pos = pos
     off[0x28] = pos if a.portals else a.null_offsets.get(0x28, NULL)

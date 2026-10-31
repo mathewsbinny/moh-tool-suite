@@ -35,7 +35,7 @@ BAD = {'fail', 'error'}
 try:
     import navregress as _nr
     PARITY_HIGHER, PARITY_LOWER, PARITY_TOL = list(_nr.HIGHER), list(_nr.LOWER), 0.05
-except Exception:                                  # quick tests without NavKit on the path still compare
+except (ImportError, AttributeError):              # quick tests without NavKit on the path still compare
     PARITY_HIGHER = ['ground', 'areas_same', 'portals', 'outline', 'borders', 'costs', 'nodes_same', 'nodes_near',
                      'edges_same', 'connectivity', 'ai_coverage', 'ai_pairwise']
     PARITY_LOWER = ['extra_ground', 'over_connection', 'sectors_missing']
@@ -82,7 +82,7 @@ def suite_version(suite):
         c = subprocess.run(['git', '-C', suite, 'rev-parse', '--short', 'HEAD'], capture_output=True, text=True, timeout=20)
         d = subprocess.run(['git', '-C', suite, 'status', '--porcelain'], capture_output=True, text=True, timeout=20)
         return {'commit': c.stdout.strip() or None, 'changed': bool(d.stdout.strip())}
-    except Exception:
+    except (OSError, subprocess.SubprocessError):      # no git, or it timed out
         return {'commit': None, 'changed': None}
 
 
@@ -130,7 +130,7 @@ def listing(folder):
             try:
                 r = load(os.path.join(folder, f))
                 out.append((f[:-5], r['date'], len(r['levels']), counts(r)))
-            except Exception:
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):   # not a readable harness run
                 continue
     return out
 

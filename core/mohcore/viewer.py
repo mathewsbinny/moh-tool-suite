@@ -6,9 +6,13 @@ its own panel functions. Picking renders the object ids into a hidden buffer and
 Camera: orbit - left drag rotates, right or middle drag pans, wheel zooms, double-click focuses on what is under
 the mouse; fly - hold the right button and use W A S D (Q / E down / up, Shift faster). F toggles orbit / fly.
 """
+from __future__ import annotations
+
 import math
 import os
 import time
+from collections.abc import Callable, Iterable, Sequence
+from typing import Any
 
 import moderngl
 import numpy as np
@@ -85,7 +89,7 @@ void main() { color = vec4(v_col, 1.0); }
 
 # ------------------------------------------------------------------------------------------------ scene
 
-def triangle_colors(colors, n, per=3):
+def triangle_colors(colors: np.ndarray | Sequence | None, n: int, per: int = 3) -> np.ndarray:
     """Per-vertex RGBA bytes from one RGB per primitive (alpha 255), or zeros (alpha 0: the layer's colour)."""
     if colors is None:
         return np.zeros((n * per, 4), dtype=np.uint8)
@@ -98,15 +102,17 @@ def triangle_colors(colors, n, per=3):
 class Scene:
     """Triangles to draw: add batches, then the viewer uploads them once."""
 
-    def __init__(self):
-        self.layers = []                  # (name, colour)
-        self.batches = []                 # (positions (n*3, 3) float32, tags (n*3,) uint32, colours (n*3, 4) uint8)
-        self.line_batches = []            # (positions (n*2, 3) float32, tags (n*2,) uint32, colours (n*2, 4) uint8)
-        self.ranges = []                  # per triangle batch: (first vertex, vertex count), for Viewer.set_colors
+    def __init__(self) -> None:
+        self.layers: list[tuple[str, tuple[float, float, float]]] = []  # (name, colour)
+        # (positions (n*3, 3) float32, tags (n*3,) uint32, colours (n*3, 4) uint8)
+        self.batches: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        # (positions (n*2, 3) float32, tags (n*2,) uint32, colours (n*2, 4) uint8)
+        self.line_batches: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        self.ranges: list[tuple[int, int]] = []  # per triangle batch: (first vertex, vertex count), for Viewer.set_colors
         self._vertices = 0
-        self._sample = []
+        self._sample: list[np.ndarray] = []
 
-    def layer(self, name, colour):
+    def layer(self, name: str, colour: tuple[float, float, float]) -> int:
         for i, (n, _) in enumerate(self.layers):
             if n == name:
                 return i
@@ -115,7 +121,8 @@ class Scene:
         self.layers.append((name, colour))
         return len(self.layers) - 1
 
-    def add_triangles(self, triangles, object_id, layer, colors=None):
+    def add_triangles(self, triangles: np.ndarray, object_id: int | np.ndarray, layer: int,
+                      colors: np.ndarray | None = None) -> int:
         """triangles: (n, 3, 3) world positions. object_id: one id, or one per triangle (an (n,) array).
         colors: None (the layer's colour) or one RGB per triangle ((n, 3) floats 0-1). Returns the batch index."""
         t = np.asarray(triangles, dtype=np.float32).reshape(-1, 3)
@@ -130,7 +137,7 @@ class Scene:
         return len(self.batches) - 1
 
     @property
-    def bounds(self):
+    def bounds(self) -> tuple[np.ndarray, np.ndarray] | None:
         """Where the bulk of the geometry is: the 1-99 % range of a sample of positions (a few far-away objects,
         such as sky or background pieces, do not decide the camera's first view)."""
         if not self._sample:
@@ -138,10 +145,10 @@ class Scene:
         pts = np.concatenate(self._sample)
         return np.percentile(pts, 1, axis=0), np.percentile(pts, 99, axis=0)
 
-    def add_indexed(self, vertices, triangles, object_id, layer):
+    def add_indexed(self, vertices: np.ndarray, triangles: np.ndarray, object_id: int | np.ndarray, layer: int) -> None:
         self.add_triangles(np.asarray(vertices, dtype=np.float32)[np.asarray(triangles)], object_id, layer)
 
-    def add_box(self, centre, size, object_id, layer):
+    def add_box(self, centre: Sequence[float] | np.ndarray, size: float, object_id: int, layer: int) -> None:
         c = np.asarray(centre, dtype=np.float32)
         h = size / 2.0
         corners = np.array([[x, y, z] for x in (-h, h) for y in (-h, h) for z in (-h, h)], dtype=np.float32) + c
@@ -151,7 +158,8 @@ class Scene:
             tris += [corners[[a, b, cc]], corners[[a, cc, d]]]
         self.add_triangles(np.array(tris), object_id, layer)
 
-    def add_lines(self, segments, object_id, layer, colors=None):
+    def add_lines(self, segments: np.ndarray, object_id: int | np.ndarray, layer: int,
+                  colors: np.ndarray | None = None) -> None:
         """segments: (n, 2, 3) world positions; object_id one id or one per segment; colors None or (n, 3)."""
         s = np.asarray(segments, dtype=np.float32).reshape(-1, 3)
         n = len(s) // 2
@@ -159,20 +167,20 @@ class Scene:
         tag = np.repeat((np.uint32(layer) << np.uint32(24)) | ids, 2).astype(np.uint32)
         self.line_batches.append((s, tag, triangle_colors(colors, n, per=2)))
 
-    def add_polyline(self, points, object_id, layer, closed=False):
+    def add_polyline(self, points: np.ndarray | Sequence, object_id: int, layer: int, closed: bool = False) -> None:
         p = np.asarray(points, dtype=np.float32)
         if len(p) < 2:
             return
         q = np.concatenate([p, p[:1]]) if closed else p
         self.add_lines(np.stack([q[:-1], q[1:]], axis=1), object_id, layer)
 
-    def triangle_count(self):
+    def triangle_count(self) -> int:
         return sum(len(x[0]) for x in self.batches) // 3
 
 
 # ------------------------------------------------------------------------------------------------ camera
 
-def perspective(fov_y, aspect, near, far):
+def perspective(fov_y: float, aspect: float, near: float, far: float) -> np.ndarray:
     f = 1.0 / math.tan(math.radians(fov_y) / 2)
     m = np.zeros((4, 4), dtype=np.float32)
     m[0, 0], m[1, 1] = f / aspect, f
@@ -181,7 +189,8 @@ def perspective(fov_y, aspect, near, far):
     return m
 
 
-def look_at(eye, target, up=(0, 1, 0)):
+def look_at(eye: Sequence[float] | np.ndarray, target: Sequence[float] | np.ndarray,
+            up: Sequence[float] = (0, 1, 0)) -> np.ndarray:
     eye, target, up = (np.asarray(v, dtype=np.float64) for v in (eye, target, up))
     f = target - eye
     f /= np.linalg.norm(f)
@@ -197,37 +206,37 @@ def look_at(eye, target, up=(0, 1, 0)):
 
 
 class Camera:
-    def __init__(self):
+    def __init__(self) -> None:
         self.target = np.zeros(3)
         self.yaw, self.pitch, self.distance = 0.6, 0.6, 300.0
         self.fly = False
         self.eye_fly = np.array([0.0, 100.0, 0.0])
         self.fov = 60.0
 
-    def frame(self, lo, hi):
+    def frame(self, lo: np.ndarray, hi: np.ndarray) -> None:
         self.target = (np.asarray(lo) + np.asarray(hi)) / 2
         self.distance = float(np.linalg.norm(np.asarray(hi) - np.asarray(lo))) * 0.6 + 10
 
-    def direction(self):
+    def direction(self) -> np.ndarray:
         return np.array([math.cos(self.pitch) * math.sin(self.yaw), math.sin(self.pitch), math.cos(self.pitch) * math.cos(self.yaw)])
 
-    def eye(self):
+    def eye(self) -> np.ndarray:
         return self.eye_fly if self.fly else self.target + self.direction() * self.distance
 
-    def matrices(self, aspect):
+    def matrices(self, aspect: float) -> tuple[np.ndarray, np.ndarray]:
         eye = self.eye()
         target = eye - self.direction() if self.fly else self.target
         near = max(0.05, (self.distance if not self.fly else 50.0) / 2000.0)
         return perspective(self.fov, aspect, near, near * 200000.0), look_at(eye, target)
 
-    def toggle_fly(self):
+    def toggle_fly(self) -> None:
         if not self.fly:
             self.eye_fly = self.eye().copy()
         else:
             self.target = self.eye_fly - self.direction() * self.distance
         self.fly = not self.fly
 
-    def focus(self, point, distance=None):
+    def focus(self, point: Sequence[float] | np.ndarray, distance: float | None = None) -> None:
         self.fly = False
         self.target = np.asarray(point, dtype=np.float64)
         if distance:
@@ -240,7 +249,8 @@ class Viewer:
     """Runs the window. panels: functions called every frame inside ImGui (for the tool's windows).
     on_pick(object_id or None): called when the user clicks; the tool decides what selecting means."""
 
-    def __init__(self, scene, title, panels=(), on_pick=None, size=(1600, 950)):
+    def __init__(self, scene: Scene, title: str, panels: Iterable[Callable[[Viewer], object]] = (),
+                 on_pick: Callable[[int | None], object] | None = None, size: tuple[int, int] = (1600, 950)) -> None:
         self.scene, self.title, self.panels, self.on_pick, self.size = scene, title, list(panels), on_pick, size
         self.camera = Camera()
         if scene.bounds is not None:
@@ -248,25 +258,27 @@ class Viewer:
         self.hidden = 0
         self.selected = NO_ID
         self.hovered = NO_ID
-        self.hover_point = None
-        self.ctx = None
+        self.hover_point: np.ndarray | None = None
+        self.ctx: moderngl.Context | None = None
         self.renderer = ''                # the GPU OpenGL runs on (set when the window opens)
         self.fps = 0.0
         self._last = time.time()
         self._frames = 0
-        self.exit_after = None            # frames, for screenshots in tests
-        self.screenshot = None
-        self._click_start = None
+        self.exit_after: int | None = None  # frames, for screenshots in tests
+        self.screenshot: Any = None
+        self._click_start: tuple[float, float] | None = None
         self._last_click = 0.0
-        self.pick_point = None            # world point of the last click (None: clicked the sky)
+        self.pick_point: np.ndarray | None = None  # world point of the last click (None: clicked the sky)
         self.select_on_click = True       # a tool's mode (measuring) can turn selection by click off
-        self._problems = {}               # errors caught in a frame: (where, type, message) -> text shown
-        self.overlay = []                 # (a, b, colour) segments, set by the tool (set_overlay), drawn over the scene
-        self._overlay_key = None
+        # errors caught in a frame: (where, type, message) -> text shown
+        self._problems: dict[tuple[str, str, str], str] = {}
+        # (a, b, colour) segments, set by the tool (set_overlay), drawn over the scene
+        self.overlay: list[tuple[Sequence[float], Sequence[float], Sequence[float]]] = []
+        self._overlay_key: int | None = None
         self._overlay_version = 0
 
     # --- GPU ----------------------------------------------------------------------------------------
-    def _init(self):
+    def _init(self) -> None:
         io = imgui.get_io()                  # a panel that fails half-way: its windows are closed, not an assert
         io.config_error_recovery = True
         io.config_error_recovery_enable_assert = False
@@ -325,18 +337,18 @@ class Viewer:
         self.scene.batches = []           # uploaded; free the CPU copy
         self.scene.line_batches = []
 
-    def _ensure_pick_fbo(self, w, h):
+    def _ensure_pick_fbo(self, w: int, h: int) -> None:
         if self.pick_fbo is None or self.pick_fbo.size != (w, h):
             if self.pick_fbo is not None:
                 self.pick_fbo.release()
             self.pick_fbo = self.ctx.framebuffer(color_attachments=[self.ctx.texture((w, h), 4)],
                                                  depth_attachment=self.ctx.depth_texture((w, h)))
 
-    def _mvp(self, w, h):
+    def _mvp(self, w: int, h: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         proj, view = self.camera.matrices(w / max(h, 1))
         return proj @ view, proj, view
 
-    def _draw(self):
+    def _draw(self) -> None:
         w, h = self._window_size()
         if w <= 0 or h <= 0:
             return
@@ -354,7 +366,7 @@ class Viewer:
         self.ctx.disable(moderngl.DEPTH_TEST)
         self._draw_overlay(mvp)
 
-    def _render_layers(self):
+    def _render_layers(self) -> None:
         """The visible layers only: each is one range of the triangle (and line) buffer."""
         for lay, (first, count) in self.layer_ranges.items():
             if count and self.layer_visible(lay):
@@ -367,7 +379,7 @@ class Viewer:
                     self.line_vao.render(moderngl.LINES, vertices=count, first=first)
             self.prog['lines'].value = lines
 
-    def _draw_overlay(self, mvp):
+    def _draw_overlay(self, mvp: np.ndarray) -> None:
         if not self.overlay:
             return
         key = self._overlay_version
@@ -379,7 +391,7 @@ class Viewer:
         self.overlay_prog['mvp'].write(mvp.T.astype(np.float32).tobytes())
         self.overlay_vao.render(moderngl.LINES, vertices=self._overlay_count)
 
-    def set_colors(self, batch, colors):
+    def set_colors(self, batch: int, colors: np.ndarray | None) -> None:
         """New colours for a triangle batch after upload: one RGB per triangle ((n, 3) floats 0-1), or None for
         the layer's colour again. (Before the window opens, the scene's own copy is changed.)"""
         start, count = self.scene.ranges[batch]
@@ -390,12 +402,12 @@ class Viewer:
             return
         self.vbo_col.write(data.tobytes(), offset=start * 4)
 
-    def set_overlay(self, segments):
+    def set_overlay(self, segments: Iterable[tuple[Sequence[float], Sequence[float], Sequence[float]]]) -> None:
         """Replace the overlay: a list of (a, b, (r, g, b)) segments, uploaded once per call."""
         self.overlay = list(segments)
         self._overlay_version += 1
 
-    def project(self, point):
+    def project(self, point: Sequence[float] | np.ndarray) -> tuple[float, float] | None:
         """Window position (x, y from the top left, in imgui units) of a world point, or None if behind the camera."""
         w, h = self._window_size()
         mvp, _, _ = self._mvp(w, h)
@@ -405,7 +417,7 @@ class Viewer:
         s = imgui.get_io().display_framebuffer_scale
         return ((p[0] / p[3] + 1) / 2 * w / s.x, (1 - p[1] / p[3]) / 2 * h / s.y)
 
-    def pick(self, x, y):
+    def pick(self, x: float, y: float) -> tuple[int | None, np.ndarray | None]:
         """Object id under window pixel (x, y from the top left), or None; also the world point there."""
         w, h = self._window_size()
         px, py = int(x), int(h - 1 - y)
@@ -435,13 +447,13 @@ class Viewer:
         world = np.linalg.inv(mvp.astype(np.float64)) @ ndc
         return oid, world[:3] / world[3]
 
-    def _window_size(self):
+    def _window_size(self) -> tuple[int, int]:
         d = imgui.get_io().display_size
         s = imgui.get_io().display_framebuffer_scale
         return int(d.x * s.x), int(d.y * s.y)
 
     # --- input --------------------------------------------------------------------------------------
-    def _input(self):
+    def _input(self) -> None:
         io = imgui.get_io()
         scale = io.display_framebuffer_scale
         mx, my = io.mouse_pos.x * scale.x, io.mouse_pos.y * scale.y
@@ -504,17 +516,17 @@ class Viewer:
             self.hover_point = point
 
     # --- frame --------------------------------------------------------------------------------------
-    def _background(self):
+    def _background(self) -> None:
         if self.ctx is None:
             return
         self._guarded('drawing the 3D view', self._draw)
 
-    def _guarded(self, where, fn, *args):
+    def _guarded(self, where: str, fn: Callable[..., object], *args: Any) -> None:
         """Runs one part of a frame; an error is logged once (with its cause) and listed in the Problems window
         instead of closing the tool."""
         try:
             fn(*args)
-        except Exception as e:
+        except Exception as e:          # noqa: BLE001 - a frame's boundary: any error is listed, the tool keeps running
             key = (where, type(e).__name__, str(e))
             if key not in self._problems:
                 from . import errors
@@ -522,7 +534,7 @@ class Viewer:
                 cause, fix = errors.explain(e)
                 self._problems[key] = f'{where}: {cause}  ({fix})'
 
-    def _problems_window(self):
+    def _problems_window(self) -> None:
         if not self._problems:
             return
         from . import errors
@@ -538,7 +550,7 @@ class Viewer:
         imgui.text_disabled(f'Details: {errors._state.get("path") or "(no log file)"}')
         imgui.end()
 
-    def _gui(self):
+    def _gui(self) -> None:
         self._frames += 1
         self._fps_frames = getattr(self, '_fps_frames', 0) + 1
         now = time.time()
@@ -552,13 +564,13 @@ class Viewer:
         if self.exit_after is not None and self._frames >= self.exit_after:
             hello_imgui.get_runner_params().app_shall_exit = True
 
-    def layer_visible(self, layer):
+    def layer_visible(self, layer: int) -> bool:
         return not (self.hidden >> layer) & 1
 
-    def set_layer_visible(self, layer, visible):
+    def set_layer_visible(self, layer: int, visible: bool) -> None:
         self.hidden = (self.hidden & ~(1 << layer)) if visible else (self.hidden | (1 << layer))
 
-    def run(self):
+    def run(self) -> None:
         p = hello_imgui.RunnerParams()
         p.app_window_params.window_title = self.title
         p.app_window_params.window_geometry.size = self.size
@@ -576,5 +588,5 @@ class Viewer:
         if self.exit_after is not None:
             try:
                 self.screenshot = hello_imgui.final_app_window_screenshot()
-            except Exception:
+            except Exception:           # noqa: BLE001 - the native binding's failure: no screenshot (tests only)
                 self.screenshot = None

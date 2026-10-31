@@ -258,7 +258,7 @@ def check_navigation(c, hpd):
     snap = cfgmod.Snapper(hpd)
     if snap.pd is None:
         return False, f'no path data at {hpd}'
-    bad, info = [], []
+    bad = []
     groups = {}
     for s in c['spawners']:
         p = tuple(s['pos'])
@@ -383,7 +383,7 @@ def validate(paths, c, log=print):
                              ('packed bundle', lambda: check_packed(paths.out_bundle(v), bdir, tmp))):
                 try:
                     ok, detail = fn()
-                except Exception as e:                       # a check that cannot run is a failed check
+                except Exception as e:  # noqa: BLE001 - a check that cannot run is a failed check
                     ok, detail = False, f'{type(e).__name__}: {e}'
                 results.append((f'{v}: {name}', ok, detail))
                 log(f'{"ok  " if ok else "FAIL"} {v}: {name}: {detail}')

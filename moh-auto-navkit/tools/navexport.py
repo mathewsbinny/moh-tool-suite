@@ -163,9 +163,63 @@ def water_over(points, water):
 def export(root, lv, out=None, log=print, compare=False):
     """compare: also rasterise the outlines where the build's cells are read, and report how they differ."""
     import navkit
-    import navregress
-    from mohcore import level as levelmod
     pr = navkit.Project(root)
+    hpd, xoff, zoff, hf, nav, exact = load_build(pr, root, lv, log)
+    yoff = mohsoldier.Y_OFFSET
+    sec_ids, sec_index, first_area = sector_order(nav)
+    bmap, hght, area_rows, area_cells = export_areas(nav, exact, hf, yoff, sec_index, lv, log, compare)
+
+    # nodes: ground heights, their areas
+    gpos = nav.node_pos.copy()
+    gpos[:, 1] -= yoff
+    cellkey = cell_index(area_cells)
+    node_area = node_areas(gpos, cellkey)
+
+    E, cost, raised, kind = export_edges(nav, gpos)
+    lp = os.path.join(pr.level_work(lv), 'ladders.json')
+    ladders = json.load(open(lp, encoding='utf-8')) if os.path.isfile(lp) else []
+    first_edge = np.searchsorted(E[:, 0], np.arange(len(gpos) + 1))
+    log(f'{lv}: edges by kind ' + str({rsnv.EDGE_NAMES[k]: int(v) for k, v in zip(*np.unique(kind, return_counts=True))}))
+
+    isl, island_rows = export_islands(nav)
+    nflags = node_flags(root, lv, gpos, kind, E)
+    anod = area_nodes(nav, node_area, area_rows, isl)
+    port = export_portals(nav, area_rows, first_area, cellkey, yoff)
+    sect, gbkt, glst = sector_buckets(nav, sec_ids, area_rows, xoff, zoff)
+    ladr, unlinked = ladder_records(ladders, gpos)
+    if unlinked:
+        log(f'{lv}: {len(unlinked)} ladder(s) with no route node at an end left out of LADR: ' + ', '.join(unlinked[:6]))
+
+    node_rows = [(float(x), float(y), float(z), int(first_edge[n])) for n, (x, y, z) in enumerate(gpos)]
+    node_rows.append((0.0, 0.0, 0.0, int(first_edge[-1])))
+    naux = [(int(node_area[n]), sec_index.get(int(nav.node_sector[n]), 0xFFFF), int(isl[n]), int(nflags[n]))
+            for n in range(len(gpos))]
+    edge_rows = [(int(b_) | (int(kind[k]) << 24), min(int(cost[k]), 0xFFFF), 0) for k, (a_, b_) in enumerate(E)]
+    inputs = {'hpd': hpd, 'ladders.json': lp, 'navkit.json': pr.settings_path(lv)}
+    if exact is not None:
+        inputs['cells.npz'] = navbuild.cells_path(hpd)
+    meta = export_meta(lv, exact, inputs, gpos, E, nav, port, ladders, ladr, unlinked, island_rows, nflags)
+    sections = {'SECT': sect, 'NODE': node_rows, 'NAUX': naux, 'EDGE': edge_rows,
+                'AREA': [tuple(r) for r in area_rows], 'PORT': port, 'BMAP': bytes(bmap), 'HGHT': [(v,) for v in hght],
+                'GBKT': gbkt, 'GLST': [(v,) for v in glst], 'ANOD': [(v,) for v in anod], 'LADR': ladr, 'OFFM': [],
+                'ISLD': island_rows, 'META': json.dumps(meta, indent=1).encode('utf-8')}
+    out = out or os.path.join(pr.out_dir(lv), f'{lv}.rsnv')
+    h_q = rsnv.heuristic_scale(gpos, E[:, 0], E[:, 1], np.minimum(cost, 0xFFFF))
+    meta['heuristic scale'] = h_q / rsnv.H_SCALE_ONE
+    meta['counts']['edge costs rounded up'] = raised
+    header = {'level': lv, 'sea_level': 0.0, 'radius': mohsoldier.RADIUS, 'height': mohsoldier.HEIGHT,
+              'step': mohsoldier.STEP, 'water_depth': mohsoldier.WATER_DEPTH,
+              'hpd_sha256': meta['sources']['hpd']['sha256'], 'h_scale_q': h_q}
+    size, tight = write_with_tight_edges(out, sections, header, meta, E, kind, edge_rows, first_edge)
+    walk = sum(1 for k in range(len(E)) if int(kind[k]) == rsnv.EDGE_WALK)
+    log(f'{lv}: heuristic scale {h_q / rsnv.H_SCALE_ONE:.6f}; wrote {out} ({size / 1e6:.2f} MB; {len(port)} portals, '
+        f'{len(ladr)} ladders, {len(island_rows)} islands; {len(tight)} of {walk} walk edges tight)')
+    return out, nav
+
+
+def load_build(pr, root, lv, log):
+    """The level's build: (hpd path, xoff, zoff, terrain height field, navdata, the build's cells or None)."""
+    from mohcore import level as levelmod
     hpd = os.path.join(pr.out_dir(lv), 'pathdata.hpd')
     if not os.path.isfile(hpd):
         raise FileNotFoundError(f'{hpd}: build the level first (navkit.py build {lv})')
@@ -174,8 +228,7 @@ def export(root, lv, out=None, log=print, compare=False):
     hf = levelmod.heightfield_of(root, lv, log=lambda *a: None)
     if hf is None:
         raise FileNotFoundError(f'{lv}: no terrain height field')
-    yoff = mohsoldier.Y_OFFSET
-    navdata.Y_OFFSET = yoff
+    navdata.Y_OFFSET = mohsoldier.Y_OFFSET
     nav = navdata.load(hpd, hf)
     log(f'{lv}: {len(nav.areas)} areas, {len(nav.node_pos)} nodes, {len(nav.edges)} edges')
     exact = navbuild.read_cells(hpd)
@@ -185,9 +238,11 @@ def export(root, lv, out=None, log=print, compare=False):
     if exact is None:
         log(f'{lv}: no cells file for this build: cells rasterised from the outlines, heights estimated (rebuild to '
             f'get {os.path.basename(navbuild.cells_path(hpd))})')
-    stats = collections.Counter()
+    return hpd, xoff, zoff, hf, nav, exact
 
-    # sectors and their areas, in the build's order
+
+def sector_order(nav):
+    """Sectors and their areas, in the build's order: (sector ids, index by sector, first area by sector)."""
     sec_ids = []
     for a in nav.areas:
         if not sec_ids or sec_ids[-1] != a.sector:
@@ -196,51 +251,20 @@ def export(root, lv, out=None, log=print, compare=False):
     first_area = {}
     for k, a in enumerate(nav.areas):
         first_area.setdefault(a.sector, k)
+    return sec_ids, sec_index, first_area
 
-    # areas: bitmaps at their pitch, height grids
+
+def export_areas(nav, exact, hf, yoff, sec_index, lv, log, compare):
+    """Areas: bitmaps at their pitch, height grids. Returns (bmap, hght, area rows, per area (ii, jj, y, pitch))."""
+    stats = collections.Counter()
     bmap, hght, area_rows, area_cells = bytearray(), [], [], []
     for k, a in enumerate(nav.areas):
         pitch = 0.2 if a.pitch < 0.5 else COARSE_PITCH
-        if exact is None or compare:
-            ii, jj, y = rasterise(a, pitch, yoff, hf)
-        if exact is not None:
-            ei, ej, ey = (np.asarray(v) for v in exact[k][2:])
-            if abs(exact[k][1] - pitch) > 1e-3:
-                raise ValueError(f'{lv}: area {k}: cells file pitch {exact[k][1]} against {pitch}')
-        if exact is not None and compare:
-            have = dict(zip(zip(ii.tolist(), jj.tolist()), y.tolist()))
-            mine = set(zip(ei.tolist(), ej.tolist()))
-            stats['cells'] += len(mine)
-            stats['only in the outline'] += len(set(have) - mine)
-            stats['only in the cells file'] += len(mine - set(have))
-            dy = [abs(have[c] - float(v)) for c, v in zip(zip(ei.tolist(), ej.tolist()), ey.tolist()) if c in have]
-            stats['estimate off by over 0.3 m'] += sum(d > 0.3 for d in dy)
-        if exact is not None:
-            ii, jj, y = ei.astype(np.int64), ej.astype(np.int64), ey.astype(np.float64)
-        if len(ii):
-            ci0, cj0 = int(ii.min()), int(jj.min())
-            w_, h_ = int(ii.max()) - ci0 + 1, int(jj.max()) - cj0 + 1
-            miny, maxy = float(y.min()), float(y.max())
-        else:
-            ci0 = cj0 = 0
-            w_ = h_ = 0
-            miny, maxy = a.min_y, a.max_y
-        row = (w_ + 7) >> 3
-        bits = np.zeros((h_, row * 8), np.uint8)
-        if len(ii):
-            bits[jj - cj0, ii - ci0] = 1
-        packed = np.packbits(bits.reshape(h_, row, 8)[:, :, ::-1], axis=-1).reshape(-1) if h_ else np.zeros(0, np.uint8)
+        ii, jj, y = area_cells_of(k, a, pitch, exact, hf, yoff, compare, stats, lv)
+        ci0, cj0, w_, h_, miny, maxy, packed = area_bitmap(a, ii, jj, y)
         x0, z0 = ci0 * pitch, cj0 * pitch
-        cpb = HEIGHT_CELLS[pitch]
         li, lj = (ii - ci0, jj - cj0) if len(ii) else (ii, jj)
-        grid, hw, hh = height_grid(li, lj, y, cpb, miny)
-        for finer in (2, 1):
-            if cpb <= finer or not len(ii) or grid_error(li, lj, y, grid, hw, hh, cpb, pitch, miny) <= HEIGHT_TOL:
-                break
-            cpb = finer
-            grid, hw, hh = height_grid(li, lj, y, cpb, miny)
-        if cpb != HEIGHT_CELLS[pitch]:
-            stats[f'areas with {cpb * pitch:g} m height blocks'] += 1
+        grid, hw, hh, cpb = area_height_grid(li, lj, y, pitch, miny, stats)
         pmm = int(round(pitch * 1000))
         area_rows.append([x0, z0, x0 + (w_ - 1) * pitch, z0 + (h_ - 1) * pitch, miny, maxy, len(bmap), w_, h_,
                           0, 0, sec_index[a.sector], 0, 0, 0, 0, pmm, len(hght), hw, hh, cpb * pmm])
@@ -250,14 +274,72 @@ def export(root, lv, out=None, log=print, compare=False):
     log(f'{lv}: bitmaps {len(bmap) / 1e6:.2f} MB, {sum(len(c[0]) for c in area_cells):,} cells'
         + (' (those of the build' + (f'; against the outlines: {dict(stats)})' if compare else ')') if exact is not None else '')
         + '; finer height grids: ' + str({k: v for k, v in stats.items() if 'height blocks' in k}))
+    return bmap, hght, area_rows, area_cells
 
-    # nodes: ground heights, their areas
-    gpos = nav.node_pos.copy()
-    gpos[:, 1] -= yoff
+
+def area_cells_of(k, a, pitch, exact, hf, yoff, compare, stats, lv):
+    """Area k's cells (ii, jj, ground y): the build's, else rasterised from its outline; compare counts the differences."""
+    if exact is None or compare:
+        ii, jj, y = rasterise(a, pitch, yoff, hf)
+    if exact is None:
+        return ii, jj, y
+    ei, ej, ey = (np.asarray(v) for v in exact[k][2:])
+    if abs(exact[k][1] - pitch) > 1e-3:
+        raise ValueError(f'{lv}: area {k}: cells file pitch {exact[k][1]} against {pitch}')
+    if compare:
+        have = dict(zip(zip(ii.tolist(), jj.tolist()), y.tolist()))
+        mine = set(zip(ei.tolist(), ej.tolist()))
+        stats['cells'] += len(mine)
+        stats['only in the outline'] += len(set(have) - mine)
+        stats['only in the cells file'] += len(mine - set(have))
+        dy = [abs(have[c] - float(v)) for c, v in zip(zip(ei.tolist(), ej.tolist()), ey.tolist()) if c in have]
+        stats['estimate off by over 0.3 m'] += sum(d > 0.3 for d in dy)
+    return ei.astype(np.int64), ej.astype(np.int64), ey.astype(np.float64)
+
+
+def area_bitmap(a, ii, jj, y):
+    """The area's cell bitmap: (first column, first row, width, height, min y, max y, packed rows of whole bytes)."""
+    if len(ii):
+        ci0, cj0 = int(ii.min()), int(jj.min())
+        w_, h_ = int(ii.max()) - ci0 + 1, int(jj.max()) - cj0 + 1
+        miny, maxy = float(y.min()), float(y.max())
+    else:
+        ci0 = cj0 = 0
+        w_ = h_ = 0
+        miny, maxy = a.min_y, a.max_y
+    row = (w_ + 7) >> 3
+    bits = np.zeros((h_, row * 8), np.uint8)
+    if len(ii):
+        bits[jj - cj0, ii - ci0] = 1
+    packed = np.packbits(bits.reshape(h_, row, 8)[:, :, ::-1], axis=-1).reshape(-1) if h_ else np.zeros(0, np.uint8)
+    return ci0, cj0, w_, h_, miny, maxy, packed
+
+
+def area_height_grid(li, lj, y, pitch, miny, stats):
+    """The area's height grid, made finer while it is off by over HEIGHT_TOL at a cell: (grid, width, height, cpb)."""
+    cpb = HEIGHT_CELLS[pitch]
+    grid, hw, hh = height_grid(li, lj, y, cpb, miny)
+    for finer in (2, 1):
+        if cpb <= finer or not len(li) or grid_error(li, lj, y, grid, hw, hh, cpb, pitch, miny) <= HEIGHT_TOL:
+            break
+        cpb = finer
+        grid, hw, hh = height_grid(li, lj, y, cpb, miny)
+    if cpb != HEIGHT_CELLS[pitch]:
+        stats[f'areas with {cpb * pitch:g} m height blocks'] += 1
+    return grid, hw, hh, cpb
+
+
+def cell_index(area_cells):
+    """{(pitch, i, j): [(area, ground y)]} over every area's cells."""
     cellkey = {}
     for k, (ii, jj, y, pitch) in enumerate(area_cells):
         for i, j, v in zip(ii.tolist(), jj.tolist(), y.tolist()):
             cellkey.setdefault((round(pitch, 1), i, j), []).append((k, v))
+    return cellkey
+
+
+def node_areas(gpos, cellkey):
+    """Each node's area: the one with the nearest cell within 2 cells and 1 m of height (0xFFFF for none)."""
     node_area = np.full(len(gpos), 0xFFFF, np.int64)
     for n, (x, y, z) in enumerate(gpos):
         best = None
@@ -272,8 +354,11 @@ def export(root, lv, out=None, log=print, compare=False):
                                 best = (d, k)
         if best is not None:
             node_area[n] = best[1]
+    return node_area
 
-    # edges: CSR by source, kinds
+
+def export_edges(nav, gpos):
+    """Edges: CSR by source, kinds. Returns (edges sorted, admissible costs, how many were raised, kinds)."""
     E = nav.edges
     order = np.lexsort((E[:, 1], E[:, 0]))
     E = E[order]
@@ -292,24 +377,22 @@ def export(root, lv, out=None, log=print, compare=False):
     one_way = np.array([(b_, a_) not in both for a_, b_ in zip(E[:, 0].tolist(), E[:, 1].tolist())], bool)
     down = gpos[E[:, 1], 1] < gpos[E[:, 0], 1] - mohsoldier.STEP
     kind[one_way & down & (kind == rsnv.EDGE_WALK)] = rsnv.EDGE_DROP
-    lp = os.path.join(pr.level_work(lv), 'ladders.json')
-    ladders = json.load(open(lp, encoding='utf-8')) if os.path.isfile(lp) else []
+    return E, cost, raised, kind
 
-    def nearest_node(p, maxd=END_MATCH):
-        d = np.linalg.norm(gpos - np.asarray(p, float), axis=1)
-        k = int(np.argmin(d))
-        return (k, float(d[k])) if d[k] <= maxd else (None, float(d[k]))
-    first_edge = np.searchsorted(E[:, 0], np.arange(len(gpos) + 1))
-    log(f'{lv}: edges by kind ' + str({rsnv.EDGE_NAMES[k]: int(v) for k, v in zip(*np.unique(kind, return_counts=True))}))
 
-    # islands
+def export_islands(nav):
+    """Islands: (island per node, ISLD rows - member count, first member, the main one flagged)."""
     isl = nav.node_island.astype(np.int64)
     island_rows = []
     for k_i, I in enumerate(nav.islands):
         members = np.nonzero(isl == k_i)[0]
         island_rows.append((len(members), int(members[0]) if len(members) else 0, rsnv.ISLD_MAIN if k_i == 0 else 0, 0, 0))
+    return isl, island_rows
 
-    # node flags: water over the node (the level's water mesh), ladder ends
+
+def node_flags(root, lv, gpos, kind, E):
+    """Node flags: water over the node (the level's water mesh), ladder ends."""
+    import navregress
     water = navregress.level_water(root, lv)
     depth = water_over(gpos, water) - gpos[:, 1]
     nflags = np.zeros(len(gpos), np.int64)
@@ -317,8 +400,11 @@ def export(root, lv, out=None, log=print, compare=False):
     nflags[(depth > SHALLOW) & (depth <= mohsoldier.WATER_DEPTH + 0.05)] |= rsnv.NAUX_WADE
     for k_e in np.nonzero((kind == rsnv.EDGE_LADDER_UP) | (kind == rsnv.EDGE_LADDER_DOWN))[0]:
         nflags[E[k_e, 0]] |= rsnv.NAUX_LADDER_END
+    return nflags
 
-    # areas: island (most of their nodes, else the reader's), nodes by area
+
+def area_nodes(nav, node_area, area_rows, isl):
+    """Areas: island (most of their nodes, else the reader's), nodes by area. Fills the rows; returns ANOD."""
     anod = []
     by_area = collections.defaultdict(list)
     for n, a_ in enumerate(node_area):
@@ -329,8 +415,11 @@ def export(root, lv, out=None, log=print, compare=False):
         row[12] = collections.Counter(isl[ns].tolist()).most_common(1)[0][0] if ns else max(nav.areas[k].island, 0)
         row[14], row[15] = len(anod), len(ns)
         anod += ns
+    return anod
 
-    # portals: inside sectors by target index; border portals to the neighbour sector's area across
+
+def export_portals(nav, area_rows, first_area, cellkey, yoff):
+    """Portals: inside sectors by target index; border portals to the neighbour sector's area across. Fills the rows."""
     port = []
     per_area = collections.defaultdict(list)
     for k, a in enumerate(nav.areas):
@@ -338,31 +427,41 @@ def export(root, lv, out=None, log=print, compare=False):
         for p0, p1, target in a.portals:
             per_area[k].append((p0, p1, base + int(target)))
         for p0, p1 in a.borders:
-            m = (np.asarray(p0) + np.asarray(p1)) / 2
-            d = np.asarray(p1) - np.asarray(p0)
-            nrm = np.array([-d[2], 0.0, d[0]])
-            nrm /= max(np.linalg.norm(nrm), 1e-9)
-            for sgn in (1, -1):
-                q = m + sgn * 0.6 * nrm
-                hit = None
-                for pitch in sorted({0.2, COARSE_PITCH}):
-                    for kk, v in cellkey.get((pitch, int(round(q[0] / pitch)), int(round(q[2] / pitch))), ()):
-                        if nav.areas[kk].sector != a.sector and abs(v - (m[1] - yoff)) <= 1.0:
-                            hit = kk
-                            break
-                    if hit is not None:
-                        break
-                if hit is not None:
-                    per_area[k].append((p0, p1, hit))
-                    break
+            hit = border_target(nav, a, p0, p1, cellkey, yoff)
+            if hit is not None:
+                per_area[k].append((p0, p1, hit))
     for k in range(len(nav.areas)):
         area_rows[k][9] = len(port)
         area_rows[k][10] = len(per_area[k])
         for p0, p1, target in per_area[k]:
             port.append((float(p0[0]), float(p0[2]), float(p1[0]), float(p1[2]), float((p0[1] + p1[1]) / 2 - yoff),
                          k, int(target)))
+    return port
 
-    # sectors and their 4 m buckets
+
+def border_target(nav, a, p0, p1, cellkey, yoff):
+    """The area of another sector 0.6 m across the border p0-p1 at its height (one side, then the other), or None."""
+    m = (np.asarray(p0) + np.asarray(p1)) / 2
+    d = np.asarray(p1) - np.asarray(p0)
+    nrm = np.array([-d[2], 0.0, d[0]])
+    nrm /= max(np.linalg.norm(nrm), 1e-9)
+    for sgn in (1, -1):
+        q = m + sgn * 0.6 * nrm
+        hit = None
+        for pitch in sorted({0.2, COARSE_PITCH}):
+            for kk, v in cellkey.get((pitch, int(round(q[0] / pitch)), int(round(q[2] / pitch))), ()):
+                if nav.areas[kk].sector != a.sector and abs(v - (m[1] - yoff)) <= 1.0:
+                    hit = kk
+                    break
+            if hit is not None:
+                break
+        if hit is not None:
+            return hit
+    return None
+
+
+def sector_buckets(nav, sec_ids, area_rows, xoff, zoff):
+    """Sectors and their 4 m buckets: (SECT, GBKT, GLST rows)."""
     sect, gbkt, glst = [], [], []
     for s in sec_ids:
         X, Z = (s >> 8) & 0xFF, s & 0xFF
@@ -388,31 +487,36 @@ def export(root, lv, out=None, log=print, compare=False):
             gbkt.append((len(glst), len(lst)))
             glst += lst
         sect.append((s, 0, pitch_code, sx0, sz0, sx0 + 100.0, sz0 + 100.0, first_bucket, ks[0], len(ks), 0))
+    return sect, gbkt, glst
 
+
+def nearest_node(gpos, p, maxd=END_MATCH):
+    """(the node nearest p, its distance), the node None when it is further than maxd."""
+    d = np.linalg.norm(gpos - np.asarray(p, float), axis=1)
+    k = int(np.argmin(d))
+    return (k, float(d[k])) if d[k] <= maxd else (None, float(d[k]))
+
+
+def ladder_records(ladders, gpos):
+    """LADR rows and the ladders left out: only records whose two ends are nodes of the build."""
     # ladders: only records whose two ends are nodes of the build (rsnav's loader refuses a LADR end that is no node)
     ladr, unlinked = [], []
     for k, L in enumerate(ladders):
         lo, hi = L['lo'], L['hi']
         foot = [(lo[0] + hi[0]) / 2, lo[1], (lo[2] + hi[2]) / 2]
         top = [(lo[0] + hi[0]) / 2, hi[1], (lo[2] + hi[2]) / 2]
-        fn, _ = nearest_node(foot, LADDER_MATCH)
-        tn, _ = nearest_node(top, LADDER_MATCH)
+        fn, _ = nearest_node(gpos, foot, LADDER_MATCH)
+        tn, _ = nearest_node(gpos, top, LADDER_MATCH)
         if fn is None or tn is None:
             unlinked.append(f"ladder {k} ({L.get('bp', '?').rsplit('/', 1)[-1]})")
             continue
         ladr.append((*foot, *top, 0.0, fn, tn, k))
-    if unlinked:
-        log(f'{lv}: {len(unlinked)} ladder(s) with no route node at an end left out of LADR: ' + ', '.join(unlinked[:6]))
+    return ladr, unlinked
 
-    node_rows = [(float(x), float(y), float(z), int(first_edge[n])) for n, (x, y, z) in enumerate(gpos)]
-    node_rows.append((0.0, 0.0, 0.0, int(first_edge[-1])))
-    naux = [(int(node_area[n]), sec_index.get(int(nav.node_sector[n]), 0xFFFF), int(isl[n]), int(nflags[n]))
-            for n in range(len(gpos))]
-    edge_rows = [(int(b_) | (int(kind[k]) << 24), min(int(cost[k]), 0xFFFF), 0) for k, (a_, b_) in enumerate(E)]
-    inputs = {'hpd': hpd, 'ladders.json': lp, 'navkit.json': pr.settings_path(lv)}
-    if exact is not None:
-        inputs['cells.npz'] = navbuild.cells_path(hpd)
-    meta = {'exporter': EXPORTER_VERSION, 'game': 'Medal of Honor (2010) MP', 'level': lv,
+
+def export_meta(lv, exact, inputs, gpos, E, nav, port, ladders, ladr, unlinked, island_rows, nflags):
+    """The META section's provenance: exporter, level, sources with their hashes, the soldier, counts."""
+    return {'exporter': EXPORTER_VERSION, 'game': 'Medal of Honor (2010) MP', 'level': lv,
             'cells': 'build' if exact is not None else 'rasterised outlines',
             'sources': {k: {'path': v, 'sha256': sha256(v)} for k, v in inputs.items() if os.path.isfile(v)},
             'soldier': {'radius': mohsoldier.RADIUS, 'step': mohsoldier.STEP, 'height': mohsoldier.HEIGHT,
@@ -421,17 +525,10 @@ def export(root, lv, out=None, log=print, compare=False):
                        'ladders': len(ladders), 'LADR records': len(ladr), 'ladders not linked': len(unlinked),
                        'islands': len(island_rows), 'shallow nodes': int(((nflags & rsnv.NAUX_SHALLOW) > 0).sum()),
                        'wading nodes': int(((nflags & rsnv.NAUX_WADE) > 0).sum())}}
-    sections = {'SECT': sect, 'NODE': node_rows, 'NAUX': naux, 'EDGE': edge_rows,
-                'AREA': [tuple(r) for r in area_rows], 'PORT': port, 'BMAP': bytes(bmap), 'HGHT': [(v,) for v in hght],
-                'GBKT': gbkt, 'GLST': [(v,) for v in glst], 'ANOD': [(v,) for v in anod], 'LADR': ladr, 'OFFM': [],
-                'ISLD': island_rows, 'META': json.dumps(meta, indent=1).encode('utf-8')}
-    out = out or os.path.join(pr.out_dir(lv), f'{lv}.rsnv')
-    h_q = rsnv.heuristic_scale(gpos, E[:, 0], E[:, 1], np.minimum(cost, 0xFFFF))
-    meta['heuristic scale'] = h_q / rsnv.H_SCALE_ONE
-    meta['counts']['edge costs rounded up'] = raised
-    header = {'level': lv, 'sea_level': 0.0, 'radius': mohsoldier.RADIUS, 'height': mohsoldier.HEIGHT,
-              'step': mohsoldier.STEP, 'water_depth': mohsoldier.WATER_DEPTH,
-              'hpd_sha256': meta['sources']['hpd']['sha256'], 'h_scale_q': h_q}
+
+
+def write_with_tight_edges(out, sections, header, meta, E, kind, edge_rows, first_edge):
+    """Writes the file, flags the tight walk edges over its cells, writes it again. Returns (size, tight edges)."""
     rsnv.write(out, sections, header, False)
     # tight edges: walk edges with no line of sight either way over the cells just written (the runtime's rule)
     w = rsnv.load(out)
@@ -447,10 +544,7 @@ def export(root, lv, out=None, log=print, compare=False):
     meta['counts']['tight walk edges'] = len(tight)
     sections['META'] = json.dumps(meta, indent=1).encode('utf-8')
     size = rsnv.write(out, sections, header, False)
-    walk = sum(1 for k in range(len(E)) if int(kind[k]) == rsnv.EDGE_WALK)
-    log(f'{lv}: heuristic scale {h_q / rsnv.H_SCALE_ONE:.6f}; wrote {out} ({size / 1e6:.2f} MB; {len(port)} portals, '
-        f'{len(ladr)} ladders, {len(island_rows)} islands; {len(tight)} of {walk} walk edges tight)')
-    return out, nav
+    return size, tight
 
 
 def check(path, nav, log=print):

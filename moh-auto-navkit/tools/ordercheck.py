@@ -13,11 +13,10 @@ network connects, the share the second file also connects. With one file, the se
 point pairs on its areas that its route network connects (for maps without reference data).
 """
 import itertools
-import math
 import os
 import re
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 
 import numpy as np
 

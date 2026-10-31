@@ -28,13 +28,13 @@ class GameNotFound(Exception):
     pass
 
 
-def is_root(folder):
+def is_root(folder: str | None) -> bool:
     return bool(folder) and os.path.isfile(os.path.join(folder, MP_EXE))
 
 
-def find_root(given=None):
+def find_root(given: str | None = None) -> str:
     """The Project OPFOR: Medal of Honor folder (see the module docstring)."""
-    candidates = [given, os.environ.get('OPFOR_ROOT')]
+    candidates: list[str | None] = [given, os.environ.get('OPFOR_ROOT')]
     d = SUITE
     while os.path.dirname(d) != d:
         d = os.path.dirname(d)
@@ -59,7 +59,7 @@ def find_root(given=None):
 class GameCopy:
     """The paths of one Project OPFOR folder's game copy."""
 
-    def __init__(self, root=None):
+    def __init__(self, root: str | None = None) -> None:
         """root: a Project OPFOR folder, taken as given (tests build one without a game in it); None: find_root()."""
         self.root = os.path.abspath(root) if root else find_root()
         self.game = os.path.join(self.root, 'game')
@@ -74,7 +74,7 @@ class GameCopy:
         self.log = os.path.join(self.game, 'logs', 'opfor_mp.log')
         self.work = os.path.join(self.root, 'work')
 
-    def layers(self, rel):
+    def layers(self, rel: str) -> list[str]:
         """The existing copies of a data file (rel: 'levels/mp_01/level-00.fbrb'), lowest first: dist\\win32, then
         its patch - the patch's bundle replaces the base one."""
         parts = rel.replace('\\', '/').split('/')
@@ -85,13 +85,13 @@ class GameCopy:
                 out.append(p)
         return out
 
-    def manifest(self):
+    def manifest(self) -> dict[str, list[str]]:
         """package.mft's load sets: {source: [targets]}, paths relative to dist\\win32 in lower case ('levels/mp_01/
         level-00.fbrb' -> ['patch/levels/mp_01/level-00.fbrb', 'levels/mp_01/level-00.fbrb', 'patch/levels/
         common_mp_01/...', ...]). The targets are what the game loads for the source, the first found wins - the
         patch's copy before the base one, the level's own bundle before its map's common_mp_<nn>, then common_mp."""
         if getattr(self, '_manifest', None) is None:
-            self._manifest = {}
+            self._manifest: dict[str, list[str]] = {}
             p = os.path.join(self.dist, 'package.mft')
             cur = None
             for line in (open(p, encoding='utf-8', errors='replace').read().splitlines() if os.path.isfile(p) else []):
@@ -103,12 +103,12 @@ class GameCopy:
                     cur.append(target)
         return self._manifest
 
-    def levels(self):
+    def levels(self) -> dict[str, str]:
         """{level (lower case): its name as the folder spells it} of every playable level, base and DLC: the manifest's
         levels\\<level>\\level-00.fbrb sources, without the shared common_mp* bundles. Two DLC levels
         (mp_03_elimination, mp_07_koth) have no bundle of their own: the manifest loads them from their map's
         common_mp_<nn>. Without a manifest: the level folders that hold a level-00.fbrb."""
-        out = {}
+        out: dict[str, str] = {}
         for src in self.manifest():
             parts = src.split('/')
             if len(parts) == 3 and parts[0] == 'levels' and parts[2] == 'level-00.fbrb':
@@ -122,7 +122,7 @@ class GameCopy:
                     out[d.lower()] = d                     # the folder's spelling
         return {k: v for k, v in sorted(out.items()) if not k.startswith(('common_mp', 'opfor_'))}   # opfor_*: OPFOR's
 
-    def load_set(self, lv, name='level-00.fbrb'):
+    def load_set(self, lv: str, name: str = 'level-00.fbrb') -> list[str]:
         """The existing bundles the game loads for a level's bundle, first found wins (see manifest); without a manifest
         block the level's own copies, the patch's first."""
         targets = self.manifest().get(f'levels/{lv.lower()}/{name}')
@@ -135,7 +135,7 @@ class GameCopy:
                 out.append(p)
         return out
 
-    def commons(self, lv):
+    def commons(self, lv: str) -> list[str]:
         """The shared bundle folders a level loads, in the game's order: its map's common_mp_<nn>, then common_mp."""
         out = []
         for p in self.load_set(lv):
@@ -144,20 +144,20 @@ class GameCopy:
                 out.append(d)
         return out or ['common_mp']
 
-    def level_bundles(self, lv, name='level-00.fbrb'):
+    def level_bundles(self, lv: str, name: str = 'level-00.fbrb') -> list[str]:
         """The level's own copies of one bundle (levels\\<level>\\<name>), lowest first (see layers); [] for a level
         without its own bundles."""
         return self.layers(f'levels/{self.levels().get(lv.lower(), lv)}/{name}')
 
-    def pathdata(self, lv, kind='infantry'):
+    def pathdata(self, lv: str, kind: str = 'infantry') -> str:
         """Where OPFOR installs a level's navigation data (MoHMPGame.exe itself ships and reads none)."""
         return os.path.join(self.output, 'ai', 'levels', lv.lower(), kind, 'pathdata.hpd')
 
-    def ai_dir(self):
+    def ai_dir(self) -> str:
         return os.path.join(self.output, 'ai')
 
 
-def documents_dirs():
+def documents_dirs() -> list[str]:
     """The MP client's Documents folders, OPFOR's first: <Documents>\\Project OPFOR\\MOH\\EA Games\\Medal of Honor\\
     Multiplayer (the OPFOR core's), then the base game's <Documents>\\EA Games\\Medal of Honor\\Multiplayer."""
     home = os.path.expanduser('~')
