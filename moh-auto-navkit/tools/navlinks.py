@@ -25,6 +25,7 @@ GRAPH_OPS = ('link-areas', 'route-edge')
 
 
 def cost_tag(p, q):
+    """The tagged cost of a link edge from p to q: the high bit set, then the distance in 1/16 m."""
     return 0x80000000 | int(math.floor(math.dist(p, q) * 16))
 
 

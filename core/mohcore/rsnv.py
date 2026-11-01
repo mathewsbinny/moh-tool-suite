@@ -149,6 +149,7 @@ def heuristic_scale(node_pos: np.ndarray, src: np.ndarray, dst: np.ndarray, cost
 
 
 def fnv1a(text: str) -> int:
+    """The 32-bit FNV-1a hash of text's UTF-8 bytes."""
     h = 0x811C9DC5
     for b in text.encode('utf-8'):
         h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
@@ -221,6 +222,7 @@ class Area:
 
     @property
     def pitch_mm_(self) -> int:
+        """The cell pitch in whole millimetres, as the file stores it."""
         return int(round(self.pitch * 1000))
 
     def cell(self, x: float, z: float) -> tuple[int, int] | None:
@@ -281,6 +283,7 @@ class World:
 
     # -- bitmaps and heights
     def walkable(self, a: Area, i: int, j: int) -> bool:
+        """True when cell (i, j) of area a is inside the area and set in its walkable bitmap."""
         if not (0 <= i < a.width and 0 <= j < a.height):
             return False
         row = (a.width + 7) >> 3
@@ -659,6 +662,8 @@ def _array(raw: bytes | bytearray, e: str, off: int, count: int, fmt: str) -> li
 
 
 def load(src: str | bytes | bytearray) -> World:
+    """Reads an RSNV file (a path or its bytes) of either byte order into a World; raises ValueError when it is not
+    one, is another version, or is cut short."""
     raw = src if isinstance(src, (bytes, bytearray)) else open(src, 'rb').read()
     if len(raw) < HEADER:
         raise ValueError('RSNV: shorter than its header')

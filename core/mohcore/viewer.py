@@ -113,6 +113,8 @@ class Scene:
         self._sample: list[np.ndarray] = []
 
     def layer(self, name: str, colour: tuple[float, float, float]) -> int:
+        """The index of the layer called name, adding it with its colour when it is new; raises ValueError past
+        MAX_LAYERS."""
         for i, (n, _) in enumerate(self.layers):
             if n == name:
                 return i
@@ -146,9 +148,11 @@ class Scene:
         return np.percentile(pts, 1, axis=0), np.percentile(pts, 99, axis=0)
 
     def add_indexed(self, vertices: np.ndarray, triangles: np.ndarray, object_id: int | np.ndarray, layer: int) -> None:
+        """Adds an indexed mesh (vertices plus triangle index triples) as triangles."""
         self.add_triangles(np.asarray(vertices, dtype=np.float32)[np.asarray(triangles)], object_id, layer)
 
     def add_box(self, centre: Sequence[float] | np.ndarray, size: float, object_id: int, layer: int) -> None:
+        """Adds a solid axis-aligned cube of edge size centred on centre (12 triangles)."""
         c = np.asarray(centre, dtype=np.float32)
         h = size / 2.0
         corners = np.array([[x, y, z] for x in (-h, h) for y in (-h, h) for z in (-h, h)], dtype=np.float32) + c
@@ -168,6 +172,8 @@ class Scene:
         self.line_batches.append((s, tag, triangle_colors(colors, n, per=2)))
 
     def add_polyline(self, points: np.ndarray | Sequence, object_id: int, layer: int, closed: bool = False) -> None:
+        """Adds the line segments joining consecutive points, closed back to the first when closed; fewer than 2
+        points add nothing."""
         p = np.asarray(points, dtype=np.float32)
         if len(p) < 2:
             return
@@ -175,12 +181,14 @@ class Scene:
         self.add_lines(np.stack([q[:-1], q[1:]], axis=1), object_id, layer)
 
     def triangle_count(self) -> int:
+        """The number of triangles in every batch so far."""
         return sum(len(x[0]) for x in self.batches) // 3
 
 
 # ------------------------------------------------------------------------------------------------ camera
 
 def perspective(fov_y: float, aspect: float, near: float, far: float) -> np.ndarray:
+    """An OpenGL perspective projection matrix (fov_y in degrees)."""
     f = 1.0 / math.tan(math.radians(fov_y) / 2)
     m = np.zeros((4, 4), dtype=np.float32)
     m[0, 0], m[1, 1] = f / aspect, f
@@ -191,6 +199,7 @@ def perspective(fov_y: float, aspect: float, near: float, far: float) -> np.ndar
 
 def look_at(eye: Sequence[float] | np.ndarray, target: Sequence[float] | np.ndarray,
             up: Sequence[float] = (0, 1, 0)) -> np.ndarray:
+    """An OpenGL view matrix for a camera at eye looking at target."""
     eye_a, target_a, up_a = (np.asarray(v, dtype=np.float64) for v in (eye, target, up))
     f = target_a - eye_a
     f /= np.linalg.norm(f)
@@ -219,22 +228,27 @@ class Camera:
         self.fov = 60.0
 
     def frame(self, lo: np.ndarray, hi: np.ndarray) -> None:
+        """Aims the orbit camera at the middle of the box lo..hi, far enough back to see it."""
         self.target = (np.asarray(lo) + np.asarray(hi)) / 2
         self.distance = float(np.linalg.norm(np.asarray(hi) - np.asarray(lo))) * 0.6 + 10
 
     def direction(self) -> np.ndarray:
+        """The unit vector from the orbit target towards the eye, from yaw and pitch."""
         return np.array([math.cos(self.pitch) * math.sin(self.yaw), math.sin(self.pitch), math.cos(self.pitch) * math.cos(self.yaw)])
 
     def eye(self) -> np.ndarray:
+        """The camera's position: the fly position, or the orbit target backed off by distance."""
         return self.eye_fly if self.fly else self.target + self.direction() * self.distance
 
     def matrices(self, aspect: float) -> tuple[np.ndarray, np.ndarray]:
+        """The (projection, view) matrices for this aspect ratio, with the near plane scaled to the view distance."""
         eye = self.eye()
         target = eye - self.direction() if self.fly else self.target
         near = max(0.05, (self.distance if not self.fly else 50.0) / 2000.0)
         return perspective(self.fov, aspect, near, near * 200000.0), look_at(eye, target)
 
     def toggle_fly(self) -> None:
+        """Switches between orbit and fly mode, keeping the eye where it is."""
         if not self.fly:
             self.eye_fly = self.eye().copy()
         else:
@@ -242,6 +256,7 @@ class Camera:
         self.fly = not self.fly
 
     def focus(self, point: Sequence[float] | np.ndarray, distance: float | None = None) -> None:
+        """Orbits the camera around point, at distance when one is given."""
         self.fly = False
         self.target = np.asarray(point, dtype=np.float64)
         if distance:
@@ -581,12 +596,16 @@ class Viewer:
             hello_imgui.get_runner_params().app_shall_exit = True
 
     def layer_visible(self, layer: int) -> bool:
+        """True unless the layer is hidden."""
         return not (self.hidden >> layer) & 1
 
     def set_layer_visible(self, layer: int, visible: bool) -> None:
+        """Shows or hides a layer."""
         self.hidden = (self.hidden & ~(1 << layer)) if visible else (self.hidden | (1 << layer))
 
     def run(self) -> None:
+        """Opens the window and runs the viewer until it is closed; with exit_after set, keeps the last frame in
+        screenshot."""
         p = hello_imgui.RunnerParams()
         p.app_window_params.window_title = self.title
         p.app_window_params.window_geometry.size = self.size

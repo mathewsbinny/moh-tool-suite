@@ -8,6 +8,7 @@ import sys
 
 
 def levels() -> list[tuple[str, str]]:
+    """The game copy's levels as (name, state) pairs: prepared or not, and whether DICE path data exists."""
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'moh-auto-navkit'))
     import navkit
     pr = navkit.Project()
@@ -20,6 +21,7 @@ def levels() -> list[tuple[str, str]]:
 
 
 def pick_level(title: str) -> str | None:
+    """Shows a window listing the levels and returns the one chosen, or None when it is closed without a choice."""
     import tkinter as tk
     from tkinter import messagebox, ttk
     try:

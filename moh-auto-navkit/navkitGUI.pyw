@@ -133,6 +133,8 @@ class App:
 
     # --- levels and state ------------------------------------------------------------------------------
     def fill_levels(self):
+        """Fills the level list (AI levels only, when that box is ticked) and keeps the chosen level when it is still
+        listed."""
         names = navkit.level_names(self.pr)
         shown = [lv for lv, ai in names if ai or not self.only_ai.get()]
         self.combo['values'] = shown
@@ -141,6 +143,8 @@ class App:
         self.refresh()
 
     def refresh(self):
+        """Fills the sampling area from the level's navkit.json, ticks the steps already done and says whose path data
+        the game uses."""
         lv = self.level.get()
         if not lv:
             return
@@ -173,6 +177,8 @@ class App:
                                   'MOH\'s MP levels ship no AI path data: NavKit\'s build is for OPFOR\'s bots.')
 
     def area_args(self):
+        """The --box / --y arguments for the typed sampling area; empty when it is blank or unchanged. Raises
+        ValueError for non-numbers."""
         vals = [self.vars[k].get().strip() for k in ('minx', 'minz', 'maxx', 'maxz', 'ybot', 'ytop')]
         if not all(vals) or vals == self.saved:
             return []   # empty or unchanged: navkit.py uses its own / the saved area
@@ -184,6 +190,7 @@ class App:
 
     # --- running steps ---------------------------------------------------------------------------------
     def run_step(self, cmd):
+        """Runs one navkit.py step on the chosen level in the background, asking first for install and restore."""
         lv = self.level.get()
         if not lv or self.proc:
             return
@@ -209,6 +216,8 @@ class App:
         threading.Thread(target=self.reader, args=(self.proc, cmd), daemon=True).start()
 
     def reader(self, proc, cmd):
+        """Copies the step's output into the queue line by line, keeping its last 10 lines, then queues its exit
+        code."""
         self.tail = []
         for line in proc.stdout:
             self.lines.put(line)
@@ -217,6 +226,8 @@ class App:
         self.lines.put(('done', cmd, rc))
 
     def pump(self):
+        """Moves queued output into the log on the Tk thread and, when a step ends, re-enables the buttons and warns
+        if it failed; runs itself again every 100 ms."""
         try:
             while True:
                 item = self.lines.get_nowait()
@@ -240,6 +251,8 @@ class App:
         self.root.after(100, self.pump)
 
     def stop(self):
+        """Cancels the running step and everything it started, then closes the game and restores opfor.ini if sampling
+        left them so."""
         if not self.proc:
             return
         self.cancelled = True
@@ -250,6 +263,8 @@ class App:
         navkit.recover_ini(self.pr, lambda m: self.write(m + '\n'))
 
     def set_busy(self, busy, text):
+        """Disables the step buttons and the level list while a step runs (busy), enables them again otherwise, and
+        shows text as the status."""
         for b in self.buttons:
             b['state'] = 'disabled' if busy else 'normal'
         self.combo['state'] = 'disabled' if busy else 'readonly'
@@ -257,18 +272,21 @@ class App:
         self.status['text'] = text
 
     def write(self, text):
+        """Appends text to the read-only log and scrolls to it."""
         self.log['state'] = 'normal'
         self.log.insert('end', text)
         self.log.see('end')
         self.log['state'] = 'disabled'
 
     def open_folder(self):
+        """Opens the chosen level's NavKit work folder in Explorer (created if missing)."""
         lv = self.level.get()
         d = os.path.join(self.pr.work, 'navkit', lv) if lv else os.path.join(self.pr.work, 'navkit')
         os.makedirs(d, exist_ok=True)
         os.startfile(d)
 
     def close(self):
+        """Quits, after asking whether to cancel a step that is still running."""
         if self.proc and not messagebox.askyesno('NavKit', 'A step is still running. Cancel it and quit?'):
             return
         self.stop()
@@ -276,6 +294,7 @@ class App:
 
 
 def main():
+    """Starts the NavKit window, with high-DPI text, logging and the error guard."""
     try:
         import ctypes
         ctypes.windll.shcore.SetProcessDpiAwareness(1)   # sharp text on high-DPI screens

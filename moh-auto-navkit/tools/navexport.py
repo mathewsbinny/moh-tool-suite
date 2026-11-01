@@ -30,6 +30,8 @@ import json
 import math
 import os
 import sys
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from typing import Any
 
 import numpy as np
 
@@ -38,6 +40,14 @@ sys.path[:0] = [HERE, os.path.dirname(HERE), os.path.join(os.path.dirname(os.pat
 import mohsoldier  # noqa: E402
 import navbuild  # noqa: E402
 from mohcore import navdata, rsnv  # noqa: E402
+from mohcore.terrain import Heightfield  # noqa: E402
+
+Log = Callable[..., object]                       # print, or a function taking print's arguments
+Cells = tuple[np.ndarray, np.ndarray, np.ndarray]  # an area's cells: (ii, jj, ground y)
+AreaCells = tuple[np.ndarray, np.ndarray, np.ndarray, float]   # (ii, jj, y, pitch) per area
+Exact = list[tuple[int, float, np.ndarray, np.ndarray, np.ndarray]]   # the build's cells (navbuild.read_cells)
+CellKey = dict[tuple[float, int, int], list[tuple[int, float]]]   # {(pitch, i, j): [(area, ground y)]}
+Rows = list[tuple[Any, ...]]                      # a section's records (rsnv.write)
 
 EXPORTER_VERSION = ('moh 1.0 (2026-10-30: BF1943 exporter 1.4 for MOH - its soldier, water from the level\'s water '
                     'mesh, no vehicle entries, no jump links)')
@@ -51,7 +61,8 @@ HEIGHT_TOL = 0.25         # m: a 0.2 m area whose 1 m height grid is further off
 SHALLOW = 0.5             # m of water over a node: shallow (NAUX_SHALLOW); deeper, up to the soldier's limit: wading
 
 
-def sha256(path):
+def sha256(path: str) -> str:
+    """The file's SHA-256, as hex."""
     h = hashlib.sha256()
     with open(path, 'rb') as f:
         for b in iter(lambda: f.read(1 << 22), b''):
@@ -59,7 +70,7 @@ def sha256(path):
     return h.hexdigest()
 
 
-def rasterise(area, pitch, y_offset, heightfield):
+def rasterise(area: navdata.NavArea, pitch: float, y_offset: float, heightfield: Heightfield | None) -> Cells:
     """The area's walkable cells at its pitch from its boundary (a build without its cells file): (ii, jj) sample
     indices (centre = index x pitch) and ground heights - samples inside the boundary (even-odd on xz), the height from
     the nearest boundary point less y_offset, or the terrain's where the cell lies on the terrain (navdata._ground)."""
@@ -73,6 +84,8 @@ def rasterise(area, pitch, y_offset, heightfield):
     xs, zs = np.concatenate([a[:, 0], b[:, 0]]), np.concatenate([a[:, 2], b[:, 2]])
     i0, i1 = int(math.floor(xs.min() / pitch)) - 1, int(math.ceil(xs.max() / pitch)) + 1
     j0, j1 = int(math.floor(zs.min() / pitch)) - 1, int(math.ceil(zs.max() / pitch)) + 1
+    ii: np.ndarray
+    jj: np.ndarray
     ii, jj = np.meshgrid(np.arange(i0, i1 + 1), np.arange(j0, j1 + 1), indexing='ij')
     ii, jj = ii.ravel(), jj.ravel()
     px, pz = ii * pitch + pitch * 1.37e-3, jj * pitch + pitch * 0.71e-3      # off the 45-degree bridges' corners
@@ -96,7 +109,7 @@ def rasterise(area, pitch, y_offset, heightfield):
     return ii, jj, navdata._ground(xz, est, heightfield)
 
 
-def admissible_costs(pos, src, dst, cost):
+def admissible_costs(pos: Any, src: Any, dst: Any, cost: Any) -> np.ndarray:
     """The edges' costs for the runtime: the build's (floor(16 x length)), raised where that is under 16 x the length
     between the exported float32 node positions as the search measures it - to that, rounded up. Every path then costs
     at least 16 x its length, so the search's heuristic never overestimates (BF1943 exporter 1.4)."""
@@ -106,7 +119,7 @@ def admissible_costs(pos, src, dst, cost):
     return np.maximum(np.asarray(cost, np.int64), np.ceil(16.0 * ln).astype(np.int64))
 
 
-def height_grid(ii, jj, y, cpb, miny):
+def height_grid(ii: np.ndarray, jj: np.ndarray, y: np.ndarray, cpb: int, miny: float) -> tuple[np.ndarray, int, int]:
     """The area's height grid (blocks of cpb x cpb cells from its first cell, each its cells' mean, cm above miny;
     0xFFFF for a block with no cell): (grid rows x columns, width, height)."""
     hw = max(1, -(-(int(ii.max()) + 1 if len(ii) else 1) // cpb))
@@ -123,7 +136,8 @@ def height_grid(ii, jj, y, cpb, miny):
     return grid, hw, hh
 
 
-def grid_error(ii, jj, y, grid, hw, hh, cpb, pitch, miny):
+def grid_error(ii: np.ndarray, jj: np.ndarray, y: np.ndarray, grid: np.ndarray, hw: int, hh: int, cpb: int,
+               pitch: float, miny: float) -> float:
     """The largest difference between the grid's ground (rsnv.World.ground, the runtime's reading) and the cells'
     own heights, at the cells."""
     a = rsnv.Area(0, 0.0, 0.0, 0.0, 0.0, miny, miny, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, pitch, 0, hw, hh,
@@ -134,7 +148,7 @@ def grid_error(ii, jj, y, grid, hw, hh, cpb, pitch, miny):
                 for u, v, h in zip(ii, jj, y)), default=0.0)
 
 
-def water_over(points, water):
+def water_over(points: Any, water: tuple[Any, Any] | None) -> np.ndarray:
     """The water surface height over each point ((n, 3) x, y, z; -inf where there is none). water: (vertices,
     triangles) of the level's water mesh, or None."""
     top = np.full(len(points), -np.inf)
@@ -160,8 +174,10 @@ def water_over(points, water):
     return top
 
 
-def export(root, lv, out=None, log=print, compare=False):
-    """compare: also rasterise the outlines where the build's cells are read, and report how they differ."""
+def export(root: str, lv: str, out: str | None = None, log: Log = print,
+           compare: bool = False) -> tuple[str, navdata.NavData]:
+    """Exports the level's build to out (default work/navkit/<level>/<level>.rsnv): (the file, the build's navdata).
+    compare: also rasterise the outlines where the build's cells are read, and report how they differ."""
     import navkit
     pr = navkit.Project(root)
     hpd, xoff, zoff, hf, nav, exact = load_build(pr, root, lv, log)
@@ -199,7 +215,7 @@ def export(root, lv, out=None, log=print, compare=False):
     if exact is not None:
         inputs['cells.npz'] = navbuild.cells_path(hpd)
     meta = export_meta(lv, exact, inputs, gpos, E, nav, port, ladders, ladr, unlinked, island_rows, nflags)
-    sections = {'SECT': sect, 'NODE': node_rows, 'NAUX': naux, 'EDGE': edge_rows,
+    sections: dict[str, list[tuple] | bytes | bytearray] = {'SECT': sect, 'NODE': node_rows, 'NAUX': naux, 'EDGE': edge_rows,
                 'AREA': [tuple(r) for r in area_rows], 'PORT': port, 'BMAP': bytes(bmap), 'HGHT': [(v,) for v in hght],
                 'GBKT': gbkt, 'GLST': [(v,) for v in glst], 'ANOD': [(v,) for v in anod], 'LADR': ladr, 'OFFM': [],
                 'ISLD': island_rows, 'META': json.dumps(meta, indent=1).encode('utf-8')}
@@ -217,7 +233,8 @@ def export(root, lv, out=None, log=print, compare=False):
     return out, nav
 
 
-def load_build(pr, root, lv, log):
+def load_build(pr: Any, root: str, lv: str,
+               log: Log) -> tuple[str, int, int, Heightfield, navdata.NavData, Exact | None]:
     """The level's build: (hpd path, xoff, zoff, terrain height field, navdata, the build's cells or None)."""
     from mohcore import level as levelmod
     hpd = os.path.join(pr.out_dir(lv), 'pathdata.hpd')
@@ -241,23 +258,27 @@ def load_build(pr, root, lv, log):
     return hpd, xoff, zoff, hf, nav, exact
 
 
-def sector_order(nav):
+def sector_order(nav: navdata.NavData) -> tuple[list[int], dict[int, int], dict[int, int]]:
     """Sectors and their areas, in the build's order: (sector ids, index by sector, first area by sector)."""
-    sec_ids = []
+    sec_ids: list[int] = []
     for a in nav.areas:
         if not sec_ids or sec_ids[-1] != a.sector:
             sec_ids.append(a.sector)
     sec_index = {s: k for k, s in enumerate(sec_ids)}
-    first_area = {}
+    first_area: dict[int, int] = {}
     for k, a in enumerate(nav.areas):
         first_area.setdefault(a.sector, k)
     return sec_ids, sec_index, first_area
 
 
-def export_areas(nav, exact, hf, yoff, sec_index, lv, log, compare):
+def export_areas(nav: navdata.NavData, exact: Exact | None, hf: Heightfield, yoff: float, sec_index: Mapping[int, int],
+                 lv: str, log: Log, compare: bool) -> tuple[bytearray, list[int], list[list[float]], list[AreaCells]]:
     """Areas: bitmaps at their pitch, height grids. Returns (bmap, hght, area rows, per area (ii, jj, y, pitch))."""
-    stats = collections.Counter()
-    bmap, hght, area_rows, area_cells = bytearray(), [], [], []
+    stats: collections.Counter[str] = collections.Counter()
+    bmap = bytearray()
+    hght: list[int] = []
+    area_rows: list[list[float]] = []
+    area_cells: list[AreaCells] = []
     for k, a in enumerate(nav.areas):
         pitch = 0.2 if a.pitch < 0.5 else COARSE_PITCH
         ii, jj, y = area_cells_of(k, a, pitch, exact, hf, yoff, compare, stats, lv)
@@ -277,7 +298,8 @@ def export_areas(nav, exact, hf, yoff, sec_index, lv, log, compare):
     return bmap, hght, area_rows, area_cells
 
 
-def area_cells_of(k, a, pitch, exact, hf, yoff, compare, stats, lv):
+def area_cells_of(k: int, a: navdata.NavArea, pitch: float, exact: Exact | None, hf: Heightfield, yoff: float,
+                  compare: bool, stats: collections.Counter[str], lv: str) -> Cells:
     """Area k's cells (ii, jj, ground y): the build's, else rasterised from its outline; compare counts the differences."""
     if exact is None or compare:
         ii, jj, y = rasterise(a, pitch, yoff, hf)
@@ -297,7 +319,8 @@ def area_cells_of(k, a, pitch, exact, hf, yoff, compare, stats, lv):
     return ei.astype(np.int64), ej.astype(np.int64), ey.astype(np.float64)
 
 
-def area_bitmap(a, ii, jj, y):
+def area_bitmap(a: navdata.NavArea, ii: np.ndarray, jj: np.ndarray,
+                y: np.ndarray) -> tuple[int, int, int, int, float, float, np.ndarray]:
     """The area's cell bitmap: (first column, first row, width, height, min y, max y, packed rows of whole bytes)."""
     if len(ii):
         ci0, cj0 = int(ii.min()), int(jj.min())
@@ -315,7 +338,8 @@ def area_bitmap(a, ii, jj, y):
     return ci0, cj0, w_, h_, miny, maxy, packed
 
 
-def area_height_grid(li, lj, y, pitch, miny, stats):
+def area_height_grid(li: np.ndarray, lj: np.ndarray, y: np.ndarray, pitch: float, miny: float,
+                     stats: collections.Counter[str]) -> tuple[np.ndarray, int, int, int]:
     """The area's height grid, made finer while it is off by over HEIGHT_TOL at a cell: (grid, width, height, cpb)."""
     cpb = HEIGHT_CELLS[pitch]
     grid, hw, hh = height_grid(li, lj, y, cpb, miny)
@@ -329,20 +353,20 @@ def area_height_grid(li, lj, y, pitch, miny, stats):
     return grid, hw, hh, cpb
 
 
-def cell_index(area_cells):
+def cell_index(area_cells: Iterable[AreaCells]) -> CellKey:
     """{(pitch, i, j): [(area, ground y)]} over every area's cells."""
-    cellkey = {}
+    cellkey: CellKey = {}
     for k, (ii, jj, y, pitch) in enumerate(area_cells):
         for i, j, v in zip(ii.tolist(), jj.tolist(), y.tolist()):
             cellkey.setdefault((round(pitch, 1), i, j), []).append((k, v))
     return cellkey
 
 
-def node_areas(gpos, cellkey):
+def node_areas(gpos: np.ndarray, cellkey: CellKey) -> np.ndarray:
     """Each node's area: the one with the nearest cell within 2 cells and 1 m of height (0xFFFF for none)."""
     node_area = np.full(len(gpos), 0xFFFF, np.int64)
     for n, (x, y, z) in enumerate(gpos):
-        best = None
+        best: tuple[float, int] | None = None
         for pitch in sorted({0.2, COARSE_PITCH}):
             ci, cj = int(round(x / pitch)), int(round(z / pitch))
             for di in (0, 1, -1, 2, -2):
@@ -357,7 +381,7 @@ def node_areas(gpos, cellkey):
     return node_area
 
 
-def export_edges(nav, gpos):
+def export_edges(nav: navdata.NavData, gpos: np.ndarray) -> tuple[np.ndarray, np.ndarray, int, np.ndarray]:
     """Edges: CSR by source, kinds. Returns (edges sorted, admissible costs, how many were raised, kinds)."""
     E = nav.edges
     order = np.lexsort((E[:, 1], E[:, 0]))
@@ -380,17 +404,17 @@ def export_edges(nav, gpos):
     return E, cost, raised, kind
 
 
-def export_islands(nav):
+def export_islands(nav: navdata.NavData) -> tuple[np.ndarray, Rows]:
     """Islands: (island per node, ISLD rows - member count, first member, the main one flagged)."""
     isl = nav.node_island.astype(np.int64)
-    island_rows = []
+    island_rows: Rows = []
     for k_i, I in enumerate(nav.islands):
         members = np.nonzero(isl == k_i)[0]
         island_rows.append((len(members), int(members[0]) if len(members) else 0, rsnv.ISLD_MAIN if k_i == 0 else 0, 0, 0))
     return isl, island_rows
 
 
-def node_flags(root, lv, gpos, kind, E):
+def node_flags(root: str, lv: str, gpos: np.ndarray, kind: np.ndarray, E: np.ndarray) -> np.ndarray:
     """Node flags: water over the node (the level's water mesh), ladder ends."""
     import navregress
     water = navregress.level_water(root, lv)
@@ -403,10 +427,10 @@ def node_flags(root, lv, gpos, kind, E):
     return nflags
 
 
-def area_nodes(nav, node_area, area_rows, isl):
+def area_nodes(nav: navdata.NavData, node_area: np.ndarray, area_rows: list[list[float]], isl: np.ndarray) -> list[int]:
     """Areas: island (most of their nodes, else the reader's), nodes by area. Fills the rows; returns ANOD."""
-    anod = []
-    by_area = collections.defaultdict(list)
+    anod: list[int] = []
+    by_area: collections.defaultdict[int, list[int]] = collections.defaultdict(list)
     for n, a_ in enumerate(node_area):
         if a_ != 0xFFFF:
             by_area[int(a_)].append(n)
@@ -418,10 +442,11 @@ def area_nodes(nav, node_area, area_rows, isl):
     return anod
 
 
-def export_portals(nav, area_rows, first_area, cellkey, yoff):
+def export_portals(nav: navdata.NavData, area_rows: list[list[float]], first_area: Mapping[int, int], cellkey: CellKey,
+                   yoff: float) -> Rows:
     """Portals: inside sectors by target index; border portals to the neighbour sector's area across. Fills the rows."""
-    port = []
-    per_area = collections.defaultdict(list)
+    port: Rows = []
+    per_area: collections.defaultdict[int, list[tuple[np.ndarray, np.ndarray, int]]] = collections.defaultdict(list)
     for k, a in enumerate(nav.areas):
         base = first_area[a.sector]
         for p0, p1, target in a.portals:
@@ -439,7 +464,8 @@ def export_portals(nav, area_rows, first_area, cellkey, yoff):
     return port
 
 
-def border_target(nav, a, p0, p1, cellkey, yoff):
+def border_target(nav: navdata.NavData, a: navdata.NavArea, p0: np.ndarray, p1: np.ndarray, cellkey: CellKey,
+                  yoff: float) -> int | None:
     """The area of another sector 0.6 m across the border p0-p1 at its height (one side, then the other), or None."""
     m = (np.asarray(p0) + np.asarray(p1)) / 2
     d = np.asarray(p1) - np.asarray(p0)
@@ -460,16 +486,19 @@ def border_target(nav, a, p0, p1, cellkey, yoff):
     return None
 
 
-def sector_buckets(nav, sec_ids, area_rows, xoff, zoff):
+def sector_buckets(nav: navdata.NavData, sec_ids: Iterable[int], area_rows: list[list[float]], xoff: int,
+                   zoff: int) -> tuple[Rows, Rows, list[int]]:
     """Sectors and their 4 m buckets: (SECT, GBKT, GLST rows)."""
-    sect, gbkt, glst = [], [], []
+    sect: Rows = []
+    gbkt: Rows = []
+    glst: list[int] = []
     for s in sec_ids:
         X, Z = (s >> 8) & 0xFF, s & 0xFF
         sx0, sz0 = (X + xoff) * 100.0, (Z + zoff) * 100.0
         ks = [k for k, a in enumerate(nav.areas) if a.sector == s]
         pitch_code = 0 if nav.areas[ks[0]].pitch < 0.5 else 1
         first_bucket = len(gbkt)
-        buckets = [[] for _ in range(rsnv.BUCKETS * rsnv.BUCKETS)]
+        buckets: list[list[int]] = [[] for _ in range(rsnv.BUCKETS * rsnv.BUCKETS)]
         for k in ks:
             r = area_rows[k]
             if r[7] == 0:
@@ -490,17 +519,18 @@ def sector_buckets(nav, sec_ids, area_rows, xoff, zoff):
     return sect, gbkt, glst
 
 
-def nearest_node(gpos, p, maxd=END_MATCH):
+def nearest_node(gpos: np.ndarray, p: Sequence[float], maxd: float = END_MATCH) -> tuple[int | None, float]:
     """(the node nearest p, its distance), the node None when it is further than maxd."""
     d = np.linalg.norm(gpos - np.asarray(p, float), axis=1)
     k = int(np.argmin(d))
     return (k, float(d[k])) if d[k] <= maxd else (None, float(d[k]))
 
 
-def ladder_records(ladders, gpos):
+def ladder_records(ladders: Sequence[Mapping[str, Any]], gpos: np.ndarray) -> tuple[Rows, list[str]]:
     """LADR rows and the ladders left out: only records whose two ends are nodes of the build."""
     # ladders: only records whose two ends are nodes of the build (rsnav's loader refuses a LADR end that is no node)
-    ladr, unlinked = [], []
+    ladr: Rows = []
+    unlinked: list[str] = []
     for k, L in enumerate(ladders):
         lo, hi = L['lo'], L['hi']
         foot = [(lo[0] + hi[0]) / 2, lo[1], (lo[2] + hi[2]) / 2]
@@ -514,7 +544,9 @@ def ladder_records(ladders, gpos):
     return ladr, unlinked
 
 
-def export_meta(lv, exact, inputs, gpos, E, nav, port, ladders, ladr, unlinked, island_rows, nflags):
+def export_meta(lv: str, exact: Exact | None, inputs: Mapping[str, str], gpos: np.ndarray, E: np.ndarray,
+                nav: navdata.NavData, port: Sequence[object], ladders: Sequence[object], ladr: Sequence[object],
+                unlinked: Sequence[str], island_rows: Sequence[object], nflags: np.ndarray) -> dict[str, Any]:
     """The META section's provenance: exporter, level, sources with their hashes, the soldier, counts."""
     return {'exporter': EXPORTER_VERSION, 'game': 'Medal of Honor (2010) MP', 'level': lv,
             'cells': 'build' if exact is not None else 'rasterised outlines',
@@ -527,12 +559,14 @@ def export_meta(lv, exact, inputs, gpos, E, nav, port, ladders, ladr, unlinked, 
                        'wading nodes': int(((nflags & rsnv.NAUX_WADE) > 0).sum())}}
 
 
-def write_with_tight_edges(out, sections, header, meta, E, kind, edge_rows, first_edge):
+def write_with_tight_edges(out: str, sections: dict[str, list[tuple] | bytes | bytearray], header: dict[str, Any],
+                           meta: dict[str, Any], E: np.ndarray, kind: np.ndarray,
+                           edge_rows: Sequence[tuple[int, int, int]], first_edge: np.ndarray) -> tuple[int, set[int]]:
     """Writes the file, flags the tight walk edges over its cells, writes it again. Returns (size, tight edges)."""
     rsnv.write(out, sections, header, False)
     # tight edges: walk edges with no line of sight either way over the cells just written (the runtime's rule)
     w = rsnv.load(out)
-    tight = set()
+    tight: set[int] = set()
     for k, (a_, b_) in enumerate(E):
         if int(kind[k]) != rsnv.EDGE_WALK or k in tight:
             continue
@@ -547,7 +581,7 @@ def write_with_tight_edges(out, sections, header, meta, E, kind, edge_rows, firs
     return size, tight
 
 
-def check(path, nav, log=print):
+def check(path: str, nav: navdata.NavData, log: Log = print) -> tuple[list[str], rsnv.World]:
     """Reads the file back: validate(), and its graph against the build's (navdata)."""
     w = rsnv.load(path)
     problems = list(w.validate())
@@ -574,7 +608,8 @@ def check(path, nav, log=print):
     return problems, w
 
 
-def main(argv):
+def main(argv: Sequence[str]) -> int:
+    """Runs the exporter on a command line (argv with the script's name first): the exit code."""
     ap = argparse.ArgumentParser(prog='navexport.py', description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('level')
     ap.add_argument('--out')

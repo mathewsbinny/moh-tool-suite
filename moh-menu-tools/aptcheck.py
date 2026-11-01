@@ -73,6 +73,7 @@ class Code:
         self.funcs.sort()
 
     def span(self, ins):
+        """The byte range [start, end) an instruction covers, at least one byte."""
         return ins.at, max(ins.end, ins.at + 1)
 
     def containing(self, off):
@@ -94,6 +95,8 @@ class Code:
         return (best[1], best[2]) if best else None
 
     def findings(self):
+        """The movie's code problems as {(kind, offset): Finding}: unknown opcodes, Ends in functions, bad branch
+        targets, constant and pool indices out of range, and more."""
         m, out = self.m, {}
         nconst = len(m.const)
         users = {}
@@ -134,10 +137,12 @@ class Code:
         return out
 
     def fname(self, off):
+        """Which function the offset is in, as 'function <name> (<offset>)', or 'a frame action'."""
         f = self.function_at(off)
         return f'function {f[1]} ({f[0]:06X})' if f else 'a frame action'
 
     def text(self, ins):
+        """An instruction as text: its name and argument, or a function's name, parameter count and size."""
         if ins.func:
             return f'{ins.name} {ins.func.name or "<anon>"}({ins.func.nparams} params) size={ins.func.size}'
         return f'{ins.name}' + (f' {ins.arg}' if ins.arg else '')
@@ -155,6 +160,7 @@ def ranges(offsets, gap=4):
 
 
 def const_layout(m):
+    """The (start, end) offsets of the .const file's entry table."""
     count, entries = m.cu(24), m.cu(28)
     return entries, entries + 8 * count
 
@@ -167,6 +173,8 @@ class Report:
         self.brief = brief                     # leave out the details (each changed range and its instructions)
 
     def add(self, level, text, detail=False):
+        """Adds a line at level ('error', 'warning', 'note' or 'info') and counts it; detail lines are left out of a
+        brief report."""
         if detail and self.brief:
             return
         if level == 'error':
@@ -178,6 +186,7 @@ class Report:
         self.lines.append(f'  {level + ":" if level != "info" else "     "} {text}' if level != 'info' else f'    {text}')
 
     def show(self):
+        """Prints the report's title, lines and the result line with its counts."""
         print(self.title)
         for line in self.lines:
             print(line)
@@ -324,6 +333,8 @@ def check_named(rep, changed, named):
 # ------------------------------------------------------------------------------------------------ commands
 
 def cmd_verify(args, opfor):
+    """The verify command: compares a patched movie with its original (and the patch, with --patch); returns the
+    number of errors."""
     if len(args) < 2:
         raise mc.MenuToolError('verify needs <original> <patched>')
     patch = take(args, '--patch')
@@ -342,6 +353,8 @@ def cmd_verify(args, opfor):
 
 
 def cmd_lint(args, opfor):
+    """The lint command: checks .patch files (globs allowed) against their source movies; returns the number of
+    errors."""
     source = take(args, '--source')
     installed = take_flag(args, '--installed')
     brief = take_flag(args, '--brief')
@@ -395,6 +408,7 @@ def cmd_lint(args, opfor):
 
 
 def cmd_check(args, opfor):
+    """The check command: lists each movie's code findings as notes; returns 0 (notes are not errors)."""
     if not args:
         raise mc.MenuToolError('check needs a movie')
     errors = 0
@@ -411,6 +425,8 @@ def cmd_check(args, opfor):
 
 
 def take(args, flag):
+    """Removes flag and its value from args and returns the value (None when flag is absent); raises MenuToolError
+    when the value is missing."""
     if flag in args:
         i = args.index(flag)
         if i + 1 >= len(args):
@@ -422,6 +438,7 @@ def take(args, flag):
 
 
 def take_flag(args, flag):
+    """Removes flag from args; True when it was there."""
     if flag in args:
         args.remove(flag)
         return True
@@ -429,6 +446,7 @@ def take_flag(args, flag):
 
 
 def main(argv):
+    """The command line: verify, lint or check; returns 1 when any errors were found."""
     args = list(argv[1:])
     if not args or args[0] not in ('verify', 'lint', 'check'):
         print(__doc__)

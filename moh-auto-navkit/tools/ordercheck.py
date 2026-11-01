@@ -37,6 +37,8 @@ MOH_POINT_TYPES = ('ObjectiveTriggerEntityData', 'CapturePointEntityData', 'Alte
 
 
 def order_points(xml_path):
+    """The level partition's AI order and waypoint positions as unique (kind, name, (x, y, z)) triples; spawner
+    markers are left out."""
     x = open(xml_path, encoding='utf-8', errors='replace').read()
     inst = {}
     for typ, guid, body in xmlinst.instances(x):
@@ -144,6 +146,8 @@ class PathData:
         self.ids = [nid for nid, _ in self.nodes]
 
     def on_area(self, p, ytol=2.5):
+        """True when p is inside an area's outline on the xz plane (even-odd rule) and within ytol metres of its
+        height range."""
         x, y, z = p
         for x0, x1, z0, z1, y0, y1, segs in self.areas:
             if not (x0 <= x <= x1 and z0 <= z <= z1 and y0 - ytol <= y <= y1 + ytol):
@@ -159,6 +163,8 @@ class PathData:
         return False
 
     def nearest_group(self, p, radius=15.0):
+        """The (route network, its node count) of the nearest route node within radius metres in plan and 4 m in
+        height of p, or (None, None)."""
         d = np.hypot(self.pos[:, 0] - p[0], self.pos[:, 2] - p[2])
         d = np.where(np.abs(self.pos[:, 1] - Y_OFFSET - p[1]) <= 4.0, d, 1e9)
         k = int(np.argmin(d))
@@ -169,6 +175,8 @@ class PathData:
 
 
 def main(argv):
+    """The command line: how a level's order positions sit on the areas and route networks of one or more pathdata.hpd
+    files; returns the exit code."""
     if len(argv) < 3:
         print(__doc__)
         return 1

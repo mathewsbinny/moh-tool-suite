@@ -74,6 +74,7 @@ def check(path):
 
 
 def main(argv):
+    """The command line: checks each pathdata.hpd and prints ok or its failed checks; returns 1 when any failed."""
     if len(argv) < 2:
         print(__doc__)
         return 1

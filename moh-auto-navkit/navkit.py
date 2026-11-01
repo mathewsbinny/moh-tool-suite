@@ -52,6 +52,8 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)   # no console flashes when run from the GUI
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -59,6 +61,10 @@ sys.path.insert(0, os.path.join(HERE, 'tools'))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'core'))
 from mohcore import gamecopy  # noqa: E402  (the game copy's layout)
 import mohsoldier  # noqa: E402  (the MOH soldier path data is built for)
+
+Log = Callable[..., object]          # print, or a function taking print's arguments
+Settings = dict[str, Any]            # a level's navkit.json: level, box, y, xoff, zoff and their sources
+Confirm = Callable[[str], bool]      # asks a yes / no question (ask, or the GUI's dialog)
 
 DETAILED_BUDGET_MS = 400   # pitch-0.2 runs: ms of sampling per frame - 10x the columns of a normal run, so it must finish
                            # in less game time than a round or a campaign level allows an idle player (150: ONS_MP_002 at
@@ -70,7 +76,7 @@ BACKUP_SUFFIX = '.opfor-orig'
 NEW_SUFFIX = '.opfor-new'       # where NavKit installed onto a level that had no path data to back up
 
 
-def original_pathdata(p):
+def original_pathdata(p: str) -> str | None:
     """The original of a level's installed path data p: its backup (p.opfor-orig), else p itself unless NavKit put
     it there (p.opfor-new: the level had none), else None."""
     if os.path.isfile(p + BACKUP_SUFFIX):
@@ -80,7 +86,7 @@ def original_pathdata(p):
     return None
 
 
-def _sha256(path):
+def _sha256(path: str) -> str:
     h = hashlib.sha256()
     with open(path, 'rb') as f:
         for b in iter(lambda: f.read(1 << 20), b''):
@@ -89,10 +95,10 @@ def _sha256(path):
 
 
 class NavKitError(Exception):
-    pass
+    """A NavKit step that cannot go on, explained in words (the command line prints it, the GUI shows it)."""
 
 
-def find_opfor(given=None):
+def find_opfor(given: str | None = None) -> str:
     """The Project OPFOR: Medal of Honor folder: --opfor, else OPFOR_ROOT, else project-opfor-moh next to the suite
     (core\\mohcore\\gamecopy.py)."""
     try:
@@ -101,7 +107,7 @@ def find_opfor(given=None):
         raise NavKitError(str(e)) from None
 
 
-def find_tool(opfor, exe, toolkit_dir):
+def find_tool(opfor: str, exe: str, toolkit_dir: str) -> str:
     """A toolkit tool: built in the toolkit (..\\<toolkit_dir>\\<exe>), else OPFOR's tools\\ folder."""
     for p in (os.path.join(os.path.dirname(HERE), toolkit_dir, exe), os.path.join(opfor, 'tools', exe)):
         if os.path.isfile(p):
@@ -110,7 +116,9 @@ def find_tool(opfor, exe, toolkit_dir):
 
 
 class Project:
-    def __init__(self, root=None):
+    """The Project OPFOR folder NavKit works in: its game copy, work folder and toolkit tools."""
+
+    def __init__(self, root: str | None = None) -> None:
         self.root = find_opfor(root)
         self.copy = gamecopy.GameCopy(self.root)
         self.game = self.copy.mp          # the MP client's folder (MoHMPGame.exe, dist\\, Output\\)
@@ -121,56 +129,64 @@ class Project:
         self.dbxedit = find_tool(self.root, 'DbxEdit.exe', 'moh-dbx-tools')
 
     # --- levels --------------------------------------------------------------------------------------
-    def level_dirs(self):
+    def level_dirs(self) -> dict[str, str]:
         """{level: the folder of its lowest level-00.fbrb} - base levels in dist\\win32\\levels, DLC levels only in
         dist\\win32\\patch\\levels; level_bundles gives every layer."""
-        out = {}
+        out: dict[str, str | None] = {}
         for lv in self.copy.levels():
             own = self.copy.level_bundles(lv) or self.copy.load_set(lv)[-1:]   # mp_03_elimination: its common_mp_03
             out[lv] = os.path.dirname(own[0]) if own else None
         return {lv: d for lv, d in out.items() if d}
 
-    def level_bundles(self, lv, name='level-00.fbrb'):
+    def level_bundles(self, lv: str, name: str = 'level-00.fbrb') -> list[str]:
+        """The level's own bundles of that name, every layer (gamecopy.GameCopy.level_bundles)."""
         return self.copy.level_bundles(lv, name)
 
-    def pathdata(self, lv):
+    def pathdata(self, lv: str) -> str:
+        """Where the game reads the level's path data (installed or not)."""
         return self.copy.pathdata(lv)
 
-    def dice_pathdata(self, lv):
+    def dice_pathdata(self, lv: str) -> str | None:
         """The level's original path data (the backup if NavKit's file is installed), or None. A file with the
         no-original marker beside it (.opfor-new) is NavKit's own install, not an original (2026-10-31: on MOH it was
         taken as DICE's file - prepare's box and offsets, the build's clip and check all came from NavKit's earlier
         build)."""
         return original_pathdata(self.pathdata(lv))
 
-    def level(self, name):
+    def level(self, name: str) -> str:
+        """The level a name (or a path ending in it) stands for, in lower case; NavKitError for an unknown one."""
         lv = name.replace('\\', '/').split('/')[-1].lower()
         dirs = self.level_dirs()
         if lv not in dirs:
             raise NavKitError(f'unknown level {name!r} (see: navkit.py levels)')
         return lv
 
-    def level_work(self, lv):
+    def level_work(self, lv: str) -> str:
+        """The level's unpacked files and objects (work\\levels\\<lv>)."""
         return os.path.join(self.work, 'levels', lv)
 
-    def out_dir(self, lv):
+    def out_dir(self, lv: str) -> str:
+        """NavKit's folder for the level (work\\navkit\\<lv>), made if missing."""
         d = os.path.join(self.work, 'navkit', lv)
         os.makedirs(d, exist_ok=True)
         return d
 
-    def settings_path(self, lv):
+    def settings_path(self, lv: str) -> str:
+        """The level's settings file, navkit.json in its NavKit folder."""
         return os.path.join(self.out_dir(lv), 'navkit.json')
 
-    def settings(self, lv):
+    def settings(self, lv: str) -> Settings:
+        """The level's settings (navkit.json); NavKitError when it is not prepared yet."""
         p = self.settings_path(lv)
         if not os.path.isfile(p):
             raise NavKitError(f'{lv}: not prepared yet (navkit.py prepare {lv.upper()})')
         return json.load(open(p))
 
-    def samples(self, lv, suffix=''):
+    def samples(self, lv: str, suffix: str = '') -> str:
+        """The path of one of the level's sample files (work\\navsample\\<lv>_navkit<suffix>.bin)."""
         return os.path.join(self.work, 'navsample', f'{lv}_navkit{suffix}.bin')
 
-    def samples08(self, lv):
+    def samples08(self, lv: str) -> str | None:
         """The level's 0.8 m samples: <lv>_navkit.bin (navkit.py sample) or <lv>_full.bin (older campaign runs)."""
         for name in (f'{lv}_navkit', f'{lv}_full'):
             q = os.path.join(self.work, 'navsample', name + '.bin')
@@ -178,14 +194,16 @@ class Project:
                 return q
         return None
 
-    def run(self, args, log):
+    def run(self, args: Sequence[str], log: Log) -> list[str]:
+        """Runs a tool and returns its output lines; NavKitError with its last lines when it fails."""
         r = subprocess.run(args, capture_output=True, text=True, errors='replace', creationflags=NO_WINDOW)
         out = (r.stdout + r.stderr).strip().splitlines()
         if r.returncode != 0:
             raise NavKitError(f'{os.path.basename(args[0])} failed: ' + ' | '.join(out[-3:]))
         return out
 
-    def unpack(self, bundle, dest, log):
+    def unpack(self, bundle: str, dest: str, log: Log) -> None:
+        """Unpacks a bundle into dest and converts its DBX to XML, unless dest already holds this bundle's files."""
         stamp = os.path.join(dest, '.source.sha256')
         source_hash = _sha256(bundle)
         if os.path.isfile(os.path.join(dest, 'fbrb.manifest')) and os.path.isfile(stamp) \
@@ -202,7 +220,8 @@ class Project:
 
 
 # --- steps -----------------------------------------------------------------------------------------------
-def levels(pr, log=print):
+def levels(pr: Project, log: Log = print) -> None:
+    """Lists the game's levels, whether they have AI path data, and what NavKit has done for each."""
     log('level              AI path data   NavKit')
     for lv, d in pr.level_dirs().items():
         ai = 'yes (samplable)' if pr.dice_pathdata(lv) else 'no'
@@ -216,15 +235,18 @@ def levels(pr, log=print):
         log(f'{lv:18s} {ai:14s} {", ".join(done)}')
 
 
-def level_names(pr):
+def level_names(pr: Project) -> list[tuple[str, bool]]:
     """[(level, samplable)] for the GUI."""
     return [(lv, pr.dice_pathdata(lv) is not None) for lv in pr.level_dirs()]
 
 
-def prepare(pr, lv, log=print, box=None, y=None):
+def prepare(pr: Project, lv: str, log: Log = print, box: Sequence[float] | None = None,
+            y: Sequence[float] | None = None) -> None:
+    """Unpacks and converts the level, extracts its objects and ladders, and writes its settings: the sampling box
+    (box / y, else chosen by sampling_box) and the sector offsets."""
     import levelobjects
     log(f'== prepare {lv}')
-    common = []
+    common: list[str] = []
     for c in pr.copy.commons(lv):
         # the base copy into common\\<c>, the patch's (which replaces entries) into common\\<c>.patch
         for bundle in pr.copy.layers(f'levels/{c}/level-00.fbrb'):
@@ -245,10 +267,9 @@ def prepare(pr, lv, log=print, box=None, y=None):
     so = glob.glob(os.path.join(L, 'dist', 'levels', lv, 'Precomputed', 'Infantry', 'SectorOffsets.xml'))
     if so:
         t = open(so[0], encoding='utf-8').read()
-        xoff = int(re.search(r'name="XOffset">(-?\d+)<', t).group(1))
-        zoff = int(re.search(r'name="ZOffset">(-?\d+)<', t).group(1))
+        xoff, zoff = _sector_offsets(t, so[0])
     auto_box, auto_y, source = sampling_box(pr, lv, L)
-    s = {'level': LV, 'box': box or auto_box, 'y': y or auto_y, 'box_source': 'given' if box else source}
+    s: Settings = {'level': LV, 'box': box or auto_box, 'y': y or auto_y, 'box_source': 'given' if box else source}
     if xoff is None:
         xoff, zoff, s['offsets_source'] = rule_offsets(pr, lv, s['box'])
     else:
@@ -261,7 +282,16 @@ def prepare(pr, lv, log=print, box=None, y=None):
     log(f'  settings: {os.path.relpath(pr.settings_path(lv), pr.root)}')
 
 
-def rule_offsets(pr, lv, box):
+def _sector_offsets(text: str, path: str) -> tuple[int, int]:
+    """(XOffset, ZOffset) of a SectorOffsets.xml's text; NavKitError when one is missing."""
+    mx = re.search(r'name="XOffset">(-?\d+)<', text)
+    mz = re.search(r'name="ZOffset">(-?\d+)<', text)
+    if mx is None or mz is None:
+        raise NavKitError(f'{path}: no XOffset / ZOffset')
+    return int(mx.group(1)), int(mz.group(1))
+
+
+def rule_offsets(pr: Project, lv: str, box: Sequence[float]) -> tuple[int, int, str]:
     """(xoff, zoff, source) of a level without a SectorOffsets asset (Onslaught and other MP levels): DICE's rule, one
     sector below the path data's lowest extent, so the first sector id is 1,1 - it holds for all 15 shipped
     SectorOffsets (13 campaign, ons_mp_005, ons_mp_008). A new map has no path data; its box (which holds the ground)
@@ -273,7 +303,8 @@ def rule_offsets(pr, lv, box):
             'rule: path data extent' if ext else 'rule: box')
 
 
-def set_box(pr, lv, s, box=None, y=None):
+def set_box(pr: Project, lv: str, s: Settings, box: Sequence[float] | None = None,
+            y: Sequence[float] | None = None) -> Settings:
     """A new sampling box / heights (--box / --y) into the level's settings, the sector offsets recomputed with
     prepare's rule when they came from it (2026-10-31: they were kept, so a box reaching below the old sector 0 gave
     sector x -1, masked to 0xFF in the sector ids). A SectorOffsets asset's offsets are the level's own and stay."""
@@ -284,7 +315,7 @@ def set_box(pr, lv, s, box=None, y=None):
     return s
 
 
-def common_dirs(root, lv=None):
+def common_dirs(root: str, lv: str | None = None) -> list[str]:
     """The unpacked shared bundles a level loads (work\\navkit\\common\\<c>[.patch]) in the game's order - its map's
     common_mp_<nn>, then common_mp, each the patch's copy first; readers take the first file found. Without a level:
     common_mp alone."""
@@ -297,7 +328,7 @@ def common_dirs(root, lv=None):
     return out
 
 
-def unpack_level(pr, lv, L, log, common=()):
+def unpack_level(pr: Project, lv: str, L: str, log: Log, common: Sequence[str] = ()) -> list[str]:
     """The level as the game loads it, in L\\dist: its level-00 bundle unpacked there, with the patch's copy (unpacked
     into L\\pkg) laid over it file by file - levelobjects.py and the other readers read L\\dist. A level without a
     bundle of its own (mp_03_elimination, mp_07_koth) gets its files (levels\\<lv>.*, levels\\<lv>\\) from its map's
@@ -308,7 +339,7 @@ def unpack_level(pr, lv, L, log, common=()):
     os.makedirs(pkg, exist_ok=True)
     if layers:
         pr.unpack(layers[0], dist, log)
-        sources = []
+        sources: list[str] = []
         if len(layers) > 1:
             pr.unpack(layers[-1], pkg, log)
             sources = [pkg]
@@ -322,7 +353,8 @@ def unpack_level(pr, lv, L, log, common=()):
         os.makedirs(dist, exist_ok=True)
         sources = list(common)
     from_common = [os.path.normcase(c) for c in common]
-    copied, seen = [], set()
+    copied: list[str] = []
+    seen: set[str] = set()
     for src in sources:
         top = os.path.join(src, 'levels')
         for dp, _, fs in os.walk(top):
@@ -345,12 +377,13 @@ def unpack_level(pr, lv, L, log, common=()):
     return copied
 
 
-def _has_partition(d, lv):
+def _has_partition(d: str, lv: str) -> bool:
     return any(os.path.splitext(os.path.basename(f))[0].lower() == lv
                for f in glob.glob(os.path.join(d, 'levels', '*.*')) if f.lower().endswith(('.dbx', '.xml')))
 
 
-def level_partition_name(L, lv, common=()):
+def level_partition_name(L: str, lv: str, common: Sequence[str] = ()) -> str:
+    """The level partition's name as its converted XML spells it (levels\\<name>.xml); NavKitError when not found."""
     for d in [os.path.join(L, 'pkg'), os.path.join(L, 'dist')] + list(common):
         for f in glob.glob(os.path.join(d, 'levels', '*.xml')):
             b = os.path.splitext(os.path.basename(f))[0]
@@ -359,12 +392,13 @@ def level_partition_name(L, lv, common=()):
     raise NavKitError(f'{lv}: level partition levels/{lv}.xml not found in the bundle')
 
 
-def sampling_box(pr, lv, L):
+def sampling_box(pr: Project, lv: str, L: str) -> tuple[Sequence[float], list[int], str]:
     """Box (minX, minZ, maxX, maxZ) and y (bottom, top): the original path data's extent plus 20 m if the
     level has path data (none on MOH), else its combat areas plus navsample_offline.COMBAT_MARGIN (every MOH MP level:
     90-430 m across), else the extent of its placed objects and spawn points plus 50 m. y: the objects and spawns in
     the box, 30 m below to 150 m above."""
-    pts = []
+    pts: list[Sequence[float]] = []
+    ys: Sequence[float]
     ref = pr.dice_pathdata(lv)
     if ref:
         import hpdtool
@@ -400,20 +434,24 @@ def sampling_box(pr, lv, L):
     return box, yr, source
 
 
-def fmt(v):
+def fmt(v: Sequence[float]) -> str:
+    """Numbers as a comma-separated list, each in its shortest form ('10,-2.5')."""
     return ','.join(f'{a:g}' for a in v)
 
 
-def game_running():
+def game_running() -> bool:
+    """Whether MoHMPGame.exe is running."""
     r = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq MoHMPGame.exe', '/NH'], capture_output=True, text=True,
                        creationflags=NO_WINDOW)
     return 'mohmpgame.exe' in r.stdout.lower()
 
 
-def ini_set(text, section, key, value):
+def ini_set(text: str, section: str, key: str, value: str) -> str:
     """Sets key=value in [section] of an ini text (adds the key if missing)."""
     lines = text.split('\n')
-    sec, start, end = None, None, len(lines)
+    sec: str | None = None
+    start: int | None = None
+    end = len(lines)
     for i, l in enumerate(lines):
         m = re.match(r'\s*\[([^\]]+)\]', l)
         if m:
@@ -434,11 +472,12 @@ def ini_set(text, section, key, value):
     return '\n'.join(lines)
 
 
-def ini_backup(pr):
+def ini_backup(pr: Project) -> str:
+    """Where a sampling run keeps opfor.ini's own copy while it has changed it."""
     return os.path.join(pr.work, 'navkit', 'opfor.ini.backup')
 
 
-def recover_ini(pr, log=print):
+def recover_ini(pr: Project, log: Log = print) -> None:
     """A sampling run that was killed leaves opfor.ini changed: put the saved copy back."""
     b = ini_backup(pr)
     if os.path.isfile(b):
@@ -447,7 +486,7 @@ def recover_ini(pr, log=print):
         log('  restored opfor.ini from the copy an interrupted sampling run left behind')
 
 
-def ensure_settings(pr, lv):
+def ensure_settings(pr: Project, lv: str) -> Settings:
     """The level's settings (navkit.json); a level sampled before navkit.json existed gets one from what is there: its
     name (the converted level partition), box and heights (its 0.8 m samples), sector offsets (its SectorOffsets)."""
     if os.path.isfile(pr.settings_path(lv)):
@@ -461,16 +500,16 @@ def ensure_settings(pr, lv):
     t = open(so[0], encoding='utf-8').read()
     s, _ = navsample.load(sp)
     name = level_partition_name(L, lv)
+    xoff, zoff = _sector_offsets(t, so[0])
     st = {'level': name, 'box': [round(s.min_x, 3), round(s.min_z, 3), round(s.min_x + (s.nx - 1) * s.pitch, 3),
                                  round(s.min_z + (s.nz - 1) * s.pitch, 3)],
           'y': [round(s.y_bottom, 3), round(s.y_top, 3)], 'box_source': 'its 0.8 m samples',
-          'offsets_source': 'its SectorOffsets', 'xoff': int(re.search(r'name="XOffset">(-?\d+)<', t).group(1)),
-          'zoff': int(re.search(r'name="ZOffset">(-?\d+)<', t).group(1))}
+          'offsets_source': 'its SectorOffsets', 'xoff': xoff, 'zoff': zoff}
     json.dump(st, open(pr.settings_path(lv), 'w'), indent=1)
     return st
 
 
-def detailed_sectors(pr, lv):
+def detailed_sectors(pr: Project, lv: str) -> list[tuple[int, int]]:
     """The sectors to build as detailed zones (pitch 0.2), as (grid x, grid z) - chosen from the level alone
     (tools\\detailed.py: flagged objects, stacked floors in the 0.8 m samples); cached in work\\navkit\\<lv>\\
     detailed.json while the samples are the same."""
@@ -489,14 +528,14 @@ def detailed_sectors(pr, lv):
     return chosen
 
 
-def detailed_rects(pr, lv, margin=1.0):
+def detailed_rects(pr: Project, lv: str, margin: float = 1.0) -> list[list[float]]:
     """The detailed sectors' squares plus a margin (the sampling window's overlap), for navsample_rects."""
     s = ensure_settings(pr, lv)
     return [[(i + s['xoff']) * 100 - margin, (j + s['zoff']) * 100 - margin, (i + s['xoff']) * 100 + 100 + margin,
              (j + s['zoff']) * 100 + 100 + margin] for i, j in detailed_sectors(pr, lv)]
 
 
-def dice_detailed_sectors(pr, lv):
+def dice_detailed_sectors(pr: Project, lv: str) -> list[tuple[int, int]]:
     """The sectors DICE's path data builds as detailed zones (pitch 0.2), as (grid x, grid z) ids; empty without it.
     For scoring detailed_sectors only - NavKit does not choose from it."""
     import hpdtool
@@ -508,7 +547,7 @@ def dice_detailed_sectors(pr, lv):
                   if abs(kymesh.parse_mesh(sec.mesh).pitch - 0.2) < 1e-3)
 
 
-def detailed_box(pr, lv, margin=1.0):
+def detailed_box(pr: Project, lv: str, margin: float = 1.0) -> list[float]:
     """The box around the detailed sectors (their 100 m squares plus a margin), for a pitch-0.2 sampling run."""
     s = ensure_settings(pr, lv)
     ids = detailed_sectors(pr, lv)
@@ -518,12 +557,16 @@ def detailed_box(pr, lv, margin=1.0):
     return [min(xs) - margin, min(zs) - margin, max(xs) + 100 + margin, max(zs) + 100 + margin]
 
 
-def pitch_suffix(pitch):
+def pitch_suffix(pitch: float) -> str:
     """Sample-file suffix of a pitch: '' for the normal 0.8, '_p02' for 0.2."""
     return '' if abs(pitch - 0.8) < 1e-6 else f'_p{int(round(pitch * 10)):02d}'
 
 
-def sample(pr, lv, log=print, confirm=None, box=None, y=None, timeout=3600, pitch=0.8, budget_ms=None):
+def sample(pr: Project, lv: str, log: Log = print, confirm: Confirm | None = None, box: Sequence[float] | None = None,
+           y: Sequence[float] | None = None, timeout: float = 3600, pitch: float = 0.8,
+           budget_ms: float | None = None) -> bool:
+    """BFBC2's in-game sampling of one pass (pitch): the normal and high-capsule runs, each a game launch. Returns
+    False when cancelled; NavKitError when a run does not finish."""
     s = ensure_settings(pr, lv)
     if abs(pitch - 0.8) > 1e-6:
         # a detailed-zone run: its own box (the detailed sectors by default) and only their squares sampled
@@ -555,7 +598,8 @@ def sample(pr, lv, log=print, confirm=None, box=None, y=None, timeout=3600, pitc
     return True
 
 
-def sample_level(pr, lv, log=print, confirm=None, box=None, y=None):
+def sample_level(pr: Project, lv: str, log: Log = print, confirm: Confirm | None = None,
+                 box: Sequence[float] | None = None, y: Sequence[float] | None = None) -> bool:
     """The level's sampling, offline (tools\\navsample_offline.py: the level's Havok collision and height field, no game
     launch - MOH's OPFOR core has no in-game sampler): the normal and high-capsule runs at 0.8 m, then - when the level
     has detailed sectors (stacked floors in the 0.8 m samples) - the same two at 0.2 m over those sectors. The files go
@@ -575,7 +619,8 @@ def sample_level(pr, lv, log=print, confirm=None, box=None, y=None):
     return True
 
 
-def sample_level_ingame(pr, lv, log=print, confirm=None, box=None, y=None):
+def sample_level_ingame(pr: Project, lv: str, log: Log = print, confirm: Confirm | None = None,
+                        box: Sequence[float] | None = None, y: Sequence[float] | None = None) -> bool:
     """BFBC2's route (kept for an OPFOR core with the [dev] navsample sampler; MOH's has none): the in-game runs, the
     normal and high-capsule runs at 0.8 m, then 0.2 m over the detailed sectors. One confirmation for all launches."""
     if confirm and not confirm(f'NavKit will start the game up to four times to sample {lv.upper()} (two 0.8 m runs, then '
@@ -593,7 +638,10 @@ def sample_level_ingame(pr, lv, log=print, confirm=None, box=None, y=None):
     return sample(pr, lv, log=log, pitch=0.2)
 
 
-def sample_run(pr, s, agent, name, log, timeout, pitch=0.8, budget_ms=None):
+def sample_run(pr: Project, s: Mapping[str, Any], agent: str, name: str, log: Log, timeout: float, pitch: float = 0.8,
+               budget_ms: float | None = None) -> str:
+    """One in-game sampling run: opfor.ini set for it, the game started and its log watched until the sampler is done,
+    then the game closed and the ini put back. Returns the sampler's result, or why it stopped."""
     orig = open(pr.ini, 'rb').read()
     shutil.copyfile(pr.ini, ini_backup(pr))
     log_start = os.path.getsize(pr.log_path) if os.path.isfile(pr.log_path) else 0
@@ -624,8 +672,7 @@ def sample_run(pr, s, agent, name, log, timeout, pitch=0.8, budget_ms=None):
             if prog and prog[-1] != last:
                 last = prog[-1]
                 log('    ' + last.split('navsample:', 1)[1].strip())
-            m = [SAMPLE_DONE.search(l) for l in new]
-            m = [x for x in m if x]
+            m = [x for x in (SAMPLE_DONE.search(l) for l in new) if x]
             if m:
                 result = m[-1].group(1)
                 break
@@ -646,13 +693,15 @@ def sample_run(pr, s, agent, name, log, timeout, pitch=0.8, budget_ms=None):
     return result
 
 
-def read_log(pr, start):
+def read_log(pr: Project, start: int) -> list[str]:
+    """The game log's lines from byte offset start on."""
     with open(pr.log_path, 'rb') as f:
         f.seek(start)
         return f.read().decode('utf-8', errors='replace').splitlines()
 
 
-def close_game():
+def close_game() -> None:
+    """Closes the game if it is running: asked first, then forced after 10 s."""
     if not game_running():
         return
     subprocess.run(['taskkill', '/IM', 'MoHMPGame.exe'], capture_output=True, creationflags=NO_WINDOW)
@@ -664,7 +713,7 @@ def close_game():
     time.sleep(2)
 
 
-def build_inputs(pr, lv, log=print):
+def build_inputs(pr: Project, lv: str, log: Log = print) -> tuple[str, str, int, int, dict[str, Any]]:
     """(samples, forbid, xoff, zoff, keyword arguments) of navbuild.build for a level: one place, so that build and
     apply (a build with walkability edits) always pass the same inputs - detailed zones and ladders included."""
     import navregress
@@ -673,7 +722,7 @@ def build_inputs(pr, lv, log=print):
     s08 = pr.samples08(lv)                      # <lv>_navkit.bin, or <lv>_full.bin of older campaign runs
     if not s08 or not os.path.isfile(s08[:-4] + '_hi.bin'):
         raise NavKitError(f'{lv}: samples missing ({os.path.basename(pr.samples(lv))} and its _hi run) - run sample first')
-    detailed = None
+    detailed: dict[str, Any] | None = None
     if os.path.isfile(pr.samples(lv, '_p02')):
         # the detailed-zone pass: DICE's pitch-0.2 sectors built from the level's pitch-0.2 samples (sample --pitch 0.2)
         hi02 = pr.samples(lv, '_hi_p02')
@@ -692,7 +741,8 @@ def build_inputs(pr, lv, log=print):
     return s08, os.path.join(L, 'forbid_tris.npy'), s['xoff'], s['zoff'], kw
 
 
-def build(pr, lv, log=print):
+def build(pr: Project, lv: str, log: Log = print) -> None:
+    """Builds the level's path data (work\\navkit\\<lv>\\pathdata.hpd and its cells) with navbuild."""
     import navbuild
     out = os.path.join(pr.out_dir(lv), 'pathdata.hpd')
     log(f'== build {lv} -> {os.path.relpath(out, pr.root)}')
@@ -702,7 +752,9 @@ def build(pr, lv, log=print):
     log(f'  built in {time.time() - t0:.0f} s ({os.path.getsize(out) / 1e6:.1f} MB)')
 
 
-def check(pr, lv, log=print):
+def check(pr: Project, lv: str, log: Log = print) -> None:
+    """Scores the build with ordercheck.py (against the original path data, else its self-check) and writes the
+    report to check.txt in the level's NavKit folder."""
     s = pr.settings(lv)
     ours = os.path.join(pr.out_dir(lv), 'pathdata.hpd')
     if not os.path.isfile(ours):
@@ -724,7 +776,7 @@ def check(pr, lv, log=print):
     log(f'  full report: {os.path.relpath(report, pr.root)}')
 
 
-def export(pr, lv, log=print):
+def export(pr: Project, lv: str, log: Log = print) -> None:
     """The build as the navigation runtime's file (tools\\navexport.py: work\\navkit\\<lv>\\<lv>.rsnv), read back and
     checked against the build; then, when rsnav's host build is found (tools\\rsnavcheck.py), loaded in rsnav and
     routed between the level's spawn points and objectives."""
@@ -756,7 +808,7 @@ def export(pr, lv, log=print):
         raise NavKitError(f'{lv}: the RSNV file fails in rsnav - ' + '; '.join(why))
 
 
-def compare(pr, lv, log=print, reference=None, candidate=None):
+def compare(pr: Project, lv: str, log: Log = print, reference: str | None = None, candidate: str | None = None) -> None:
     """Two path-data files of a level on its AI positions (default: the original against NavKit's build)."""
     import navcompare
     s = pr.settings(lv)
@@ -771,12 +823,12 @@ def compare(pr, lv, log=print, reference=None, candidate=None):
     navcompare.report(navcompare.compare(xml, reference, candidate), lambda m: log('  ' + m))
 
 
-def traversal_path(folder, lv):
+def traversal_path(folder: str, lv: str) -> str:
     """The traversal annotations written next to a level's path data (navtraversal.py)."""
     return os.path.join(folder, f'{lv}.traversal.json')
 
 
-def install(pr, lv, log=print, src=None):
+def install(pr: Project, lv: str, log: Log = print, src: str | None = None) -> None:
     """Copies a built file into the game (DICE's original is kept once, as <file>.opfor-orig), with the level's
     traversal annotations when it has them (next to the installed path data, for OPFOR's bot layer)."""
     ours = src or os.path.join(pr.out_dir(lv), 'pathdata.hpd')
@@ -803,7 +855,9 @@ def install(pr, lv, log=print, src=None):
         os.remove(trav_dest)                     # none with this file: no stale annotations from an earlier one
 
 
-def restore(pr, lv, log=print):
+def restore(pr: Project, lv: str, log: Log = print) -> None:
+    """Puts the level's original path data back (or removes NavKit's file where it had none), with its traversal
+    annotations removed."""
     dest = pr.pathdata(lv)
     if not os.path.isfile(dest + BACKUP_SUFFIX) and not os.path.isfile(dest + NEW_SUFFIX):
         log(f'{lv}: nothing to restore (no NavKit file installed)')
@@ -825,15 +879,16 @@ def restore(pr, lv, log=print):
         os.remove(trav)
 
 
-def apply(pr, lv, navtune_path=None, out=None, log=print, install_after=False):
+def apply(pr: Project, lv: str, navtune_path: str | None = None, out: str | None = None, log: Log = print,
+          install_after: bool = False) -> str:
     """Builds the level with the edits of its navigation side file (DESIGN.md sections 5.1-5.2): walkability
     edits (regions, seeds, unseeds) go into the build, then links and route edges into its route graph
     (navlinks.py); on a DICE base only the graph edits, on a copy of DICE's file. Traversal annotations go to
     <level>.traversal.json next to it (navtraversal.py). The result is read back to check it, the whole log is
     kept as <output>.report.txt, and with install_after the result is installed. Returns the output path."""
-    lines = []
+    lines: list[str] = []
 
-    def say(msg):
+    def say(msg: str) -> None:
         lines.append(msg)
         log(msg)
     try:
@@ -848,7 +903,7 @@ def apply(pr, lv, navtune_path=None, out=None, log=print, install_after=False):
     return out
 
 
-def _apply(pr, lv, navtune_path, out, log):
+def _apply(pr: Project, lv: str, navtune_path: str | None, out: str | None, log: Log) -> str:
     sys.path.insert(0, os.path.join(HERE, '..', 'core'))
     from mohcore import navtune
     import navbuild
@@ -914,7 +969,7 @@ def _apply(pr, lv, navtune_path, out, log):
     return out
 
 
-def rekey_cells(hpd, before, log=print):
+def rekey_cells(hpd: str, before: str, log: Log = print) -> bool:
     """The build's cells (navbuild.cells_path) re-keyed to its file after graph edits: they are keyed to the file's
     SHA-256 (navbuild.read_cells), and link / route-edge edits change the file but not its areas - without this, export
     silently fell back to rasterised outlines (2026-10-31). Only a cells file that belonged to the file before the edits
@@ -934,7 +989,8 @@ def rekey_cells(hpd, before, log=print):
     return True
 
 
-def status(pr, lv, log=print):
+def status(pr: Project, lv: str, log: Log = print) -> None:
+    """Prints what has been done for the level: prepared, sampled, built, installed."""
     log(f'{lv}:')
     L = pr.level_work(lv)
     log(f'  original path data : {pr.dice_pathdata(lv) or "none"}')
@@ -951,7 +1007,8 @@ def status(pr, lv, log=print):
     del L
 
 
-def ask(question):
+def ask(question: str) -> bool:
+    """Asks a yes / no question on the console; only y or yes is a yes."""
     return input(question + ' [y/N] ').strip().lower() in ('y', 'yes')
 
 
@@ -960,11 +1017,13 @@ VALUE_OPTIONS = ('--box', '--y', '--opfor', '--root', '--reference', '--candidat
 FLAGS = ('--yes', '--install', '--no-detail', '--ingame')
 
 
-def parse_options(argv):
+def parse_options(argv: Sequence[str]) -> tuple[list[str], dict[str, str], set[str]]:
     """(arguments, {option: value}, {flag}) of a command line, or NavKitError: each option needs a value (not another
     option), and the arguments left must not look like options (2026-10-31: --ingame was never parsed, so
     'sample --ingame lv' took '--ingame' as the level; an option without a value raised IndexError)."""
-    args, opts, flags = [], {}, set()
+    args: list[str] = []
+    opts: dict[str, str] = {}
+    flags: set[str] = set()
     rest = list(argv[1:])
     while rest:
         a = rest.pop(0)
@@ -981,7 +1040,8 @@ def parse_options(argv):
     return args, opts, flags
 
 
-def numbers(opts, k, n):
+def numbers(opts: Mapping[str, str], k: str, n: int) -> list[float] | None:
+    """Option k's value as n comma-separated numbers, or None when it is not given; NavKitError for another count."""
     if k not in opts:
         return None
     try:
@@ -993,7 +1053,8 @@ def numbers(opts, k, n):
     return v
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
+    """Runs a NavKit command line (argv with the script's name first): the exit code."""
     if '--help' in argv[1:] or argv[1:2] == ['-h']:
         print(__doc__)
         return 0

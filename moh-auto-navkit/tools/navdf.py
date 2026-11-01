@@ -146,6 +146,7 @@ def _shared(ref_d, ground):
 
 
 def pct(a, b):
+    """a / b as a percentage rounded to 2 decimals; 100 when b is 0."""
     return round(100.0 * a / b, 2) if b else 100.0
 
 
@@ -187,10 +188,13 @@ def compare(ref_meshes, cand_meshes, clip=None, cand_ground=None):
 
 
 def meshes_of(path):
+    """The parsed runtime meshes of every sector of a pathdata.hpd file."""
     return [kymesh.parse_mesh(s.mesh) for s in hpdtool.parse(open(path, 'rb').read()).sectors]
 
 
 def report(row, log=print):
+    """Logs a comparison row's D-line and F-cell counts, precision and recall, and the D sides' median height
+    difference."""
     log(f"D lines   reference {row['df_d_reference']} ({row['df_d_reference_n']} normal / {row['df_d_reference_d']} detailed), "
         f"candidate {row['df_d_candidate']} ({row['df_d_candidate_n']} / {row['df_d_candidate_d']})")
     log(f"F cells   reference {row['df_f_reference']} ({row['df_f_reference_n']} / {row['df_f_reference_d']}), "
@@ -206,6 +210,8 @@ def report(row, log=print):
 
 
 def main(argv):
+    """The command line: compares the D lines and F cells of a candidate with DICE's reference (two files, or
+    --level); returns the exit code."""
     args = argv[1:]
     if not args or args[0] in ('-h', '--help'):
         print(__doc__)

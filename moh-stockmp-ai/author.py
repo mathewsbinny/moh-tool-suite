@@ -57,6 +57,8 @@ class NumberKinds:
                     self.floats[e.name] += 1
 
     def kind(self, name):
+        """Whether the field called name holds an integer ('i') or a decimal ('f'), by which the stock files use more;
+        None when they never set it."""
         i, f = self.ints[name], self.floats[name]
         if i == f == 0:
             return None
@@ -103,15 +105,19 @@ class Author:
 
     # ------------------------------------------------------------------ helpers
     def guid(self, *parts):
+        """The deterministic GUID for this level and the given parts."""
         return dbxbin.new_guid(NS, self.lv, *parts)
 
     def instance(self, proto, src, guid):
+        """A clone of the prototype instance proto (from partition src) with the new GUID and only its guid and type
+        attributes."""
         e = self.d.clone(proto, src)
         self.d.set_attr(e, 'guid', guid)
         e.attrs = [(k, v) for k, v in e.attrs if self.d.strings[k] in ('guid', 'type')]
         return e
 
     def field(self, e, name):
+        """The direct field called name of e; raises AuthorError when it has none."""
         c = e.child(name)
         if c is None:
             raise AuthorError(f'{e.attr("type")}: no field {name}')
@@ -156,15 +162,19 @@ class Author:
             a.children.append(it)
 
     def transform(self, e, pos, yaw_deg=0.0):
+        """Sets e's Transform to position pos turned yaw_deg degrees about the vertical axis."""
         import math
         c, s = math.cos(math.radians(yaw_deg)), math.sin(math.radians(yaw_deg))
         self.d.set_transform(self.field(e, 'Transform'), [(c, 0, -s), (0, 1, 0), (s, 0, c), tuple(pos)])
 
     def event(self, src, src_event, tgt, tgt_event):
+        """Queues an event connection from src's src_event to tgt's tgt_event (GUIDs); finish() writes them."""
         self.events.append((src, src_event, tgt, tgt_event))
 
     # ------------------------------------------------------------------ the layer
     def build(self):
+        """Inserts the configured AI layer (HasAI, pathfinding types, spawners, orders, stages) into the level and
+        returns the report's counts."""
         cfg = self.cfg
         d = self.d
         self.set(self.level, 'HasAI', True)
@@ -191,6 +201,7 @@ class Author:
         return self.finish()
 
     def spawner(self, s):
+        """Adds one configured AI soldier spawner, filled from the defaults and its own fields."""
         cfg, d = self.cfg, self.d
         g = self.guid('spawner', s['id'])
         if s['id'] in self.guid_of:
@@ -217,6 +228,8 @@ class Author:
         self.report[f'AI spawners {s["team"]}'] += 1
 
     def order(self, o, triggers):
+        """Adds one configured area order with its area box, soldiers and the events that issue it (level start,
+        player entering, or an area trigger)."""
         cfg = self.cfg
         g = self.guid('order', o['id'])
         self.guid_of[o['id']] = g
@@ -282,6 +295,8 @@ class Author:
                 raise AuthorError(f'order {o["id"]}: unknown issue_on {x}')
 
     def stages(self):
+        """Wires each stage's advance event: it disables the stage's spawners and orders and enables (and issues) the
+        next stage's."""
         stages = self.cfg.get('stages') or []
         if not stages:
             return
@@ -311,6 +326,8 @@ class Author:
             self.report['stage switches'] += 1
 
     def finish(self):
+        """Adds the new instances to the partition and the level's Objects, writes the queued event connections, and
+        returns the report's counts."""
         d = self.d
         part = d.partition
         part.children.extend(self.new)

@@ -22,6 +22,7 @@ import ordercheck  # noqa: E402
 
 
 def main_network(data, points):
+    """How many of the points are near a route network of at least a quarter of the largest one's size."""
     largest = max(data.group_size.values()) if data.group_size else 0
     count = 0
     for _, _, p in points:
@@ -32,6 +33,8 @@ def main_network(data, points):
 
 
 def compare(level_xml, reference, candidate):
+    """How two pathdata.hpd files cover the level's AI order positions: on an area, on the main network, and pairwise
+    route-connected, with each file's counts."""
     points = ordercheck.order_points(level_xml)
     ref, cand = ordercheck.PathData(reference), ordercheck.PathData(candidate)
     on_ref = [ref.on_area(p) for _, _, p in points]
@@ -67,6 +70,7 @@ def compare(level_xml, reference, candidate):
 
 
 def report(r, log=print):
+    """Logs a compare() result as three lines of text."""
     log(f"{r['positions']} order positions; the reference covers {r['reference_covers']}, the candidate {r['candidate_covers_of_those']} "
         f"of those ({r['coverage_percent']} %) + {r['candidate_only']} more")
     log(f"main route network: reference {r['main_network']['reference']}, candidate {r['main_network']['candidate']}; "
@@ -76,6 +80,8 @@ def report(r, log=print):
 
 
 def main(argv):
+    """The command line: compares two pathdata.hpd files on a level's order positions, as text or JSON (--json);
+    returns the exit code."""
     args = [a for a in argv[1:] if not a.startswith('--')]
     if len(args) != 3:
         print(__doc__)

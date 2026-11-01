@@ -60,6 +60,7 @@ DEFAULTS = {
 
 
 def load(path):
+    """Reads a configuration file; raises ValueError listing its schema problems."""
     with open(path, encoding='utf-8') as f:
         c = json.load(f)
     problems = check(c)
@@ -69,6 +70,7 @@ def load(path):
 
 
 def save(c, path):
+    """Writes a configuration as indented JSON (folder created)."""
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
         json.dump(c, f, indent=1)
@@ -136,6 +138,8 @@ class Snapper:
             self.biggest = max(self.pd.group_size.values())
 
     def nearest(self, p):
+        """The nearest route node within 4 m in height of p: (plan distance, its position, the node count of its
+        network)."""
         import numpy as np
         P = self.pd.pos
         d = np.hypot(P[:, 0] - p[0], P[:, 2] - p[2])
@@ -166,6 +170,7 @@ def _centroid(pts):
 
 
 def kits_for(faction, kit_refs):
+    """The faction's multiplayer kit references by kit name; raises ValueError for a faction without known kits."""
     prefix = FACTION_KITS.get(faction)
     if prefix is None:
         raise ValueError(f'no multiplayer kits known for {faction}')

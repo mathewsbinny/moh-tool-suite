@@ -74,6 +74,7 @@ def bundle_movies(paths):
 
 
 def read_entry(bundle, entry):
+    """The bytes of one entry of a .fbrb bundle."""
     from mohcore import fbrb
     return fbrb.read(bundle, [entry])[entry]
 
@@ -150,6 +151,7 @@ class PatchLine:
         self.offset, self.expected, self.new, self.label, self.text, self.comment = offset, expected, new, label, text, comment
 
     def where(self):
+        """Where the line is in its patch file, for messages ('line N')."""
         return f'line {self.number}'
 
 
@@ -287,18 +289,21 @@ class PEImage:
                                   struct.unpack_from('<I', b, o + 36)[0]))
 
     def off(self, va):
+        """The file offset of virtual address va, or None when no section maps it."""
         for _, sva, vs, ra, rs, _ in self.sections:
             if sva <= va < sva + min(vs, rs) if vs else sva <= va < sva + rs:
                 return va - sva + ra
         return None
 
     def va(self, off):
+        """The virtual address of file offset off, or None when it is in no section."""
         for _, sva, vs, ra, rs, _ in self.sections:
             if ra <= off < ra + rs:
                 return sva + off - ra
         return None
 
     def is_code(self, va):
+        """True when va is inside an executable section."""
         return any(sva <= va < sva + vs and fl & 0x20000000 for _, sva, vs, _, _, fl in self.sections)
 
     def cstr(self, va, limit=200):
@@ -313,6 +318,7 @@ class PEImage:
         return s.decode('ascii') if s and all(32 <= ch < 127 for ch in s) else None
 
     def data_sections(self):
+        """The sections that hold data: not executable, and not .rsrc or .tls."""
         return [s for s in self.sections if not s[5] & 0x20000000 and s[0] not in ('.rsrc', '.tls')]
 
     def strings(self, minimum=3):
@@ -352,6 +358,8 @@ class PEImage:
 
 
 def find_exe(root=None, given=None):
+    """The MoHMPGame.exe to read: given (it must exist), else the game copy's; raises MenuToolError when there is
+    none."""
     if given:
         if not os.path.isfile(given):
             raise FileNotFoundError(given)

@@ -16,10 +16,13 @@ For targeted questions ("which code reads this setting name", "who calls this fu
 targeted disassembly, no bulk decompiling: windows are capped and nothing is exported. Needs pefile and capstone
 (pip install pefile capstone), like the crash reader's code view. Reads the exe only.
 """
+from __future__ import annotations
+
 import os
 import re
 import struct
 import sys
+from collections.abc import Mapping
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -29,26 +32,29 @@ MAX_WINDOW = 0x100
 
 
 class ExeRefError(Exception):
-    pass
+    """A wrong command line or a missing exe: printed as one line, without a traceback."""
 
 
 class Exe(crashreader.Image):
     """The crash reader's image (pefile + capstone) with string and reference searches."""
 
-    def __init__(self, path):
+    def __init__(self, path: str) -> None:
         super().__init__(path)
         import pefile
         pe = pefile.PE(path, fast_load=True)
-        self.sections = [(s.Name.rstrip(b'\0').decode('latin1'), self.base + s.VirtualAddress, s.Misc_VirtualSize,
+        self.sections: list[tuple[str, int, int, int]] = [(s.Name.rstrip(b'\0').decode('latin1'), self.base + s.VirtualAddress, s.Misc_VirtualSize,
                           s.Characteristics) for s in pe.sections]
 
-    def data_ranges(self):
+    def data_ranges(self) -> list[tuple[int, int]]:
+        """(start, end) of the data sections, resources and relocations left out."""
         return [(lo, lo + n) for name, lo, n, ch in self.sections if not ch & 0x20000000 and name not in ('.rsrc', '.reloc')]
 
-    def code_ranges(self):
+    def code_ranges(self) -> list[tuple[int, int]]:
+        """(start, end) of the code sections."""
         return [(lo, lo + n) for name, lo, n, ch in self.sections if ch & 0x20000000]
 
-    def cstr(self, va, limit=120):
+    def cstr(self, va: int, limit: int = 120) -> str | None:
+        """The printable C string at va (up to limit characters), or None when there is none."""
         if not (self.base <= va < self.end):
             return None
         o = va - self.base
@@ -58,9 +64,9 @@ class Exe(crashreader.Image):
         s = self.data[o:e]
         return s.decode('ascii') if all(32 <= c < 127 or c in (9, 10) for c in s) else None
 
-    def find_strings(self, text, exact=False):
+    def find_strings(self, text: str, exact: bool = False) -> list[tuple[int, str]]:
         """[(va, string)] of the C strings in the data sections that contain text (any case) or equal it."""
-        out = []
+        out: list[tuple[int, str]] = []
         if exact:
             pat = re.compile(rb'(?<=\x00)' + re.escape(text.encode('latin1')) + rb'(?=\x00)')
         else:
@@ -70,7 +76,7 @@ class Exe(crashreader.Image):
                 out.append((self.base + m.start(), m.group().decode('latin1')))
         return out
 
-    def instruction_at(self, start, value):
+    def instruction_at(self, start: int, value: int) -> crashreader.Insn | None:
         """The instruction starting at start if it holds value as an immediate or displacement."""
         for ins in self.md.disasm(self.bytes_at(start, 16), start):
             for op in ins.operands:
@@ -81,7 +87,7 @@ class Exe(crashreader.Image):
             return None
         return None
 
-    def on_boundary(self, va):
+    def on_boundary(self, va: int) -> bool:
         """Whether a linear decode from the function start (int3 padding, as the crash reader finds it) reaches va."""
         start = self.function_start(va)
         if start is None or va - start > 0x8000:
@@ -91,10 +97,11 @@ class Exe(crashreader.Image):
                 return ins.address == va
         return True                                     # the decode stopped on data (a jump table) before va
 
-    def refs(self, value, limit=200):
+    def refs(self, value: int, limit: int = 200) -> list[tuple[int, crashreader.Insn, str]]:
         """Code addresses of instructions using value: (va, instruction, kind)."""
         import numpy as np
-        out, pat = [], struct.pack('<I', value)
+        out: list[tuple[int, crashreader.Insn, str]] = []
+        pat = struct.pack('<I', value)
         for lo, hi in self.code_ranges():
             o, end = lo - self.base, hi - self.base
             j = self.data.find(pat, o, end)
@@ -122,9 +129,10 @@ class Exe(crashreader.Image):
                             out.append((va, ins, 'call' if opc == 0xE8 else 'jmp'))
         return sorted(out, key=lambda x: x[0])[:limit]
 
-    def data_refs(self, value, limit=10):
+    def data_refs(self, value: int, limit: int = 10) -> list[int]:
         """Addresses in the data sections that hold value (4-byte aligned): tables of pointers, vtables."""
-        out, pat = [], struct.pack('<I', value)
+        out: list[int] = []
+        pat = struct.pack('<I', value)
         for lo, hi in self.data_ranges():
             j = self.data.find(pat, lo - self.base, hi - self.base)
             while j >= 0 and len(out) < limit:
@@ -134,11 +142,11 @@ class Exe(crashreader.Image):
         return out
 
 
-def window(exe, va, before, after, syms):
+def window(exe: Exe, va: int, before: int, after: int, syms: Mapping[int, tuple[str, str]]) -> list[str]:
     """Lines of a short disassembly around va: decoded from the function start when it is near, so the
     instructions before va are on real boundaries."""
     before, after = min(before, MAX_WINDOW), min(after, MAX_WINDOW)
-    insns = []
+    insns: list[crashreader.Insn] = []
     start = exe.function_start(va)
     if start is not None and va - start <= 0x2000:
         insns = list(exe.md.disasm(exe.bytes_at(start, va - start + after + 16), start))
@@ -148,7 +156,7 @@ def window(exe, va, before, after, syms):
             insns = list(exe.md.disasm(exe.bytes_at(s, va - s + after + 16), s))
             if any(i.address == va for i in insns):
                 break
-    lines = []
+    lines: list[str] = []
     for ins in insns:
         if ins.address < va - before:
             continue
@@ -160,8 +168,9 @@ def window(exe, va, before, after, syms):
     return lines
 
 
-def annotate(exe, ins, syms):
-    notes = []
+def annotate(exe: Exe, ins: crashreader.Insn, syms: Mapping[int, tuple[str, str]]) -> str:
+    """A comment for a disassembled line: the strings and known functions its operands point at."""
+    notes: list[str] = []
     for tok in re.findall(r'0x[0-9a-f]+', ins.op_str):
         v = int(tok, 16)
         s = exe.cstr(v)
@@ -178,19 +187,22 @@ def annotate(exe, ins, syms):
     return ('   ; ' + ', '.join(notes)) if notes else ''
 
 
-def func_name(exe, va, syms):
+def func_name(exe: Exe, va: int, syms: Mapping[int, tuple[str, str]]) -> str:
+    """The name of the function holding va (crashreader.name_of), or 'function start unknown'."""
     n, _ = crashreader.name_of(va, syms, exe)
     return n or 'function start unknown'
 
 
-def parse_int(s):
+def parse_int(s: str) -> int:
+    """An address from the command line: hex with 0x or as 6-8 hex digits, else any Python integer literal."""
     try:
         return int(s, 16) if s.lower().startswith('0x') or re.fullmatch(r'[0-9A-Fa-f]{6,8}', s) else int(s, 0)
     except ValueError:
         raise ExeRefError(f'"{s}" is not an address (hex, e.g. 0x0143375C)')
 
 
-def take(args, flag, default=None, has_value=True):
+def take(args: list[str], flag: str, default: str | bool | None = None, has_value: bool = True) -> str | bool | None:
+    """Removes a flag (and its value) from args: the value, True for a flag without one, default when absent."""
     if flag not in args:
         return default
     i = args.index(flag)
@@ -205,7 +217,16 @@ def take(args, flag, default=None, has_value=True):
     return v
 
 
-def main(argv):
+def take_value(args: list[str], flag: str, default: str) -> str:
+    """take() for a flag that needs a value: ExeRefError when it is given without one."""
+    v = take(args, flag, default)
+    if not isinstance(v, str):
+        raise ExeRefError(f'{flag} needs a value')
+    return v
+
+
+def main(argv: list[str]) -> int:
+    """The command line: str, refs or dis on the exe; ExeRefError for a wrong one."""
     args = list(argv[1:])
     if not args or args[0] not in ('str', 'refs', 'dis'):
         print(__doc__)
@@ -216,26 +237,26 @@ def main(argv):
         raise ExeRefError('MoHMPGame.exe not found - give it with --exe <path>')
     if not os.path.isfile(exe_path):
         raise FileNotFoundError(exe_path)
-    extra = []
+    extra: list[str] = []
     while '--symbols' in args:
-        extra.append(take(args, '--symbols'))
+        extra.append(take_value(args, '--symbols', ''))
     syms = crashreader.read_symbols([crashreader.SYMBOLS] + extra)
-    exact = take(args, '--exact', False, has_value=False)
-    mx = int(take(args, '--max', '40'))
+    exact = bool(take(args, '--exact', False, has_value=False))
+    mx = int(take_value(args, '--max', '40'))
     # --dis [N]: the next word is N only when it is a plain decimal - "refs --dis 0x00946840" keeps its address
-    dis = None
+    dis: str | bool | None = None
     if '--dis' in args:
         i = args.index('--dis')
         dis = args.pop(i + 1) if i + 1 < len(args) and re.fullmatch(r'\d+', args[i + 1]) else True
         del args[i]
     dis_n = 0 if dis is None else (6 if dis is True else int(dis))
-    before = parse_int(take(args, '--before', '0x20'))
-    after = parse_int(take(args, '--after', '0x40'))
+    before = parse_int(take_value(args, '--before', '0x20'))
+    after = parse_int(take_value(args, '--after', '0x40'))
     if not args:
         raise ExeRefError(f'{cmd} needs a {"text" if cmd == "str" else "address"}')
     exe = Exe(exe_path)
 
-    def show_refs(value):
+    def show_refs(value: int) -> list[tuple[int, crashreader.Insn, str]]:
         found = exe.refs(value, mx)
         data = exe.data_refs(value)
         if data:

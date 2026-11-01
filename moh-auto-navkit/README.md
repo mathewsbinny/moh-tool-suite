@@ -26,7 +26,7 @@ What NavKit assumes about MOH's maps, and how it was checked (on all 26 MP level
 |---|---|---|---|
 | The soldier | radius 0.35, height 1.8 (crouched 1.15), step 0.3, slope 45 deg, jump 0.65, water 1.4 m (`DefaultSoldierPhysics`) | Kynapse infantry: 0.4, 1.9, 0.28, 40 deg, -, 1.5 | `tools\mohsoldier.py`, used by every tool |
 | Sampling capsule | the physics' nominal capsule: sphere centres 0.65 .. 1.45 m over the surface (high run 1.0 .. 1.45); steep terrain blocked from 59 deg (high run 69) | fitted to BFBC2's in-game sampler: 0.95 .. 1.5 (1.15 .. 1.5), ~64 deg | `navsample_offline.CAPSULE_AXIS` |
-| Route edges | straight neighbours link up to the slope limit over one cell: 0.8 m at pitch 0.8, 0.3 m (the step) at 0.2 | DICE's 0.6 / 0.3 | `navbuild.LINK_STEP` |
+| Route edges | straight neighbours link up to the slope limit over one cell: 0.8 m at pitch 0.8, 0.3 m (the step) at 0.2 | DICE's 0.6 / 0.3 | `navbuild.Pitch.link_step` (`NORMAL` / `DETAILED`) |
 | Node / outline height | ground + 0.9 m (half the soldier) | + 0.95 | `mohsoldier.Y_OFFSET` |
 | Headroom | ground with a surface 0.5-1.9 m above it is not walkable | 0.5-2.0 | `navwalk.HEADROOM_BAND` |
 | Collision layers | per asset `h` and `c` bodies; `e` only where an asset has neither (158 of MP_01's 1,153: tires, propane tanks, crates, static vehicles); the level-wide groups' `detail` | `h`, `c` | `navsample_offline.BODIES = 'hcdE'` |

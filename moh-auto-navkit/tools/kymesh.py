@@ -101,6 +101,8 @@ def _points(m: bytes, a: int, b: int) -> list[Vec3]:
 
 
 def parse_mesh(m: bytes) -> Mesh:
+    """Parses a sector's KynogonRuntimeMesh record into a Mesh (header, tiles, areas, links); raises ValueError when
+    it is not one."""
     if not m.startswith(MARKER):
         raise ValueError('not a KynogonRuntimeMesh record')
     version, flags = struct.unpack_from('<HH', m, 0x14)
@@ -183,6 +185,8 @@ def parse_mesh(m: bytes) -> Mesh:
 
 
 def write_mesh(mesh: Mesh) -> bytes:
+    """The bytes of a Mesh as a KynogonRuntimeMesh record, laid out in two passes so the areas' B target offsets can
+    be filled in."""
     # Pass 1: serialise areas without B target fields to learn their sizes; pass 2: lay out and patch.
     bodies = [_area_body(a) for a in mesh.areas]
     out = bytearray(MARKER)

@@ -63,6 +63,7 @@ class NavArea:
 
     @property
     def detailed(self) -> bool:
+        """True for an area at a detailed (finer than normal) cell pitch."""
         return self.pitch < DETAILED
 
 
@@ -91,6 +92,7 @@ class NavData:
 
     @property
     def sectors(self) -> list[int]:
+        """The ids of the sectors the areas are in, sorted."""
         return sorted({a.sector for a in self.areas})
 
 
@@ -383,6 +385,8 @@ def compare_cells(cand: NavData, ref: NavData) -> tuple[np.ndarray, np.ndarray]:
 
 
 def summary(nav: NavData) -> dict[str, int]:
+    """Counts of the file's areas, detailed areas, cells, nodes, edges, islands, sectors and ladder links, by display
+    name."""
     return {'areas': len(nav.areas), 'detailed areas': sum(a.detailed for a in nav.areas), 'cells': int(len(nav.cell_xz)),
             'nodes': int(len(nav.node_pos)), 'edges': int(len(nav.edges)), 'islands': len(nav.islands),
             'large islands (25+ nodes)': sum(i.nodes >= 25 for i in nav.islands), 'sectors': len(nav.sectors),

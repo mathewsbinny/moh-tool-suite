@@ -86,6 +86,7 @@ class Entity:
 
     @property
     def position(self) -> np.ndarray | None:
+        """The entity's world position (the translation row of its matrix), or None when it has no transform."""
         return None if self.matrix is None else self.matrix[3, :3]
 
     def refs(self) -> list[tuple[str, str]]:
@@ -135,11 +136,13 @@ class Level:
     notes: list[str] = field(default_factory=list)
 
     def by_guid(self, guid: str) -> Entity | None:
+        """The entity with this GUID (case-insensitive), or None."""
         g = guid.lower()
         return next((e for e in self.entities if e.guid.lower() == g), None)
 
 
 def category_of(t: str | None) -> str:
+    """The suite's category of an instance type (the first CATEGORIES pattern it matches), else 'other'."""
     for name, rx in CATEGORIES:
         if re.search(rx, t or ''):
             return name
@@ -147,6 +150,7 @@ def category_of(t: str | None) -> str:
 
 
 def transform_of(e: dbx.Element) -> np.ndarray | None:
+    """An instance's Transform as a 4x4 matrix (rows: the three axes, then the position), or None when it has none."""
     t = e.child('Transform')
     if t is None or t.kind != dbx.NUMBERS:
         return None
@@ -155,6 +159,7 @@ def transform_of(e: dbx.Element) -> np.ndarray | None:
 
 
 def blueprint_of(e: dbx.Element) -> str | None:
+    """The partition (lower case) of the blueprint an object references, or None."""
     r = e.child('ReferencedObject')
     ref = r.attr('ref') if r is not None else None
     return ref.rsplit('/', 1)[0].lower() if ref and '/' in ref else None

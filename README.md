@@ -116,9 +116,11 @@ The lint policy (`pyproject.toml` `[tool.ruff]`, 2026-10-31): pyflakes' rules (u
 undefined names, f-strings without fields), syntax errors, and no blind `except Exception` - except at a real
 boundary (a GUI's or command line's top level that reports any failure, an optional side file, a test turning any
 failure into a check), marked `# noqa: BLE001` with the reason beside it. The typed modules (`core\mohcore`, the
-format readers, NavKit's generator: navbuild, navwalk, navdrops, navislands) are checked by mypy (`pyproject.toml`
+format readers, NavKit: navkit, navbuild, navwalk, navdrops, navislands, navexport, navregress; the test harness and
+its crash reader) are checked by mypy (`pyproject.toml`
 `[tool.mypy]`; `python -m mypy`, also in the quick tier). A build's state (ids, counts, the areas' cells) lives in one
-`navbuild.BuildState` per build, not in module globals: two builds in one process cannot share it.
+`navbuild.BuildState` per build, and its grid settings in a frozen `navbuild.Pitch` (`NORMAL` 0.8, `DETAILED` 0.2)
+handed down to every stage, not in module globals: builds in parallel threads come out exactly like their solo builds.
 
 There is no CI server (the game tier needs the game copy on this PC). A pre-push hook runs the quick tier and stops
 a push that fails it - turn it on once per clone with `git config core.hooksPath .githooks` (`git push --no-verify`
@@ -127,7 +129,7 @@ skips it; say why in the commit). Run `game` yourself before pushing a change to
 | Test | Tier | Checks |
 |---|---|---|
 | `tests/test_3d_quick.py` | quick | the 3D tools without game data or a window (offscreen OpenGL; skipped without OpenGL 3.3): the viewer draws, frames, picks the right object, hides layers, recolours batches, takes clicks / drags / keys and runs its frame loop; the Map Inspector lists, selects and measures on a made-up level; the Navigation Studio colours a made-up path-data file by island (two islands, two colours) and by difference (against itself: none), runs the path test and the compare overlay; overlay.py's AI layer, reference and anomaly reports; the level picker on a made-up OPFOR folder |
-| `tests/test_types.py` | quick | mypy over the typed modules (`core\mohcore`, hpdtool, kymesh, hkpack, navsample, and NavKit's generator: navbuild, navwalk, navdrops, navislands; `pyproject.toml` `[tool.mypy]`): every function annotated and its body checked (skipped, and said so, when mypy is not installed) |
+| `tests/test_types.py` | quick | mypy over the typed modules (`core\mohcore`, hpdtool, kymesh, hkpack, navsample, NavKit: navkit, navbuild, navwalk, navdrops, navislands, navexport, navregress, and the harness with its crash reader; `pyproject.toml` `[tool.mypy]`): every function annotated and its body checked (skipped, and said so, when mypy is not installed) |
 | `tests/test_lint.py` | quick | the lint policy: ruff over every Python file (skipped, and said so, when ruff is not installed) |
 | `tests/test_repo.py` | quick | no game files or large files in the history, no co-author lines, no build output tracked, READMEs, LICENSE, every Python file compiles |
 | `tests/test_review_fixes.py` | quick | four defects from a code review (2026-10-26): NavKit's apply builds with the normal build's inputs (detailed zones, ladders); the stock-MP installer reinstalls a rebuilt file and keeps the original as its backup; the Navigation Studio's `--edit` is a flag; the navigation cache key follows the terrain's content |

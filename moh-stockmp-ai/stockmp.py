@@ -43,10 +43,13 @@ APPLIED = '.opfor-stockmp-applied'
 
 
 def opt(argv, name, default=None):
+    """The value after name in argv, or default."""
     return argv[argv.index(name) + 1] if name in argv and argv.index(name) + 1 < len(argv) else default
 
 
 def pathdata_for(paths, folder=None):
+    """The infantry and vehicle path data to build on: the given folder's, the level's own, or its same-world level's;
+    exits when there is none."""
     base = os.path.join(paths.gc.ai_dir(), 'levels')             # MOH: game\MP\Output\win32\ai\levels
     for f in [folder] if folder else [paths.lv, SAME_WORLD.get(paths.lv)]:
         if f and os.path.isfile(os.path.join(base, f, 'infantry', 'pathdata.hpd')):
@@ -58,6 +61,7 @@ def pathdata_for(paths, folder=None):
 
 
 def summary(paths):
+    """Prints the stock level's mode, factions, capture points, spawner counts and Rush stages."""
     v, b = paths.loaded_bundle()                  # a level without a bundle of its own: a BuildError that says so
     d = pipeline.unpacked(b, paths.src(v))
     m = levelmodel.Model(dbxbin.read(pipeline.find_entry(d, pipeline.level_entry(d, pipeline._level_name(d, paths.lv)))))
@@ -93,6 +97,8 @@ def changed_after_install(dst):
 
 
 def install(paths, argv):
+    """Copies the built files into the game (--apply, backing up originals), puts them back (--revert) or lists them
+    (the default plan); stops when an installed file was changed since."""
     game = opt(argv, '--game', paths.game)
     out = os.path.join(paths.root, 'out', 'game')
     mode = '--apply' if '--apply' in argv else '--revert' if '--revert' in argv else '--plan'
@@ -148,6 +154,7 @@ def install(paths, argv):
 
 
 def main(argv):
+    """The command line (see the module docstring); a level without a bundle of its own exits with a plain message."""
     try:
         return _main(argv)
     except pipeline.NoLevelBundle as e:             # a plain message and exit 1, not a report for the tool's author

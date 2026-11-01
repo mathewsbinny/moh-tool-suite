@@ -8,8 +8,8 @@ from the network (2026-10-30). A drop link joins the surface at the ledge to the
 reads a one-way edge as RSNV's drop kind and walks it.
 
 Rules (on the build's kept surfaces, per stage and pitch):
-  - regions: kept surfaces joined to their 8 neighbours by a height step of at most navbuild.LINK_STEP (components;
-    numpy labelling, no recursion);
+  - regions: kept surfaces joined to their 8 neighbours by a height step of at most the stage's link step
+    (navbuild.Pitch.link_step; components; numpy labelling, no recursion);
   - a candidate: a kept surface k of any region but the largest and at least DROP_MIN_AREA, a column at most DROP_REACH
     away (metres, diagonals by their length: at 0.8 m pitch two cells straight, one diagonally) in one of 8 directions
     holding a kept surface n of a larger region DROP_MIN .. DROP_MAX below k, with no surface

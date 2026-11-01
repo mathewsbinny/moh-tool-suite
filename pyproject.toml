@@ -50,6 +50,10 @@ select = ["F", "E9", "BLE"]
 # The modules import each other the way they run: core\ and the NavKit folders are on sys.path, so `from mohcore
 # import x`, `import hpdtool`, `import navkit` resolve through mypy_path; the other suite modules they import are
 # analysed for their types but not reported (follow_imports = silent) until they are annotated too.
+# The test harness's folder name has hyphens, so it is no package: its own folder and crash-reader\ are on mypy_path
+# instead, as harness.py and exeref.py put them on sys.path. With explicit_package_bases each file is then named from
+# the mypy_path entry that holds it: harness.py is `harness`, testharness\checks.py `testharness.checks` (a package, so
+# its relative imports resolve), crash-reader\crashreader.py `crashreader` - as the scripts import them.
 files = [
     "core/mohcore/*.py",
     "moh-auto-navkit/tools/hpdtool.py",
@@ -60,8 +64,15 @@ files = [
     "moh-auto-navkit/tools/navwalk.py",
     "moh-auto-navkit/tools/navdrops.py",
     "moh-auto-navkit/tools/navislands.py",
+    "moh-auto-navkit/tools/navexport.py",
+    "moh-auto-navkit/tools/navregress.py",
+    "moh-auto-navkit/navkit.py",
+    "moh-automated-map-and-bot-test-harness/harness.py",
+    "moh-automated-map-and-bot-test-harness/testharness/*.py",
+    "moh-automated-map-and-bot-test-harness/crash-reader/*.py",
 ]
-mypy_path = ["core", "moh-auto-navkit/tools", "moh-auto-navkit"]
+mypy_path = ["core", "moh-auto-navkit/tools", "moh-auto-navkit", "moh-automated-map-and-bot-test-harness",
+             "moh-automated-map-and-bot-test-harness/crash-reader"]
 explicit_package_bases = true
 python_version = "3.13"
 follow_imports = "silent"
@@ -79,7 +90,7 @@ warn_redundant_casts = true
 
 [[tool.mypy.overrides]]
 # third-party packages without type stubs
-module = ["moderngl", "moderngl.*", "imgui_bundle", "imgui_bundle.*", "pefile", "capstone", "glfw", "glfw.*"]
+module = ["moderngl", "moderngl.*", "imgui_bundle", "imgui_bundle.*", "pefile", "capstone", "capstone.*", "glfw", "glfw.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]

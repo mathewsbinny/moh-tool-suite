@@ -113,6 +113,7 @@ class Package:
         return entries
 
     def read(self, e):
+        """The bytes of a file entry, read block by block."""
         out = bytearray()
         for b in self._blocks(e['start'], e['count'], e['consecutive']):
             self.f.seek(self._addr(b))
@@ -121,6 +122,8 @@ class Package:
 
 
 def main(argv):
+    """The command line: info, list or extract on a content package, optionally only paths containing the filter text;
+    returns the exit code."""
     if len(argv) < 3:
         print(__doc__)
         return 1

@@ -54,6 +54,8 @@ class NoLevelBundle(BuildError):
 
 
 def run(*args, ok=(0,)):
+    """Runs a command and returns its stdout; raises BuildError with the output's tail when the exit code is not in
+    ok."""
     r = subprocess.run([str(a) for a in args], capture_output=True, text=True, errors='replace')
     if r.returncode not in ok:
         raise BuildError(f'failed: {" ".join(map(str, args))}\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}')
@@ -61,6 +63,7 @@ def run(*args, ok=(0,)):
 
 
 def sha(path):
+    """The SHA-256 of the file at path as hex, read in 1 MiB chunks."""
     h = hashlib.sha256()
     with open(path, 'rb') as f:
         for b in iter(lambda: f.read(1 << 20), b''):
@@ -90,6 +93,7 @@ class Paths:
         self.common = os.path.join(opfor, 'work', 'navkit', 'common')
 
     def src(self, variant):
+        """The folder of the level's unpacked source bundle for one variant."""
         return os.path.join(self.work, self.lv, 'src', variant)
 
     def layers(self):
@@ -123,12 +127,15 @@ class Paths:
         return os.path.join(self.root, 'out', 'game', os.path.relpath(game_path, self.game))
 
     def out_bundle(self, variant):
+        """Where the variant's new level bundle is staged (out\\game\\ mirrors the game folder)."""
         return self._out(self.bundle(variant))
 
     def out_pathdata(self, kind):
+        """Where the level's new path data of one kind is staged."""
         return self._out(self.gc.pathdata(self.lv, kind))
 
     def config(self):
+        """The path of the level's config.json."""
         return os.path.join(self.root, 'config.json')
 
 
@@ -156,6 +163,7 @@ def level_entry(d, lv_upper=None):
 
 
 def find_entry(folder, name):
+    """The file of a bundle entry name ('a/b/c.dbx') in an unpacked folder, or None when it is not there."""
     p = os.path.join(folder, *name.split('/'))
     return p if os.path.isfile(p) else None
 
@@ -181,6 +189,8 @@ def donor(paths):
 
 
 def common(paths, name):
+    """The unpacked folder of a shared bundle (mp_common, common_mp_<nn>): an unpacked copy when there is one, else
+    the game copy's, unpacked to the cache."""
     d = os.path.join(paths.common, name)
     if os.path.isfile(os.path.join(d, 'fbrb.manifest')):
         return d

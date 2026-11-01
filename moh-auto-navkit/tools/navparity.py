@@ -47,6 +47,7 @@ NEAR_DY = 1.0                   # height tolerance of a node match (both files' 
 
 
 def opfor_root(given=None):
+    """Project OPFOR's root folder (given, or found by navkit.find_opfor)."""
     import navkit
     return navkit.find_opfor(given)
 
@@ -61,6 +62,8 @@ def reference_of(root, lv):
 
 
 def level_xml(root, lv):
+    """The path of the level's converted partition XML in work\\levels; raises FileNotFoundError before prepare has
+    run."""
     d = os.path.join(root, 'work', 'levels', lv, 'dist', 'levels')
     for f in os.listdir(d):
         if f.lower() == lv + '.xml':
@@ -143,10 +146,13 @@ def ladder_ground(reference, candidate, reference_cells):
 
 
 def pairs(n):
+    """The number of unordered pairs among n items."""
     return n * (n - 1) // 2
 
 
 def islands(reference, candidate, clip=None, drop=None):
+    """Island counts of the reference and candidate path data and how their route networks agree: matched nodes,
+    connectivity and over-connection (percentages)."""
     R, C = ordercheck.PathData(reference, clip, drop), ordercheck.PathData(candidate)
     res = {'reference': len(R.group_size), 'candidate': len(C.group_size),
            'large_reference': sum(1 for v in R.group_size.values() if v >= 25),
@@ -185,6 +191,8 @@ def islands(reference, candidate, clip=None, drop=None):
 
 
 def run_level(root, lv, candidate, log):
+    """One level's parity row: ground, sectors, areas, portals, nodes, edges, islands and distance figures of the
+    candidate against DICE's path data."""
     ref = reference_of(root, lv)
     xml = level_xml(root, lv)
     t = time.time()
@@ -250,6 +258,7 @@ SELF_TOTALS = ['self_on_area', 'self_near_node', 'self_large_group', 'self_pairw
 
 
 def is_self_check(row):
+    """True for a row of a self-check run (no reference areas to compare, only the self-check figures)."""
     return 'areas_same' not in row and 'self_points' in row
 
 
@@ -302,12 +311,15 @@ def _table(levels, other_levels, columns, totals, log):
 
 
 def save_path(root, name):
+    """The path of a named parity run's JSON in work\\navkit\\parity (folder created)."""
     d = os.path.join(root, 'work', 'navkit', 'parity')
     os.makedirs(d, exist_ok=True)
     return os.path.join(d, name.replace(' ', '_') + '.json')
 
 
 def main(argv):
+    """The command line: run (a named parity run over levels, saved and shown) or show (one run, or two compared);
+    returns the exit code."""
     args = argv[1:]
     opfor = None
     if '--opfor' in args:

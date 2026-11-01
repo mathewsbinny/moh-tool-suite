@@ -73,10 +73,12 @@ class Packfile:
         self._read_classes()
 
     def cstr(self, off: int) -> str:
+        """The zero-terminated ASCII string at offset off of the data."""
         e = self.d.index(b'\0', off)
         return self.d[off:e].decode('ascii', 'replace')
 
     def deref(self, slot: int) -> int | None:
+        """The data offset the pointer slot at slot points to, or None when it has no fixup."""
         return self.ptr.get(slot)
 
     # --- hkClass reflection --------------------------------------------------------------------------
@@ -116,13 +118,17 @@ class Packfile:
         return out
 
     def member_class_name(self, m: dict[str, Any]) -> str | None:
+        """The name of a member's class (for struct and pointer members), or None."""
         return self.classes[m['class']]['name'] if m['class'] in self.classes else None
 
     def struct_size(self, cname: str | None) -> int | None:
+        """The size in bytes of the class called cname, or None when it is not described."""
         off = self.class_by_name.get(cname)
         return self.classes[off]['size'] if off is not None else None
 
     def read_value(self, at: int, mtype: int, sub: int, mclass_name: str | None, carray: int = 0) -> Any:
+        """The value of a member of Havok type mtype at offset at: numbers, vectors, pointers as ('ptr', offset,
+        class), strings, structs, arrays; carray reads a C array."""
         d = self.d
         if carray:
             size = self.elem_size(mtype, mclass_name)
@@ -156,6 +162,7 @@ class Packfile:
         return None
 
     def elem_size(self, t: int, mclass_name: str | None) -> int | None:
+        """The size in bytes of one value of Havok type t, or None when it has no fixed size."""
         if t in SIMPLE:
             return SIMPLE[t][1]
         if t in VEC:
@@ -167,6 +174,7 @@ class Packfile:
         return None
 
     def read_object(self, at: int, cname: str | None) -> dict[str, Any]:
+        """The members of the object of class cname at offset at, as {member name: value}."""
         out: dict[str, Any] = {}
         for m in self.all_members(cname):
             if m['type'] in (T_ZERO, T_VOID, T_FUNCTIONPOINTER):
@@ -176,14 +184,17 @@ class Packfile:
         return out
 
     def objects_of(self, cname: str) -> list[int]:
+        """The offsets of every object of class cname."""
         return [off for off, c in self.objects if c == cname]
 
 
 def load(path: str) -> Packfile:
+    """Reads the Havok packfile at path."""
     return Packfile(open(path, 'rb').read())
 
 
 def short(v: Any, depth: int = 0) -> str:
+    """A short one-line text form of a value read from a packfile; long lists show their first three items."""
     if isinstance(v, dict):
         return '{' + ', '.join(f'{k}: {short(x, depth + 1)}' for k, x in v.items()) + '}'
     if isinstance(v, list):
@@ -200,6 +211,8 @@ def short(v: Any, depth: int = 0) -> str:
 
 
 def main(argv: list[str]) -> int:
+    """The command line: classes (the object count per class) or dump (the first objects of a class); returns the exit
+    code."""
     if len(argv) < 3:
         print(__doc__)
         return 1

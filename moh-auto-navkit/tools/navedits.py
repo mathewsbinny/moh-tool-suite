@@ -25,6 +25,7 @@ def surface_positions(s):
 
 
 def region_mask(x, z, y, region):
+    """Per surface (x, z, y arrays), True inside an edit region: a box, or a polygon in plan within its y range."""
     if 'box' in region:
         x0, y0, z0, x1, y1, z1 = region['box']
         return (x >= x0) & (x <= x1) & (z >= z0) & (z <= z1) & (y >= y0) & (y <= y1)

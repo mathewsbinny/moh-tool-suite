@@ -101,6 +101,7 @@ def depths(entries, heightfield, water):
 
 
 def band_of(d):
+    """The index of the depth band d (metres) falls in; 0 for NaN (no water), the last band past the others."""
     if np.isnan(d):
         return 0
     for n, (a, b, _) in enumerate(BANDS):
@@ -110,6 +111,8 @@ def band_of(d):
 
 
 def level_report(root, lv, candidate, log=print):
+    """One level's water report: how deep the ground of NavKit's build and of DICE's path data lies under water; None
+    when the level has no water."""
     from mohcore import level as levelmod, water as watermod
     ref = navparity.reference_of(root, lv)
     name = None
@@ -166,6 +169,8 @@ def compare(lv, fn, fd, dn, dd, water_triangles):
 
 
 def main(argv):
+    """The command line: the water reports of the given levels (default: every MP level), with totals per depth band
+    and an optional JSON file."""
     args = argv[1:]
     opt = lambda k, d=None: args[args.index(k) + 1] if k in args else d
     root = navparity.opfor_root(opt('--opfor'))

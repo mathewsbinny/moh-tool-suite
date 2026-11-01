@@ -17,6 +17,7 @@ PARTITIONS = (0x0, 0xFD90000, 0x2080000, 0x18300000)  # plain/xiso, XGD2, XGD3, 
 
 
 def find_partition(f):
+    """The byte offset of the disc's XDVDFS volume; exits when there is none."""
     for base in PARTITIONS:
         f.seek(base + 32 * SECTOR)
         if f.read(20) == MAGIC:
@@ -39,6 +40,8 @@ def safe_dest(outdir, path):
 
 
 def walk(f, base, sector, size, prefix='', dirs=None):
+    """Yields (path, sector, size) of every file under the directory table at sector, recursing into folders; a folder
+    already walked is skipped."""
     dirs = set() if dirs is None else dirs     # directory tables already walked: a folder that contains itself
     if sector in dirs:
         return
@@ -65,6 +68,8 @@ def walk(f, base, sector, size, prefix='', dirs=None):
 
 
 def main():
+    """The command line: list or extract the files of a disc image, optionally only paths containing the filter
+    text."""
     cmd, iso = sys.argv[1], sys.argv[2]
     with open(iso, 'rb') as f:
         base = find_partition(f)

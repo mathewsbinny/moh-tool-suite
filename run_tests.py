@@ -33,6 +33,7 @@ TIERS = ['quick', 'game', 'full']
 
 
 def opfor():
+    """The Project OPFOR folder, found the way NavKit finds it."""
     sys.path.insert(0, os.path.join(SUITE, 'moh-auto-navkit'))
     import navkit
     return navkit.find_opfor(None)
@@ -61,7 +62,7 @@ def tests():
     t = [
         ('repository rules', 'quick', [PY, os.path.join(SUITE, 'tests', 'test_repo.py')]),
         ('lint policy (ruff: unused names, blind excepts)', 'quick', [PY, os.path.join(SUITE, 'tests', 'test_lint.py')]),
-        ('type checks (mypy: the typed core and NavKit modules)', 'quick', [PY, os.path.join(SUITE, 'tests', 'test_types.py')]),
+        ('type checks (mypy: core, NavKit and the harness)', 'quick', [PY, os.path.join(SUITE, 'tests', 'test_types.py')]),
         ('DbxEdit unit tests', 'quick', ['cmd', '/c', os.path.join(SUITE, 'moh-dbx-tools', 'tests', 'run_tests.bat')]),
         ('FbrbTool build', 'quick', ['cmd', '/c', os.path.join(SUITE, 'moh-fbrb-tool', 'build.bat')]),
         ('FbrbTool round trip, built bundle', 'quick', [PY, os.path.join(SUITE, 'core', 'tests', 'test_fbrb.py')]),
@@ -155,6 +156,8 @@ def refuse(cause, fix, code):
 
 
 def main(argv):
+    """Runs the tests of the chosen tier (or lists them), printing one line each and the failures' last lines; returns
+    1 when any failed."""
     only, skip = None, set()
     if '--only' in argv:
         k = argv.index('--only')
@@ -211,6 +214,7 @@ def main(argv):
 
 
 def coverage_report():
+    """Combines the run's coverage data into .coverage-data\\report.txt and html\\, and prints the total."""
     # the run's coverage data combined: .coverage-data\report.txt and html\, the total printed
     rc = ['--rcfile', os.path.join(SUITE, 'pyproject.toml')]
     cov = [PY, '-m', 'coverage']

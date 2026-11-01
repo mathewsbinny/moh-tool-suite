@@ -54,10 +54,13 @@ PATH_COLOURS = {'NavKit': (1.0, 0.85, 0.1), 'DICE': (0.3, 0.9, 1.0)}
 
 
 def hue(k, s=0.65, v=0.92):
+    """An RGB colour for index k, spread around the hue circle by the golden ratio."""
     return colorsys.hsv_to_rgb((k * 0.618034) % 1.0, s, v)
 
 
 def default_files(root, lv):
+    """The newest NavKit build of the level and DICE's reference path data, as (candidate, reference) paths, None
+    where missing."""
     import navparity
     ref = navparity.reference_of(root, lv)
     builds = [p for p in (os.path.join(root, 'work', 'navkit', lv, 'pathdata.hpd'), os.path.join(root, 'work', 'navkit', 'regress', f'{lv}.hpd'),
@@ -181,6 +184,8 @@ class Studio:
 
     # --- piece 1: a reference level's AI layer -----------------------------------------------------------
     def add_compare_layers(self, compare):
+        """Adds the reference level's spawners, area orders, patrols and objectives as marker layers (the --compare
+        overlay)."""
         import overlay
         L = self.scene.layer
         lay = {k: L(f'reference {k}', c) for k, c in REF_COLOURS.items()}
@@ -238,6 +243,7 @@ class Studio:
                 self.ref_segs = [(np.array(e['pos']) + [0, 0.3, 0], node + [0, 0.3, 0], col)]
 
     def panel_compare(self, v):
+        """The compare panel: the reference's summary, layer filters and the JSON export."""
         if self.compare is None:
             return
         rep = self.compare['report']
@@ -271,6 +277,7 @@ class Studio:
 
     # --- piece 2: anomalies of NavKit's build -----------------------------------------------------------
     def add_anomaly_layers(self):
+        """Finds the NavKit build's anomalies against the level's AI layer and adds a marker layer for each kind."""
         import overlay
         try:
             _l, xml, _h, _o = overlay.reference_source(f'level:{self.lvl.lv}', self.lvl.opfor)
@@ -294,6 +301,8 @@ class Studio:
             self.scene.add_box(np.array(a['pos']) - [0, navdata.Y_OFFSET - 0.4, 0], 0.7, 0xFFFFF3, lay['lonely nodes'])
 
     def panel_anomaly(self, v):
+        """The anomaly panel: the island-size colouring, a toggle per anomaly kind with its count, and the JSON
+        export."""
         if self.anomaly is None:
             return
         imgui.set_next_window_pos((380, 300), imgui.Cond_.first_use_ever)
@@ -321,6 +330,8 @@ class Studio:
 
     # --- colours ------------------------------------------------------------------------------------
     def cell_colors(self, name):
+        """One RGB colour per ground cell of the named file for the current colour mode (island, sector, pitch,
+        anomaly or difference)."""
         nav = self.files[name]
         a = nav.cell_area
         if self.color == 'island':
@@ -357,6 +368,8 @@ class Studio:
         return np.array([a.ladder for a in nav.areas], dtype=bool)[nav.cell_area]
 
     def apply_colors(self, v=None):
+        """Recolours every ground batch for the current colour mode, in the viewer when v is given, otherwise in the
+        scene."""
         for name, b in self.ground_batch.items():
             c = np.repeat(self.cell_colors(name), 2, axis=0)
             (v.set_colors if v is not None else self._scene_colors)(b, c)
@@ -410,6 +423,7 @@ class Studio:
         return cache[name]
 
     def area_of_id(self, oid):
+        """The (file name, area index) a picked object id belongs to, or None."""
         for name, base in ID_BASE.items():
             if name in self.files and base <= oid < base + len(self.files[name].areas):
                 return name, oid - base
@@ -417,6 +431,7 @@ class Studio:
 
     # --- path test (P) ------------------------------------------------------------------------------
     def set_path_mode(self, v, on):
+        """Turns the path test's click mode on or off; turning it on drops the editor's tool."""
         self.path_mode = on
         if on and self.editor is not None:
             self.editor.tool = None                       # one click mode at a time
@@ -447,6 +462,8 @@ class Studio:
         self.update_path_overlay(v)
 
     def update_path_overlay(self, v):
+        """Rebuilds the path test's overlay lines: the two points' crosses, each found route and each gap that stopped
+        one."""
         seg = []
         for p in getattr(self, 'path_pts', []):
             for d in ((0.6, 0, 0), (0, 1.5, 0), (0, 0, 0.6)):
@@ -467,6 +484,7 @@ class Studio:
         self.refresh_overlay(v)
 
     def panel_path(self, v):
+        """The path test panel: the points, each file's route or why there is none, and the two routes' cost ratio."""
         if not getattr(self, 'path_mode', False) and not getattr(self, 'routes', None):
             return
         imgui.set_next_window_pos((380, 10), imgui.Cond_.first_use_ever)
@@ -500,6 +518,8 @@ class Studio:
         imgui.end()
 
     def on_pick(self, v):
+        """The viewer's pick handler: an editor click, a path test point, or the selection of an area, spawn or
+        reference marker."""
         def handler(oid):
             if self.editor is not None and self.editor.active():
                 self.editor.click(v, v.pick_point)
@@ -522,6 +542,7 @@ class Studio:
 
     # --- panels -------------------------------------------------------------------------------------
     def panel_main(self, v):
+        """The main panel: each file's summary, the ground difference, the colour mode and the layer toggles."""
         imgui.set_next_window_pos((10, 10), imgui.Cond_.first_use_ever)
         imgui.set_next_window_size((360, 700), imgui.Cond_.first_use_ever)
         imgui.begin('Navigation')
@@ -557,6 +578,8 @@ class Studio:
         imgui.end()
 
     def panel_islands(self, v):
+        """The islands panel: spawns off the main network and the file's islands, largest first, each with a fly-to
+        button."""
         if not self.files:
             return
         w = imgui.get_io().display_size.x
@@ -592,6 +615,7 @@ class Studio:
         imgui.end()
 
     def panel_selection(self, v):
+        """The selection panel: the picked reference marker, spawn or area and its details."""
         if self.selected is None:
             return
         io = imgui.get_io()
@@ -641,6 +665,8 @@ class Studio:
         imgui.end()
 
     def panel_status(self, v):
+        """The status line (fps, triangles, colour mode, camera), the hovered area's tooltip and the P key for the
+        path test."""
         io = imgui.get_io()
         if not io.want_capture_keyboard and imgui.is_key_pressed(imgui.Key.p):
             self.set_path_mode(v, not getattr(self, 'path_mode', False))
@@ -688,6 +714,8 @@ def parse_args(argv):
 
 
 def main(argv):
+    """Opens the Navigation Studio on a level (asked for when none is given) with its NavKit build and DICE's path
+    data; returns the exit code."""
     opts, args = parse_args(argv)
     if not args:                                            # started without a level: ask for one
         from mohcore import pick

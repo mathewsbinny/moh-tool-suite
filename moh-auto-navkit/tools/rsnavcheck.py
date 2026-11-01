@@ -30,6 +30,8 @@ START = 6.0           # m: its start node in sight this close (rsn_start_node)
 
 
 def find_rsnav(given=None):
+    """The rsnav folder (the one with bindings\\rsnav.py): given, RSNAV_ROOT, or project-opfor-moh\\src\\rsnav beside
+    the suite; None when none has it."""
     for c in (given, os.environ.get('RSNAV_ROOT'),
               os.path.join(os.path.dirname(SUITE), 'project-opfor-moh', 'src', 'rsnav')):
         if c and os.path.isfile(os.path.join(c, 'bindings', 'rsnav.py')):
@@ -38,6 +40,7 @@ def find_rsnav(given=None):
 
 
 def bindings(rsnav_dir):
+    """Imports rsnav's ctypes bindings from rsnav_dir; raises FileNotFoundError when the library is not built."""
     sys.path.insert(0, os.path.join(rsnav_dir, 'bindings'))
     import rsnav as rb
     if not os.path.isfile(rb.LIB):
@@ -46,6 +49,8 @@ def bindings(rsnav_dir):
 
 
 def check_level(root, lv, rb, reference=20, log=print):
+    """Loads the level's RSNV file in rsnav, routes between its order positions and checks costs against the Python
+    reference; returns the figures and logs a summary line."""
     import navkit
     import ordercheck
     pr = navkit.Project(root)
@@ -111,6 +116,8 @@ def check_level(root, lv, rb, reference=20, log=print):
 
 
 def main(argv):
+    """The command line: checks the RSNV file of each level in rsnav, optionally saving the results as JSON; returns
+    the exit code."""
     ap = argparse.ArgumentParser(prog='rsnavcheck.py', description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('levels', nargs='+')
     ap.add_argument('--rsnav')

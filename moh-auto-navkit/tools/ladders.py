@@ -45,6 +45,7 @@ def extract(level_dir, extra_bases=()):
 
 
 def main(argv):
+    """The command line: writes the level's ladders to ladders.json in its extracted folder; returns the exit code."""
     if len(argv) < 2:
         print(__doc__)
         return 1

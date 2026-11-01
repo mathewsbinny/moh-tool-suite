@@ -92,6 +92,8 @@ def score(chosen, dice_pathdata):
 
 
 def main(argv):
+    """The command line: prints the level's detailed sectors and why, and with --score how they match DICE's; returns
+    the exit code."""
     if len(argv) < 2:
         print(__doc__)
         return 1

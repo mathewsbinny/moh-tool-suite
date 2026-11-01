@@ -33,10 +33,14 @@ AI-readiness checks fail there by design.
 Saved as <OPFOR>\work\harness\runs\<name>.json (default name "last"); with --reference, compared with that run.
 Exit code: 0 nothing failed (and no regression), 1 a test failed or something got worse, 2 a run not found.
 """
+from __future__ import annotations
+
 import functools
 import os
 import sys
 import time
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from typing import Any, TypeVar, cast, overload
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SUITE = os.path.abspath(os.path.join(HERE, '..'))
@@ -51,18 +55,20 @@ print = functools.partial(print, flush=True)      # progress shows at once when 
 TESTS = ['structure', 'reachability', 'battery', 'orders', 'offsets', 'parity', 'level']
 
 
-def opfor(given):
+def opfor(given: str | None) -> str:
+    """Project OPFOR's folder: given, else the one NavKit finds (navkit.find_opfor)."""
     import navkit
     return navkit.find_opfor(given)
 
 
-def cache_dir(root):
+def cache_dir(root: str) -> str:
+    """The harness's cache folder (<OPFOR>\\work\\harness\\cache), made if missing."""
     d = os.path.join(root, 'work', 'harness', 'cache')
     os.makedirs(d, exist_ok=True)
     return d
 
 
-def timed(fn, *a, **k):
+def timed(fn: Callable[..., checks.Result], *a: Any, **k: Any) -> checks.Result:
     """A test run with its time; an exception becomes an 'error' result (logged with its traceback)."""
     t0 = time.time()
     try:
@@ -77,7 +83,7 @@ def timed(fn, *a, **k):
 
 # ------------------------------------------------------------------------------------------------ parity (NavKit's)
 
-def parity_row(root, lv, path, cache):
+def parity_row(root: str, lv: str, path: str, cache: str) -> tuple[dict[str, Any], str]:
     """navparity's row for the file: from a saved navparity run that measured this file (and the file is not newer
     than that run), else from the harness cache (by both files' sha1), else measured now (navparity.run_level)."""
     import json
@@ -111,7 +117,9 @@ def parity_row(root, lv, path, cache):
     return row, 'measured now'
 
 
-def parity(root, lv, path, cache):
+def parity(root: str, lv: str, path: str, cache: str) -> checks.Result:
+    """NavKit's DICE-parity measures of the file (parity_row), failed when navregress's reference run "regression"
+    has the level and the file is worse than it."""
     import json
     import navparity
     import navregress
@@ -120,7 +128,8 @@ def parity(root, lv, path, cache):
     summ = (f"ground {m.get('ground', 0):.1f} % (+{m.get('extra_ground', 0):.1f} % extra), nodes {m.get('nodes_same', 0):.1f} %, "
             f"connectivity {m.get('connectivity', 0):.1f} % (over {m.get('over_connection', 0):.1f} %), "
             f"AI positions {m.get('ai_coverage', 0):.0f} %; from {source}")
-    status, details = 'info', []
+    status = 'info'
+    details: list[str] = []
     rp = navparity.save_path(root, 'regression')
     if os.path.isfile(rp):
         ref = {r['level']: r for r in json.load(open(rp))['levels']}.get(lv)
@@ -135,13 +144,16 @@ def parity(root, lv, path, cache):
 
 # ------------------------------------------------------------------------------------------------ one level
 
-def run_level(root, lv, opts, cache, log=print):
+def run_level(root: str, lv: str, opts: Mapping[str, Any], cache: str,
+              log: Callable[[str], object] = print) -> dict[str, Any]:
+    """One level's results: its points and their classes, every test asked for on each of its path-data files, and
+    the level checks; a level that cannot be read gets an 'error' result."""
     import hpdcheck
     import hpdtool
     import ordercheck
     from mohcore import navdata
     from testharness import levelinfo
-    L = {'name': lv, 'notes': [], 'points': {}, 'files': {}, 'level': {}, 'ingame': {}}
+    L: dict[str, Any] = {'name': lv, 'notes': [], 'points': {}, 'files': {}, 'level': {}, 'ingame': {}}
     t0 = time.time()
     try:
         info = levelinfo.gather(root, lv, cache, log=lambda *a: None)
@@ -162,7 +174,7 @@ def run_level(root, lv, opts, cache, log=print):
                 'error', f'{key} path data not found for this level').as_dict()}}
     ref_key = 'dice' if any(k == 'dice' for k, _ in files) else (files[0][0] if files else None)
     files.sort(key=lambda kp: kp[0] != ref_key)               # the reference file first
-    ref = {}
+    ref: dict[str, Any] = {}
     tests = opts['tests']
     # infantry points only for the infantry tests: classes from the entities (levelinfo) and from what lies under each
     # point - terrain, water and the reference file's walkable cells (the same classes for every file of the level)
@@ -181,10 +193,11 @@ def run_level(root, lv, opts, cache, log=print):
         + '; '.join(f'{k} {classify.excluded_text(v)}' for k, v in (('spawns', ex_s), ('targets', ex_t), ('orders', ex_o)) if v))
     for key, path in files:
         tf = time.time()
-        F = {'path': path, 'sha1': levelinfo.sha1(path), 'size': os.path.getsize(path), 'tests': {}}
+        F: dict[str, Any] = {'path': path, 'sha1': levelinfo.sha1(path), 'size': os.path.getsize(path), 'tests': {}}
         L['files'][key] = F
         res = F['tests']
-        nav = ref_nav if key == ref_key else navdata.load(path, cache_dir=os.path.join(cache, 'navdata'))
+        # the reference file is files[0], so ref_nav is loaded whenever this loop runs
+        nav = cast(navdata.NavData, ref_nav) if key == ref_key else navdata.load(path, cache_dir=os.path.join(cache, 'navdata'))
         if 'structure' in tests:
             res['structure'] = timed(lambda: checks.structure(hpdcheck.check(path)))
         if 'reachability' in tests:
@@ -194,12 +207,13 @@ def run_level(root, lv, opts, cache, log=print):
             if key == ref_key:
                 ref['reach'] = r.data
         if 'battery' in tests:
-            def bat():
+            def bat() -> checks.Result:
                 if key == ref_key:
                     ref['pairs'] = {'random': list(zip(*[iter(checks.random_points(nav, 2 * opts['pairs'], opts['seed'], lv))] * 2)),
                                     'level': checks.level_pairs(sources, targets, opts['level_pairs'], opts['seed'], lv)}
                     ref['routes'] = {}
-                out, names = [], []
+                out: list[checks.Result] = []
+                names: list[str] = []
                 for name, pairs in ref['pairs'].items():
                     routes = checks.route_pairs(nav, pairs)
                     if key == ref_key:
@@ -234,7 +248,21 @@ def run_level(root, lv, opts, cache, log=print):
 
 # ------------------------------------------------------------------------------------------------ commands
 
-def opt(args, k, d=None):
+_T = TypeVar('_T')
+
+
+@overload
+def opt(args: Sequence[str], k: str) -> str | None:
+    ...
+
+
+@overload
+def opt(args: Sequence[str], k: str, d: _T) -> str | _T:
+    ...
+
+
+def opt(args: Sequence[str], k: str, d: object = None) -> object:
+    """The value after flag k in args, d when k is absent; ValueError when k is the last word."""
     if k in args:
         i = args.index(k)
         if i + 1 >= len(args):
@@ -243,8 +271,10 @@ def opt(args, k, d=None):
     return d
 
 
-def positional(args):
-    out, skip = [], False
+def positional(args: Sequence[str]) -> list[str]:
+    """The words of args that are not flags or their values (every --flag takes one value)."""
+    out: list[str] = []
+    skip = False
     for a in args:
         if skip:
             skip = False
@@ -255,20 +285,21 @@ def positional(args):
     return out
 
 
-def default_files(root, levels):
+def default_files(root: str, levels: Iterable[str]) -> str:
     """--files when not given: 'dice,navkit' when one of the levels has DICE's path data (navparity.reference_of),
     else 'navkit' - MOH ships none, and a 'dice' there would only record "path data not found" for every level."""
     import navparity
     return 'dice,navkit' if any(os.path.isfile(navparity.reference_of(root, lv)) for lv in levels) else 'navkit'
 
 
-def cmd_run(args):
+def cmd_run(args: list[str]) -> int:
+    """harness.py run: the tests on every level asked for, saved as a named run and compared with --reference."""
     import navparity
     root = opfor(opt(args, '--opfor'))
     folder = runs.runs_dir(root, opt(args, '--runs'))
     name = (positional(args) or ['last'])[0]
-    levels = opt(args, '--levels')
-    levels = [x.strip().lower() for x in levels.split(',')] if levels else [
+    given = opt(args, '--levels')
+    levels = [x.strip().lower() for x in given.split(',')] if given else [
         lv for lv in navparity.LEVELS + navparity.ONSLAUGHT if os.path.isfile(navparity.reference_of(root, lv))]
     if not levels:          # MOH: no DICE path data - the levels NavKit has built
         nk = os.path.join(root, 'work', 'navkit')
@@ -278,20 +309,20 @@ def cmd_run(args):
     unknown = [t for t in tests if t not in TESTS]
     if unknown:
         raise ValueError(f'unknown test kind(s) {", ".join(unknown)} (known: {", ".join(TESTS)})')
-    options = {'levels': levels, 'files': [f.strip() for f in opt(args, '--files', default_files(root, levels)).split(',')],
+    options: dict[str, Any] = {'levels': levels, 'files': [f.strip() for f in opt(args, '--files', default_files(root, levels)).split(',')],
                'navkit': opt(args, '--navkit', 'auto'), 'tests': tests, 'pairs': int(opt(args, '--pairs', 200)),
                'level_pairs': int(opt(args, '--level-pairs', 100)), 'seed': int(opt(args, '--seed', 1))}
     reference = opt(args, '--reference')
     ref_path = runs.path_of(reference, folder) if reference else None
-    if reference and not os.path.isfile(ref_path):
+    if ref_path is not None and not os.path.isfile(ref_path):          # ref_path is set exactly when reference is
         print(f'no saved run "{reference}" ({ref_path}); see: harness.py list')
         return 2
     out_path = runs.path_of(name, folder)
-    if reference and os.path.normcase(os.path.abspath(out_path)) == os.path.normcase(os.path.abspath(ref_path)):
+    if ref_path is not None and os.path.normcase(os.path.abspath(out_path)) == os.path.normcase(os.path.abspath(ref_path)):
         print(f'--reference "{reference}" names the same file as the output run "{name}" ({out_path}); '
               f'give the output a different name so the baseline is not overwritten')
         return 2
-    base = runs.load(ref_path) if reference else None
+    base = runs.load(ref_path) if ref_path is not None else None
     run = runs.new_run(name, options, SUITE)
     cache = cache_dir(root)
     start = time.time()
@@ -305,13 +336,14 @@ def cmd_run(args):
     runs.report(run)
     print(f'saved: {path}')
     bad = any(r['status'] in runs.BAD for *_x, r in runs.results(run))
-    if reference:
+    if base is not None:                       # loaded exactly when --reference was given
         print()
         bad |= runs.compare_report(base, run, runs.compare(base, run, float(opt(args, '--scale', 1.0)))) > 0
     return 1 if bad else 0
 
 
-def runs_folder(args):
+def runs_folder(args: Sequence[str]) -> str:
+    """The folder runs are looked up in: --runs, else OPFOR's runs folder, else the current folder."""
     given = opt(args, '--runs')
     if given:
         return given
@@ -322,7 +354,8 @@ def runs_folder(args):
         return os.getcwd()            # paths to .json files still work without Project OPFOR
 
 
-def cmd_show(args):
+def cmd_show(args: list[str]) -> int:
+    """harness.py show: a saved run as text."""
     p = positional(args)
     if not p:
         raise ValueError('show needs a run name or a .json path')
@@ -330,7 +363,8 @@ def cmd_show(args):
     return 0
 
 
-def cmd_compare(args):
+def cmd_compare(args: list[str]) -> int:
+    """harness.py compare: what got worse or better between two saved runs; 1 on a regression."""
     p = positional(args)
     if len(p) < 2:
         raise ValueError('compare needs two runs: harness.py compare <base> <new>')
@@ -339,7 +373,8 @@ def cmd_compare(args):
     return 1 if runs.compare_report(base, new, runs.compare(base, new, float(opt(args, '--scale', 1.0)))) else 0
 
 
-def cmd_list(args):
+def cmd_list(args: list[str]) -> int:
+    """harness.py list: the saved runs with their dates and status counts."""
     folder = runs_folder(args)
     rows = runs.listing(folder)
     print(f'{len(rows)} saved run(s) in {folder}')
@@ -348,7 +383,8 @@ def cmd_list(args):
     return 0
 
 
-def cmd_import_log(args):
+def cmd_import_log(args: list[str]) -> int:
+    """harness.py import-log: the in-game checks from one session of an opfor.log, saved into a run."""
     p = positional(args)
     lv = opt(args, '--level')
     if not p or not lv:
@@ -378,7 +414,8 @@ def cmd_import_log(args):
     return 1 if any(L['ingame'][n]['status'] in runs.BAD for n in ('loads-ai-init', 'offsets-read', 'pathfinders')) else 0
 
 
-def cmd_ingame(args):
+def cmd_ingame(args: list[str]) -> int:
+    """harness.py ingame: what the in-game tests will do (on hold; the harness never starts the game)."""
     p = positional(args)
     lv = p[0] if p else '<level>'
     print(f'In-game tests of {lv}: ON HOLD - needs playtest. The harness does not start the game.')
@@ -393,11 +430,12 @@ def cmd_ingame(args):
     return 0
 
 
-COMMANDS = {'run': cmd_run, 'show': cmd_show, 'compare': cmd_compare, 'list': cmd_list, 'import-log': cmd_import_log,
+COMMANDS: dict[str, Callable[[list[str]], int]] = {'run': cmd_run, 'show': cmd_show, 'compare': cmd_compare, 'list': cmd_list, 'import-log': cmd_import_log,
             'ingame': cmd_ingame}
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
+    """The command line: runs the command named in argv[1], or prints the usage."""
     if len(argv) < 2 or argv[1] not in COMMANDS:
         print(__doc__)
         return 1 if len(argv) >= 2 else 0

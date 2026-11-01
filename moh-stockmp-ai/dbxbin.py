@@ -37,9 +37,11 @@ class Element:
     # -- reading
     @property
     def tag(self):
+        """The element's tag name from the string table."""
         return self.dbx.strings[self.tag_i]
 
     def attr(self, name, default=None):
+        """The value of the attribute called name, or default when the element has none."""
         s = self.dbx.strings
         for k, v in self.attrs:
             if s[k] == name:
@@ -48,10 +50,12 @@ class Element:
 
     @property
     def name(self):
+        """The element's name attribute, or None."""
         return self.attr('name')
 
     @property
     def text(self):
+        """The text of a TEXT element; None for other kinds."""
         return self.dbx.strings[self.text_i] if self.kind == TEXT else None
 
     def child(self, name):
@@ -62,6 +66,7 @@ class Element:
         return None
 
     def items(self):
+        """The element's children as a new list (empty for a leaf)."""
         return list(self.children or ())
 
     def numbers(self):
@@ -71,12 +76,14 @@ class Element:
         return size, [self.raw[p + i * size:p + (i + 1) * size] for i in range(count)]
 
     def floats(self):
+        """The element's numbers as big-endian floats; raises ValueError unless they are 4-byte numbers."""
         size, vals = self.numbers()
         if size != 4:
             raise ValueError('not 4-byte numbers')
         return [struct.unpack('>f', v)[0] for v in vals]
 
     def ints(self):
+        """The element's numbers as big-endian signed ints; raises ValueError unless they are 4-byte numbers."""
         size, vals = self.numbers()
         if size != 4:
             raise ValueError('not 4-byte numbers')
@@ -88,6 +95,7 @@ class Element:
         return self.raw[1] if self.kind not in (CONTAINER, TEXT, NUMBERS) else None
 
     def walk(self):
+        """Yields the element and then every descendant, depth first."""
         yield self
         for c in self.children or ():
             yield from c.walk()
@@ -108,6 +116,7 @@ class Dbx:
 
     # -- strings
     def intern(self, s):
+        """The index of s in the string table, appending it when it is new."""
         i = self._index.get(s)
         if i is None:
             i = len(self.strings)
@@ -118,12 +127,15 @@ class Dbx:
     # -- tree access
     @property
     def partition(self):
+        """The root element (the partition)."""
         return self.roots[0]
 
     def instances(self):
+        """The partition's instance elements, in file order."""
         return [e for e in self.partition.children if e.tag == 'instance']
 
     def instance(self, guid):
+        """The instance with this GUID (case-insensitive), or None."""
         g = guid.upper()
         for e in self.partition.children:
             if e.tag == 'instance' and (e.attr('guid') or '').upper() == g:
@@ -131,10 +143,12 @@ class Dbx:
         return None
 
     def of_type(self, suffix):
+        """The instances whose type attribute ends with suffix."""
         return [e for e in self.instances() if (e.attr('type') or '').endswith(suffix)]
 
     # -- edits (all keep the element's kind)
     def set_attr(self, e, name, value):
+        """Sets an attribute on e, adding it when e does not have it yet."""
         vi = self.intern(value)
         for k, (a, v) in enumerate(e.attrs):
             if self.strings[a] == name:
@@ -143,11 +157,13 @@ class Dbx:
         e.attrs.append((self.intern(name), vi))
 
     def set_text(self, e, value):
+        """Sets the text of a TEXT element; raises ValueError for other kinds."""
         if e.kind != TEXT:
             raise ValueError(f'{e!r} is not text')
         e.text_i = self.intern(value)
 
     def set_bool(self, e, value):
+        """Sets a one-byte value element (True, False or a small int); raises ValueError for any other element."""
         if e.kind in (CONTAINER, TEXT, NUMBERS) or len(e.raw) != 2:
             raise ValueError(f'{e!r} is not a bool / byte')
         e.raw = bytes([e.raw[0], 1 if value is True else 0 if value is False else int(value)])
@@ -166,9 +182,11 @@ class Dbx:
         e.raw = _varint_bytes(len(values)) + _varint_bytes(4) + body
 
     def set_float(self, e, value):
+        """Sets a numbers element to the single float value."""
         self.set_numbers(e, [float(value)], 'f')
 
     def set_int(self, e, value):
+        """Sets a numbers element to the single int value."""
         self.set_numbers(e, [int(value)], 'i')
 
     def set_transform(self, e, matrix_rows):
@@ -227,10 +245,13 @@ def _varint_bytes(v):
 
 
 def is_binary(data):
+    """True when data starts with the binary DBX magic and is long enough to hold the header."""
     return len(data) > 24 and data[:8] == MAGIC
 
 
 def parse(data):
+    """Parses the bytes of a binary .dbx into a Dbx (string table, element tree, trailing bytes); raises ValueError
+    when they are not one."""
     if not is_binary(data):
         raise ValueError('not a binary .dbx file')
     d = Dbx()
@@ -291,6 +312,7 @@ def parse(data):
 
 
 def write(d):
+    """The bytes of d as a binary .dbx; the original string area is reused byte for byte when no string was added."""
     out = bytearray()
 
     def emit(e):
@@ -328,6 +350,7 @@ def write(d):
 
 
 def read(path):
+    """Parses the binary .dbx at path."""
     with open(path, 'rb') as f:
         return parse(f.read())
 

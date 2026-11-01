@@ -197,9 +197,8 @@ def main(argv):
           kymesh.write_mesh(kymesh.parse_mesh(data)) == data, 'kymesh: D lines and F cells written, read back, rewritten byte for byte')
 
     # navbuild.detail_pass: broken sides leave the outline in pairs only
-    navbuild.set_pitch(0.8)
     ys = [0.0, 0.0, 0.0, 0.7]                                 # k: (0,0) (1,0) (0,1) (1,1)
-    level = SimpleNamespace(y=ys)
+    level = SimpleNamespace(y=ys, pitch=navbuild.NORMAL)     # the grid settings a Level carries (pitch 0.8)
     area = {'cells': [(0, 0, 0), (1, 0, 1), (0, 1, 2), (1, 1, 3)]}
     E = lambda axis, line, d_: ('E', None, axis, line, d_)
     per_area = [{E('x', 0.5, 1): [(1, 0.95)], E('x', 0.5, -1): [(1, 1.65)],       # (0,1)|(1,1): outline on both cells

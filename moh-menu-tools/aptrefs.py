@@ -113,6 +113,8 @@ def string_arg(ins):
 
 
 def count_arg(ins):
+    """The argument count an instruction pushes (a fixed count for the small push opcodes, the value for 0xB5), or
+    None."""
     if ins.op in COUNT_PUSH:
         return COUNT_PUSH[ins.op]
     if ins.op == 0xB5:
@@ -235,6 +237,8 @@ def scan_movies(specs, sets, root):
 # ------------------------------------------------------------------------------------------------ output
 
 def cross_reference(found, table, cases, exe_strings):
+    """One row per extern, FSCommand and event the movies use: the movies and use counts, its id in the exe's table,
+    its getter case and whether the exe has the name."""
     ids = {}
     for name, i, va in table:
         ids.setdefault(name, i)
@@ -268,6 +272,7 @@ def cross_reference(found, table, cases, exe_strings):
 
 
 def print_rows(rows, f):
+    """Writes the cross-reference rows to f, grouped by kind, one line per name."""
     for kind in ('extern', 'extern-write', 'fscommand', 'event'):
         sel = [r for r in rows if r['kind'] == kind]
         if not sel:
@@ -288,6 +293,7 @@ def print_rows(rows, f):
 
 
 def print_movie(label, refs, f):
+    """Writes what one movie reads, writes, sends and handles to f."""
     print(f'\n{label}', file=f)
     for key, title in (('extern', 'extern read'), ('extern_param', 'extern read with a parameter (name$param)'),
                        ('extern_write', 'extern written'), ('fscommand', 'FSCommand sent')):
@@ -303,6 +309,8 @@ def print_movie(label, refs, f):
 # ------------------------------------------------------------------------------------------------ commands
 
 def take(args, flag, many=False):
+    """Removes every flag and its value from args; returns all values (many) or the last one (None when flag is
+    absent)."""
     vals = []
     while flag in args:
         i = args.index(flag)
@@ -314,6 +322,7 @@ def take(args, flag, many=False):
 
 
 def main(argv):
+    """The command line: movie, table, xref or find; returns the exit code."""
     args = list(argv[1:])
     if not args or args[0] not in ('movie', 'table', 'xref', 'find'):
         print(__doc__)

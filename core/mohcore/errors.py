@@ -55,6 +55,7 @@ PIP_NAMES: dict[str, str] = {'imgui_bundle': 'imgui-bundle', 'PIL': 'pillow', 'c
 
 
 def log_dir() -> str:
+    """The suite's log folder, %LOCALAPPDATA%\\moh-tool-suite\\logs (created when missing)."""
     base = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')
     d = os.path.join(base, 'moh-tool-suite', 'logs')
     os.makedirs(d, exist_ok=True)
@@ -118,6 +119,7 @@ def _prune(tool: str) -> None:
 
 
 def logger() -> logging.Logger:
+    """The suite's logger ('moh')."""
     return logging.getLogger('moh')
 
 

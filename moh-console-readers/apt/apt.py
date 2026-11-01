@@ -133,24 +133,41 @@ class Movie:
                 self.const.append(f'type{t}:{v}')
 
     # field readers in the movie's byte order
-    def cu(self, o): return struct.unpack_from(self.e + 'I', self.c, o)[0]
-    def u(self, o): return struct.unpack_from(self.e + 'I', self.a, o)[0]
-    def i(self, o): return struct.unpack_from(self.e + 'i', self.a, o)[0]
-    def f(self, o): return struct.unpack_from(self.e + 'f', self.a, o)[0]
-    def h(self, o): return struct.unpack_from(self.e + 'h', self.a, o)[0]
-    def w(self, o): return struct.unpack_from(self.e + 'H', self.a, o)[0]
+    def cu(self, o):
+        """The unsigned 32-bit value at offset o of the .const data, in the movie's byte order."""
+        return struct.unpack_from(self.e + 'I', self.c, o)[0]
+    def u(self, o):
+        """The unsigned 32-bit value at offset o of the .apt data, in the movie's byte order."""
+        return struct.unpack_from(self.e + 'I', self.a, o)[0]
+    def i(self, o):
+        """The signed 32-bit value at offset o of the .apt data, in the movie's byte order."""
+        return struct.unpack_from(self.e + 'i', self.a, o)[0]
+    def f(self, o):
+        """The 32-bit float at offset o of the .apt data, in the movie's byte order."""
+        return struct.unpack_from(self.e + 'f', self.a, o)[0]
+    def h(self, o):
+        """The signed 16-bit value at offset o of the .apt data, in the movie's byte order."""
+        return struct.unpack_from(self.e + 'h', self.a, o)[0]
+    def w(self, o):
+        """The unsigned 16-bit value at offset o of the .apt data, in the movie's byte order."""
+        return struct.unpack_from(self.e + 'H', self.a, o)[0]
 
     @staticmethod
     def cstr(buf, p):
+        """The zero-terminated Latin-1 string at p in buf; 'null' for a null or out-of-range pointer."""
         if not p or p >= len(buf):
             return 'null'
         e = buf.find(b'\0', p)
         return buf[p:e if e >= 0 else len(buf)].decode('latin1')
 
-    def s(self, p): return self.cstr(self.a, p)
+    def s(self, p):
+        """The string at pointer p in the .apt data ('null' for none)."""
+        return self.cstr(self.a, p)
 
     # --- characters -------------------------------------------------------------------------------------------
     def characters(self):
+        """The movie's character table as (index, pointer, type) triples; type is None for an empty or unreadable
+        slot."""
         m = self.movie
         count, ptr = self.u(m + 20), self.u(m + 24)
         out = []
@@ -163,6 +180,7 @@ class Movie:
         return out
 
     def describe(self, c, cp, t):
+        """A one-line description of character c at cp of type t (sprite, image, shape, movie or its type name)."""
         if t is None:
             return f'char {c}: (none)'
         name = CHAR_TYPES.get(t, f'type{t}')
@@ -241,6 +259,8 @@ class Movie:
                    op >= 0x80 and op not in NAMES, len(pool)), pool
 
     def disasm(self, start, indent, out, limit=None, pool=None):
+        """Appends the disassembly of the action stream at start to out, recursing into function bodies; stops at
+        limit, an End, or an unknown opcode."""
         pool = list(pool or [])
         a, p, guard = self.a, start, 0
         limit = limit if limit is not None else len(a)
@@ -287,6 +307,8 @@ class Movie:
 
     # --- structure --------------------------------------------------------------------------------------------
     def frames(self, ptr, count, indent, owner, out):
+        """Appends the count frames at ptr of owner, with each frame's items, to out; an unreadable item is noted and
+        skipped."""
         for fr in range(count):
             n, items = self.u(ptr + 8 * fr), self.u(ptr + 8 * fr + 4)
             out.append(f'{indent}{owner} frame {fr} ({n} items)')
@@ -298,6 +320,8 @@ class Movie:
                     out.append(f'{ind}** item {k} of this frame unreadable: {e}')
 
     def item(self, items, k, ind, out):
+                """Appends frame item k of the item list at items to out: actions (disassembled), labels, placements
+                with their clip events, removals."""
                 it = self.u(items + 4 * k)
                 t = self.u(it)
                 if t == 1:
@@ -328,6 +352,8 @@ class Movie:
                     out.append(f'{ind}item type {t} @{it:X}')
 
     def dump(self):
+        """The whole movie as text lines: header, imports, exports, the movie's frames, then each character with its
+        sprite frames."""
         m, out = self.movie, []
         frames, fptr = self.u(m + 8), self.u(m + 12)
         out.append(f'Movie {self.name} {self.i(m + 28)}x{self.i(m + 32)} frames={frames} characters={self.u(m + 20)} '
@@ -348,6 +374,7 @@ class Movie:
 
 
 def main(argv):
+    """The command line: info, chars, dump or find on a movie; returns the exit code."""
     if len(argv) < 3 or argv[1] not in ('info', 'chars', 'dump', 'find'):
         print(__doc__)
         return 1

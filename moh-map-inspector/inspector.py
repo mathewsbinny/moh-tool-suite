@@ -55,6 +55,7 @@ REF_TO, REF_FROM, MEASURE = (1.0, 0.9, 0.2), (0.3, 0.95, 1.0), (1.0, 1.0, 1.0)
 
 
 def layer_name(e):
+    """The layer an entity is drawn in: its category, with spawns split by team."""
     if e.category == 'soldier spawn':
         return {1: 'soldier spawn, team 1', 2: 'soldier spawn, team 2'}.get(e.team, 'soldier spawn, no team')
     if e.category == 'vehicle spawn':
@@ -128,6 +129,8 @@ class Inspector:
 
     # --- selection ----------------------------------------------------------------------------------
     def select(self, v, entity, focus=False):
+        """Selects an entity (None: nothing), flying the camera to it when focus is set, and redraws the link
+        lines."""
         self.selected = entity
         v.selected = entity.index if entity is not None else viewer.NO_ID
         if entity is not None and focus and entity.position is not None:
@@ -149,6 +152,7 @@ class Inspector:
         return out
 
     def update_overlay(self, v):
+        """Redraws the overlay: the selection's link lines and the measure path with a cross at each point."""
         seg = self.links(self.selected)
         for a, b in zip(self.measure, self.measure[1:]):
             seg.append((a, b, MEASURE))
@@ -158,6 +162,8 @@ class Inspector:
         v.set_overlay(seg)
 
     def on_pick(self, v):
+        """The viewer's pick handler: adds a measure point while measuring, otherwise selects the clicked entity (or
+        nothing)."""
         def handler(oid):
             if self.measuring:
                 if v.pick_point is not None:
@@ -171,10 +177,12 @@ class Inspector:
         return handler
 
     def set_measuring(self, v, on):
+        """Turns measure mode on or off; while it is on, clicks do not select."""
         self.measuring = on
         v.select_on_click = not on
 
     def keys(self, v):
+        """The inspector's keys: M toggles measuring, Esc clears the measure points."""
         if imgui.get_io().want_capture_keyboard:
             return
         if imgui.is_key_pressed(imgui.Key.m):
@@ -184,11 +192,14 @@ class Inspector:
             self.update_overlay(v)
 
     def follow(self, v, target):
+        """Selects target and flies to it, keeping the current selection for the back button."""
         self.history.append(self.selected)
         self.select(v, target, focus=True)
 
     # --- panels -------------------------------------------------------------------------------------
     def panel_layers(self, v):
+        """The layers and search panel: a toggle per layer with its count, and entity search by text and type (up to
+        500 results)."""
         self.keys(v)
         imgui.set_next_window_pos((10, 10), imgui.Cond_.first_use_ever)
         imgui.set_next_window_size((320, 640), imgui.Cond_.first_use_ever)
@@ -258,6 +269,7 @@ class Inspector:
                 imgui.text(f'{name} = {val if len(val) < 140 else val[:140] + " ..."}')
 
     def panel_selection(self, v):
+        """The selection panel: the selected entity's facts, its links and its property tree, with a back button."""
         w = imgui.get_io().display_size.x
         imgui.set_next_window_pos((w - 480, 10), imgui.Cond_.first_use_ever)
         imgui.set_next_window_size((470, 720), imgui.Cond_.first_use_ever)
@@ -305,6 +317,8 @@ class Inspector:
         imgui.end()
 
     def panel_measure(self, v):
+        """The measure panel: the points, the last point's height above the terrain and depth under water, and the
+        distances."""
         if not self.measuring and not self.measure:
             return
         imgui.set_next_window_pos((340, 10), imgui.Cond_.first_use_ever)
@@ -355,6 +369,8 @@ class Inspector:
         return float(l1[k] * a[k, 1] + l2[k] * b[k, 1] + l3[k] * c[k, 1] - p[1])
 
     def tooltip(self, v):
+        """The hover tooltip: the terrain, a water surface's shader, or an entity's type, name and team, with the
+        point under the mouse."""
         io = imgui.get_io()
         if io.want_capture_mouse or self.measuring or v.hovered == viewer.NO_ID or imgui.is_mouse_down(imgui.MouseButton_.left):
             return
@@ -375,6 +391,7 @@ class Inspector:
         imgui.set_tooltip(text)
 
     def panel_status(self, v):
+        """The hover tooltip and the status line (fps, triangles, camera, click mode, terrain source)."""
         self.tooltip(v)
         io = imgui.get_io()
         imgui.set_next_window_pos((10, io.display_size.y - 40), imgui.Cond_.always)
@@ -387,6 +404,7 @@ class Inspector:
 
 
 def main(argv):
+    """Opens the Map Inspector on a level (asked for when none is given); returns the exit code."""
     opts, args, k = {}, [], 1
     while k < len(argv):
         if argv[k].startswith('--') and k + 1 < len(argv):

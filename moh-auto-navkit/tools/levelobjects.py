@@ -128,6 +128,8 @@ def mesh_aliases(bases):
 
 
 def havok_index(bases):
+    """{blueprint path (lower case, no _havok.res): packfile path} over the base folders; a <name>_Havok_Havok.res
+    packfile is indexed as <name> too."""
     out = {}
     for base in bases:
         for f in glob.glob(os.path.join(base, '**', '*_havok.res'), recursive=True):
@@ -330,6 +332,8 @@ def forbid_tris(items, col):
 
 
 def main(argv):
+    """The command line: writes a level's object points, stair, dynamic, exclude and forbid triangles into its
+    extracted folder; returns the exit code."""
     if len(argv) < 3:
         print(__doc__)
         return 1

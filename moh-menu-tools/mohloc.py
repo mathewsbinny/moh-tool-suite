@@ -34,6 +34,7 @@ PC_PREFIX = 'WIN32_'
 
 
 def khash(key, h=0xFFFFFFFF):
+    """The game's 32-bit hash of a text key (h * 33 + byte, from 0xFFFFFFFF)."""
     for c in key.encode('latin1', 'replace') if isinstance(key, str) else key:
         h = (h * 33 + c) & 0xFFFFFFFF
     return h
@@ -62,6 +63,8 @@ class LocFile:
             self.table = struct.unpack_from(f'<{(len(histogram) - 12) // 2}H', histogram, 12)
 
     def decode(self, raw):
+        """Decodes an entry's raw bytes to text with the histogram table: ASCII as is, other bytes through one or two
+        table lookups."""
         t, out, i = self.table, [], 0
         while i < len(raw):
             c = raw[i]
@@ -79,6 +82,7 @@ class LocFile:
         return ''.join(out)
 
     def text(self, h):
+        """The decoded text of the entry with hash h, or None when there is none."""
         return self.decode(self.raw[h]) if h in self.raw else None
 
     def lookup(self, key):
@@ -112,6 +116,8 @@ def languages(root):
 
 
 def load(lang, root=None, path=None):
+    """The localized texts of a language from the game copy, or of the .bin file at path (with its histogram beside it
+    when there is one)."""
     if path:
         if not os.path.isfile(path):
             raise FileNotFoundError(path)
@@ -150,6 +156,7 @@ def key_names(loc, root=None, exe=None, movies=True):
 
 
 def movie_constants_all(root):
+    """Every string constant of the game's menu movies, the pristine menus included, as a set."""
     from mohcore import fbrb
     root = root or mc.find_opfor()
     out = set()
@@ -172,6 +179,8 @@ def movie_constants_all(root):
 
 
 def take(args, flag):
+    """Removes flag and its value from args and returns the value (None when flag is absent); raises MenuToolError
+    when the value is missing."""
     if flag in args:
         i = args.index(flag)
         if i + 1 >= len(args):
@@ -183,6 +192,7 @@ def take(args, flag):
 
 
 def main(argv):
+    """The command line: get, search, movie, dump or langs; returns the exit code."""
     args = list(argv[1:])
     if not args or args[0] not in ('get', 'search', 'movie', 'dump', 'langs'):
         print(__doc__)

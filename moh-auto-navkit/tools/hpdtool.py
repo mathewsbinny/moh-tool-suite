@@ -67,6 +67,8 @@ class HpdFile:
 
 
 def parse(data: bytes) -> HpdFile:
+    """Parses the bytes of a pathdata.hpd file into an HpdFile: header, then each sector's graph nodes, edges and
+    runtime mesh; raises ValueError when it is not one."""
     if data[:12] != MAGIC:
         raise ValueError('not a Kynogon HPD file')
     header = struct.unpack_from(f'<{HEADER_WORDS}I', data, 12)
@@ -167,6 +169,8 @@ def _object_end(m: bytes, o: int) -> int:
 
 
 def mesh_coverage(m: bytes) -> tuple[list[tuple[int, int]], list[tuple[int, int, str]]]:
+    """The byte ranges of a runtime mesh no record covers (gaps) and those two records claim (overlaps, with the later
+    record's label)."""
     regions, *_ = mesh_layout(m)
     regions.sort()
     gaps: list[tuple[int, int]] = []
@@ -194,6 +198,7 @@ def _block(s: Sector) -> bytes:
 
 
 def write(f: HpdFile) -> bytes:
+    """The bytes of f as a pathdata.hpd file, with the sector table rebuilt for the blocks' sizes."""
     header = list(f.header)
     header[2] = len(f.sectors)
     out = bytearray(MAGIC + struct.pack(f'<{HEADER_WORDS}I', *header))
@@ -219,6 +224,8 @@ def _files(args: Iterable[str]) -> Iterator[str]:
 
 
 def main(argv: list[str]) -> int:
+    """The command line: info, sector, coverage, meshtrip or roundtrip on pathdata.hpd files; returns the exit
+    code."""
     if len(argv) < 3:
         print(__doc__)
         return 1

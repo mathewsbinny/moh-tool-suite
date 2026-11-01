@@ -14,30 +14,38 @@ Without a path it uses the newest crashreport.xml in Documents\\Project OPFOR\\M
 
 The game's own crash reporter writes the file; this tool only reads it and the exe. Nothing is sent anywhere.
 """
+from __future__ import annotations
+
 import datetime
 import os
 import re
 import sys
 import xml.etree.ElementTree as ET
+from collections.abc import Iterable, Mapping
+from types import ModuleType
+from typing import Any
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BUILD = '592256'                          # MoHMPGame.exe as patched (PE time stamp 0x4CC17C02)
 SYMBOLS = os.path.join(HERE, f'symbols_{BUILD}.txt')
 REGISTERS = ['Eax', 'Ebx', 'Ecx', 'Edx', 'Esi', 'Edi', 'Ebp', 'Esp', 'Eip']
 
+Symbols = dict[int, tuple[str, str]]     # address -> (name, hint), from the symbol files
+Insn = Any                               # a capstone instruction (CsInsn: capstone ships no type information)
+
 
 # --------------------------------------------------------------------------------------------------- inputs
 
-def _gamecopy():
+def _gamecopy() -> ModuleType:
     sys.path.insert(0, os.path.join(HERE, '..', '..', 'core'))
     from mohcore import gamecopy
     return gamecopy
 
 
-def find_reports():
+def find_reports() -> list[str]:
     """The MP client's crashreport.xml files, newest first: OPFOR's (Documents\\Project OPFOR\\MOH\\EA Games\\Medal of
     Honor\\Multiplayer, where the OPFOR core sends the game's Documents folder), then the base game's."""
-    found = []
+    found: list[str] = []
     for d in _gamecopy().documents_dirs():
         p = os.path.join(d, 'crashreport.xml')
         if os.path.isfile(p):
@@ -45,7 +53,8 @@ def find_reports():
     return sorted(set(found), key=os.path.getmtime, reverse=True)
 
 
-def find_exe():
+def find_exe() -> str | None:
+    """Project OPFOR's MoHMPGame.exe (the game copy core's gamecopy finds), or None without a game copy."""
     gamecopy = _gamecopy()
     try:
         return gamecopy.GameCopy().exe
@@ -53,11 +62,12 @@ def find_exe():
         return None
 
 
-def read_report(path):
+def read_report(path: str) -> dict[str, Any]:
+    """The crash report's fields: type, SKU, build, time, category, the stack's values and the registers."""
     root = ET.parse(path).getroot()
     text = lambda tag: (root.findtext(tag) or '').strip()
     stack = [int(v, 16) for v in text('stack').split() if re.fullmatch(r'0x[0-9A-Fa-f]+', v)]
-    regs = {}
+    regs: dict[str, int] = {}
     for name, value in re.findall(r'(\w+)\s+([0-9A-Fa-f]{8})', text('contextdata')):
         if name.capitalize() in REGISTERS:
             regs[name.capitalize()] = int(value, 16)
@@ -69,8 +79,10 @@ def read_report(path):
     }
 
 
-def read_symbols(paths):
-    syms = {}
+def read_symbols(paths: Iterable[str]) -> Symbols:
+    """{address: (name, hint)} from symbol files ('address name | hint' lines, # comments); missing files are
+    skipped."""
+    syms: Symbols = {}
     for p in paths:
         if not os.path.isfile(p):
             continue
@@ -87,26 +99,28 @@ def read_symbols(paths):
 class Image:
     """The exe's code, for disassembly (pefile + capstone)."""
 
-    def __init__(self, path):
+    def __init__(self, path: str) -> None:
         import capstone
         import pefile
         pe = pefile.PE(path, fast_load=True)
-        self.base = pe.OPTIONAL_HEADER.ImageBase
-        self.data = pe.get_memory_mapped_image()
+        self.base: int = pe.OPTIONAL_HEADER.ImageBase
+        self.data: bytes = pe.get_memory_mapped_image()
         self.end = self.base + len(self.data)
-        self.code = [(self.base + s.VirtualAddress, self.base + s.VirtualAddress + s.Misc_VirtualSize)
+        self.code: list[tuple[int, int]] = [(self.base + s.VirtualAddress, self.base + s.VirtualAddress + s.Misc_VirtualSize)
                      for s in pe.sections if s.Characteristics & 0x20000000]
         self.md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
         self.md.detail = True
 
-    def is_code(self, a):
+    def is_code(self, a: int) -> bool:
+        """Whether the address is in one of the exe's code sections."""
         return any(lo <= a < hi for lo, hi in self.code)
 
-    def bytes_at(self, a, n):
+    def bytes_at(self, a: int, n: int) -> bytes:
+        """n bytes of the image at address a (fewer at its end)."""
         o = a - self.base
         return self.data[o:o + n]
 
-    def function_start(self, a, limit=0x4000):
+    def function_start(self, a: int, limit: int = 0x4000) -> int | None:
         """Heuristic: MSVC pads functions with int3 (0xCC); the function starts after the last pad before a."""
         for p in range(a, max(a - limit, self.base), -1):
             o = p - self.base
@@ -114,10 +128,11 @@ class Image:
                 return p
         return None
 
-    def disasm(self, start, stop):
+    def disasm(self, start: int, stop: int) -> list[Insn]:
+        """The instructions decoded from start, linearly, to a little past stop."""
         return list(self.md.disasm(self.bytes_at(start, stop - start + 16), start))
 
-    def call_before(self, ret):
+    def call_before(self, ret: int) -> Insn | None:
         """The call instruction that ends exactly at a return address, if any."""
         for length in (5, 6, 2, 3, 7, 4):
             for ins in self.md.disasm(self.bytes_at(ret - length, length), ret - length):
@@ -127,10 +142,10 @@ class Image:
         return None
 
 
-def null_operands(ins, regs):
+def null_operands(ins: Insn, regs: Mapping[str, int]) -> list[tuple[str, int, int]]:
     """Registers a memory operand of the instruction reads through that hold a null (or tiny) pointer."""
     import capstone.x86 as x86
-    bad = []
+    bad: list[tuple[str, int, int]] = []
     for op in ins.operands:
         if op.type != x86.X86_OP_MEM:
             continue
@@ -146,7 +161,9 @@ def null_operands(ins, regs):
 
 # --------------------------------------------------------------------------------------------------- report
 
-def name_of(a, syms, image):
+def name_of(a: int, syms: Mapping[int, tuple[str, str]], image: Image | None) -> tuple[str, str]:
+    """(name, hint) of an address: its symbol, else its function's symbol plus the offset, else the nearest symbol
+    before it in the same function, else FUN_<start>; ('', '') when nothing is known."""
     if a in syms:
         return syms[a][0], syms[a][1]
     start = image.function_start(a) if image and image.is_code(a) else None
@@ -160,7 +177,9 @@ def name_of(a, syms, image):
     return '', ''
 
 
-def log_before_crash(path, lines=18):
+def log_before_crash(path: str, lines: int = 18) -> list[str]:
+    """The last log lines before the log's last crash-report line (the per-frame probe spam left out), and that
+    line; [] when the log is unreadable or shows no crash."""
     try:
         text = open(path, encoding='utf-8', errors='replace').read().splitlines()
     except OSError:
@@ -174,8 +193,11 @@ def log_before_crash(path, lines=18):
     return picked[-lines:] + [text[end]]
 
 
-def main(argv):
-    args, opts, i = [], {'--symbols': []}, 1
+def main(argv: list[str]) -> int:
+    """The command line: reads the crash report (the newest one without a path) and prints what it shows."""
+    args: list[str] = []
+    opts: dict[str, Any] = {'--symbols': []}
+    i = 1
     while i < len(argv):
         a = argv[i]
         if a in ('--exe', '--log') and i + 1 < len(argv):
@@ -196,7 +218,7 @@ def main(argv):
     r = read_report(report_path)
     syms = read_symbols([SYMBOLS] + opts['--symbols'])
     exe = opts.get('--exe') or find_exe()
-    image = None
+    image: Image | None = None
     if exe and not opts.get('--no-code'):
         try:
             image = Image(exe)

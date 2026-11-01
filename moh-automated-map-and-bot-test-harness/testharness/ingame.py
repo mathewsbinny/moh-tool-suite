@@ -18,7 +18,10 @@ ON HOLD - needs playtest (designed, not run by the harness):
                  N seconds), squad coordination and vehicle use - TELEMETRY_TESTS below, each 'hold' until the
                  stream exists.
 """
+from __future__ import annotations
+
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -50,20 +53,23 @@ class Session:
     level: Optional[str] = None
     states: List[int] = field(default_factory=list)
     events: List[str] = field(default_factory=list)
-    offset_loads: List[tuple] = field(default_factory=list)
-    override: Optional[tuple] = None
+    offset_loads: List[tuple[int, int]] = field(default_factory=list)
+    override: Optional[tuple[int, int]] = None
     pathfinders: List[int] = field(default_factory=list)
     crashed: bool = False
     exited: bool = False
     lines: int = 0
 
     @property
-    def in_game(self):
+    def in_game(self) -> bool:
+        """The session reached Session state 3 (in game)."""
         return IN_GAME in self.states
 
 
-def sessions(text):
-    out, cur = [], None
+def sessions(text: str) -> list[Session]:
+    """The game sessions of an opfor.log's text, one per load line of the OPFOR core, with what each logged."""
+    out: list[Session] = []
+    cur: Session | None = None
     for line in text.splitlines():
         m = START.search(line)
         if m:
@@ -102,16 +108,16 @@ def sessions(text):
     return out
 
 
-def for_level(all_sessions, lv):
+def for_level(all_sessions: Iterable[Session], lv: str) -> list[Session]:
     """The sessions that started the level (latest last)."""
     want = lv.lower().split('/')[-1]
     return [s for s in all_sessions if s.level and s.level.lower().split('/')[-1] == want]
 
 
-def evaluate(s, asset):
+def evaluate(s: Session, asset: tuple[int, int] | None) -> dict[str, Result]:
     """{name: Result} for one session. asset: the level's Infantry SectorOffsets (x, z), or None."""
     src = f'opfor.log session {s.start} (PID {s.pid})'
-    out = {}
+    out: dict[str, Result] = {}
     ok = s.in_game and 'AI init' in s.events and not s.crashed
     out['loads-ai-init'] = Result('pass' if ok else 'fail',
                                   f'{src}: ' + ('crashed' if s.crashed else
@@ -139,5 +145,6 @@ def evaluate(s, asset):
     return out
 
 
-def telemetry_tests():
+def telemetry_tests() -> dict[str, Result]:
+    """{name: Result} of the telemetry tests, all on hold until OPFOR has its telemetry module."""
     return {name: Result('hold', f'{what} - ON HOLD: needs OPFOR\'s telemetry module (milestone M6)') for name, what in TELEMETRY_TESTS}

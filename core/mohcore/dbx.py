@@ -29,6 +29,7 @@ class Element:
     children: list['Element'] | None = None
 
     def attr(self, name: str, default: str | None = None) -> str | None:
+        """The value of the attribute called name, or default when the element has none."""
         for k, v in self.attributes:
             if k == name:
                 return v
@@ -49,13 +50,16 @@ class DbxFile:
 
     @property
     def partition(self) -> Element:
+        """The root element (the partition)."""
         return self.roots[0]
 
     @property
     def instances(self) -> list[Element]:
+        """The partition's instance elements, in file order."""
         return [e for e in self.roots[0].children or () if e.tag == 'instance']
 
     def instance(self, guid: str) -> Element | None:
+        """The instance with this GUID (case-insensitive), or None."""
         g = guid.lower()
         for e in self.instances:
             if (e.attr('guid') or '').lower() == g:
@@ -64,10 +68,12 @@ class DbxFile:
 
     @staticmethod
     def get(e: Element, name: str) -> str | None:
+        """The attribute called name of e, or None."""
         return e.attr(name)
 
 
 def is_binary(data: bytes) -> bool:
+    """True when data starts with the binary DBX magic and is long enough to hold the header."""
     return len(data) > 24 and data[:8] == MAGIC
 
 
@@ -189,6 +195,7 @@ def _siblings(stack: list[Element], roots: list[Element]) -> list[Element]:
 
 
 def read(path: str) -> DbxFile:
+    """Parses the binary .dbx at path."""
     with open(path, 'rb') as f:
         return parse(f.read())
 

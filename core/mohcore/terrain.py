@@ -40,6 +40,7 @@ class Heightfield:
 
     @property
     def cell(self) -> tuple[float, float]:
+        """The size of one grid square in metres, as (x, z)."""
         return (self.max[0] - self.min[0]) / self.size, (self.max[2] - self.min[2]) / self.size
 
     def height(self, x: float | np.ndarray, z: float | np.ndarray) -> np.ndarray:
@@ -70,6 +71,8 @@ class Heightfield:
 
 
 def read(path: str) -> Heightfield:
+    """Reads a .Heightfield-000.res file into a Heightfield, its 16-bit samples scaled to heights; raises ValueError
+    when it is not one."""
     data = open(path, 'rb').read()
     f = HEADER.unpack_from(data, 0)
     lo, hi, size = np.array(f[0:3]), np.array(f[3:6]), f[6]

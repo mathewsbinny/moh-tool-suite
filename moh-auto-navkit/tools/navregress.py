@@ -44,6 +44,8 @@ import re
 import sys
 import functools
 import time
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from typing import Any, cast
 
 print = functools.partial(print, flush=True)   # progress shows at once when the output goes to a file
 
@@ -52,6 +54,9 @@ sys.path.insert(0, HERE)
 import navbuild  # noqa: E402
 import navparity  # noqa: E402
 import hpdcheck  # noqa: E402
+
+Row = dict[str, Any]                            # a level's measures in a run (navparity's row, or self_check's)
+Change = tuple[str, Any, Any]                   # (measure, reference, now)
 
 HIGHER = ['ground', 'areas_same', 'portals', 'outline', 'borders', 'costs', 'nodes_same', 'nodes_near', 'edges_same',
           'connectivity', 'ai_coverage', 'ai_pairwise',
@@ -66,7 +71,7 @@ SELF_COUNTS = ['self_points', 'self_sectors', 'self_areas', 'self_detailed', 'se
 LARGE = 25                                      # nodes: a large island (navparity's rule)
 
 
-def inputs(root, lv):
+def inputs(root: str, lv: str) -> tuple[str, int, int, dict[str, str]]:
     """The build inputs of a level, as navkit.py build uses them; raises if something is missing."""
     L = os.path.join(root, 'work', 'levels', lv)
     samples = None
@@ -86,8 +91,11 @@ def inputs(root, lv):
         if not so:
             raise RuntimeError(f'{lv}: no navkit.json and no SectorOffsets.xml (run navkit.py prepare {lv})')
         t = open(so[0], encoding='utf-8').read()
-        xoff = int(re.search(r'name="XOffset">(-?\d+)<', t).group(1))
-        zoff = int(re.search(r'name="ZOffset">(-?\d+)<', t).group(1))
+        mx = re.search(r'name="XOffset">(-?\d+)<', t)
+        mz = re.search(r'name="ZOffset">(-?\d+)<', t)
+        if mx is None or mz is None:
+            raise RuntimeError(f'{lv}: no XOffset / ZOffset in {so[0]}')
+        xoff, zoff = int(mx.group(1)), int(mz.group(1))
     files = {k: os.path.join(L, k) for k in ('forbid_tris.npy', 'dynamic_tris.npy', 'stair_tris.npy', 'soldier_spawns.json')}
     missing = [k for k, p in files.items() if not os.path.isfile(p)]
     if missing:
@@ -95,7 +103,7 @@ def inputs(root, lv):
     return samples, xoff, zoff, files
 
 
-def level_water(root, lv):
+def level_water(root: str, lv: str) -> tuple[Any, Any] | None:
     """The level's water mesh (vertices, triangles) for the build, or None (core/mohcore/water.py)."""
     sys.path.insert(0, os.path.join(HERE, '..', '..', 'core'))
     from mohcore import level as levelmod
@@ -103,7 +111,7 @@ def level_water(root, lv):
     return (w.vertices, w.triangles) if w is not None and len(w) else None
 
 
-def reference_bounds(root, lv):
+def reference_bounds(root: str, lv: str) -> tuple[float, float, float, float] | None:
     """(minX, minZ, maxX, maxZ) of DICE's path data for the level - the extent of its area outlines and portals at
     every pitch (detailed zones included: on sp_008, sp_008_b, ons_mp_005gr they reach past the normal-pitch ground) -
     or None when the level has no DICE path data (a new map). Border portals are left out: they sit on sector margins."""
@@ -113,7 +121,7 @@ def reference_bounds(root, lv):
     p = navparity.reference_of(root, lv)
     if not os.path.isfile(p):
         return None
-    pts = []
+    pts: list[Sequence[float]] = []
     for s in hpdtool.parse(open(p, 'rb').read()).sectors:
         for a in kymesh.parse_mesh(s.mesh).areas:
             pts += [q for line in a.outline for q in line]
@@ -124,7 +132,7 @@ def reference_bounds(root, lv):
     return float(P[:, 0].min()), float(P[:, 2].min()), float(P[:, 0].max()), float(P[:, 2].max())
 
 
-def area_orders_of(root, lv):
+def area_orders_of(root: str, lv: str) -> Any:
     """The level's AreaOrder positions (work/levels/<lv>/area_orders.json from levelobjects.py; for a level prepared
     before that file existed, read from the level's XML), or None."""
     p = os.path.join(root, 'work', 'levels', lv, 'area_orders.json')
@@ -138,13 +146,13 @@ def area_orders_of(root, lv):
         return None
 
 
-def order_points_of(root, lv):
+def order_points_of(root: str, lv: str) -> Any:
     """The level's AI order positions (work/levels/<lv>/order_points.json, written by levelobjects.py), or None."""
     p = os.path.join(root, 'work', 'levels', lv, 'order_points.json')
     return json.load(open(p)) if os.path.isfile(p) else None
 
 
-def build_level(root, lv, out, log=lambda *a: None):
+def build_level(root: str, lv: str, out: str, log: Callable[..., object] = lambda *a: None) -> None:
     """The level built into out with navkit.py build's own inputs (navkit.build_inputs: detailed zones, ladders and
     all) - on MOH a rebuild with unchanged code gives the export's sector meshes and route graphs byte for byte."""
     import navkit
@@ -153,18 +161,20 @@ def build_level(root, lv, out, log=lambda *a: None):
     navbuild.build(samples, forbid, xoff, zoff, out, **kw)
 
 
-def strong_parts(n, edges):
+def strong_parts(n: int, edges: Iterable[Sequence[int]]) -> list[int]:
     """A label per node: its strongly connected part of the directed route graph (Kosaraju; no recursion)."""
-    fw, bw = [[] for _ in range(n)], [[] for _ in range(n)]
+    fw: list[list[int]] = [[] for _ in range(n)]
+    bw: list[list[int]] = [[] for _ in range(n)]
     for a, b in edges:
         fw[a].append(b)
         bw[b].append(a)
-    order, seen = [], [False] * n
+    order: list[int] = []
+    seen = [False] * n
     for s0 in range(n):                         # finishing order of a depth-first walk along the edges
         if seen[s0]:
             continue
         seen[s0] = True
-        stack = [(s0, iter(fw[s0]))]
+        stack: list[tuple[int, Iterator[int]]] = [(s0, iter(fw[s0]))]
         while stack:
             u, it = stack[-1]
             v = next(it, None)
@@ -179,16 +189,16 @@ def strong_parts(n, edges):
         if part[s0] >= 0:
             continue
         part[s0] = s0
-        stack = [s0]
-        while stack:
-            for v in bw[stack.pop()]:
+        todo = [s0]
+        while todo:
+            for v in bw[todo.pop()]:
                 if part[v] < 0:
                     part[v] = s0
-                    stack.append(v)
+                    todo.append(v)
     return part
 
 
-def reach(fw, start):
+def reach(fw: Sequence[Iterable[int]], start: int) -> set[int]:
     """Every node reachable from start along the edges' directions."""
     seen, stack = {start}, [start]
     while stack:
@@ -199,7 +209,7 @@ def reach(fw, start):
     return seen
 
 
-def combat_areas(root, lv):
+def combat_areas(root: str, lv: str) -> list[Any]:
     """The level's combat-area outlines as (x, z) polygons (CombatAreaTriggerEntityData, every team and stage), or []."""
     import numpy as np
     sys.path.insert(0, os.path.join(HERE, '..', '..', 'core'))
@@ -209,7 +219,7 @@ def combat_areas(root, lv):
             if L.entities[s.entity].category == 'combat area' and s.kind == 'area']
 
 
-def self_check(root, lv, path):
+def self_check(root: str, lv: str, path: str) -> Row:
     """NavKit's own figures for a build of a level without DICE path data (the module's docstring), as a row."""
     import hashlib
     from collections import Counter
@@ -226,13 +236,14 @@ def self_check(root, lv, path):
     pd = ordercheck.PathData(path)
     n = len(nav.node_pos)
     edges = nav.edges.tolist()
-    fw = [[] for _ in range(n)]
+    fw: list[list[int]] = [[] for _ in range(n)]
     for a, b in edges:
         fw[a].append(b)
     pairs = set(map(tuple, edges))
     # the AI positions: on an area, and their route node - the nearest within 15 m and 4 m in height (ordercheck)
     pts = ordercheck.order_points(navparity.level_xml(root, lv))
-    on, node = [], []
+    on: list[bool] = []
+    node: list[int | None] = []
     for _, _, p in pts:
         on.append(pd.on_area(p))
         d = np.hypot(nav.node_pos[:, 0] - p[0], nav.node_pos[:, 2] - p[2])
@@ -243,7 +254,7 @@ def self_check(root, lv, path):
     size = [nav.islands[nav.node_island[k]].nodes if k is not None else 0 for k in node]
     idx = [i for i in range(len(pts)) if on[i] and node[i] is not None]
     joined = sum(1 for a in idx for b in idx if a < b and nav.node_island[node[a]] == nav.node_island[node[b]])
-    reached = {node[a]: reach(fw, node[a]) for a in idx}
+    reached = {node[a]: reach(fw, cast(int, node[a])) for a in idx}   # idx: the points with a node
     routed = sum(1 for a in idx for b in idx if a != b and node[b] in reached[node[a]])
     # the main island's route nodes inside the combat areas (all of them on a level without): the share in the
     # largest strongly connected part - ground left by a drop link with no way back is outside it
@@ -258,7 +269,7 @@ def self_check(root, lv, path):
         main = main[inside]
     parts = Counter(part[k] for k in main.tolist())
 
-    def pct(a, b):
+    def pct(a: float, b: float) -> float:
         return round(100.0 * a / b, 2) if b else 100.0
     return {
         'level': lv, 'candidate': path, 'mode': 'self-check (no DICE path data)',
@@ -279,7 +290,8 @@ def self_check(root, lv, path):
 DEFAULT_SECONDS = 210                           # a level with no earlier timing: 45 minutes / 13 levels
 
 
-def duration(s):
+def duration(s: float) -> str:
+    """Seconds as a short text: '45 s', '12 min' or '1 h 05 min'."""
     s = int(round(s))
     if s < 90:
         return f'{s} s'
@@ -288,15 +300,15 @@ def duration(s):
     return f'{s // 3600} h {s % 3600 // 60:02d} min'
 
 
-def estimates(root, levels, *runs):
+def estimates(root: str, levels: Sequence[str], *runs: Mapping[str, Row]) -> dict[str, float]:
     """Expected seconds per level: its time in the given earlier runs (first found), else its in-game sample file
     size times the median seconds per MB of every level the runs time, else DEFAULT_SECONDS. runs: {level: row}."""
-    known = {}
+    known: dict[str, float] = {}
     for rows in runs:
         for lv, row in rows.items():
             if lv not in known and row.get('seconds'):
                 known[lv] = row['seconds']
-    size = {}
+    size: dict[str, float] = {}
     for lv in set(levels) | set(known):
         try:
             size[lv] = os.path.getsize(inputs(root, lv)[0]) / 1e6
@@ -307,9 +319,11 @@ def estimates(root, levels, *runs):
     return {lv: known.get(lv) or (rate * size[lv] if rate and lv in size else DEFAULT_SECONDS) for lv in levels}
 
 
-def compare(ref, now, tol):
+def compare(ref: Mapping[str, Any], now: Mapping[str, Any], tol: float) -> tuple[list[Change], list[Change], list[Change]]:
     """(worse, better, count changes) for one level: lists of (measure, reference, now)."""
-    worse, better, counts = [], [], []
+    worse: list[Change] = []
+    better: list[Change] = []
+    counts: list[Change] = []
     for k in HIGHER + LOWER + SELF_HIGHER:
         a, b = ref.get(k), now.get(k)
         if a is None or b is None:
@@ -328,7 +342,7 @@ def compare(ref, now, tol):
 OPTIONS = ('--levels', '--reference', '--save', '--tolerance', '--opfor')
 
 
-def check_options(args):
+def check_options(args: Iterable[str]) -> tuple[list[str], str | None]:
     """(arguments, error) of a command line, checked before anything is built (2026-10-31: '--save' without a name
     raised IndexError after the whole run; '--save --levels x' saved the run as "--levels"): each option needs a value
     that is not another option; --save alone takes the reference run's name. error is a message, or None."""
@@ -350,19 +364,21 @@ def check_options(args):
     return args, None
 
 
-def main(argv):
+def main(argv: Sequence[str]) -> int:
+    """Runs the regression test on a command line (argv with the script's name first): the exit code."""
     args, bad = check_options(argv[1:])
     if bad:
         print(f'navregress: {bad}')
         print(__doc__)
         return 2
-    opt = lambda k, d=None: args[args.index(k) + 1] if k in args else d
+    def opt(k: str, d: Any = None) -> Any:
+        return args[args.index(k) + 1] if k in args else d
     root = navparity.opfor_root(opt('--opfor'))
     levels = levels_to_run(root, opt('--levels'))
     reference = opt('--reference', 'regression')
     tol = float(opt('--tolerance', 0.05))
     ref_path = navparity.save_path(root, reference)
-    ref_rows = {}
+    ref_rows: dict[str, Row] = {}
     if os.path.isfile(ref_path):
         ref_rows = {r['level']: r for r in json.load(open(ref_path))['levels']}
     elif '--save' not in args:
@@ -374,7 +390,7 @@ def main(argv):
     return 1 if failed else 0
 
 
-def levels_to_run(root, named):
+def levels_to_run(root: str, named: str | None) -> list[str]:
     """The levels to build: the --levels list, else those with DICE path data, else (MOH) every prepared level."""
     levels = named.split(',') if named else [
         lv for lv in navparity.LEVELS + navparity.ONSLAUGHT if os.path.isfile(navparity.reference_of(root, lv))]
@@ -384,18 +400,21 @@ def levels_to_run(root, named):
     return levels
 
 
-def run_levels(root, levels, reference, tol, ref_rows):
+def run_levels(root: str, levels: Sequence[str], reference: str, tol: float,
+               ref_rows: Mapping[str, Row]) -> tuple[list[Row], int, float]:
     """Builds and measures each level against its reference row, with progress: (rows, levels failed, start time)."""
     outdir = os.path.join(root, 'work', 'navkit', 'regress')
     os.makedirs(outdir, exist_ok=True)
-    rows, failed = [], 0
+    rows: list[Row] = []
+    failed = 0
     last_path = navparity.save_path(root, 'regression_last')
     last_rows = {r['level']: r for r in json.load(open(last_path))['levels']} if os.path.isfile(last_path) else {}
     est = estimates(root, levels, last_rows, ref_rows)
     total = sum(est.values())
     print(f'NavKit regression: {len(levels)} level(s), reference "{reference}", tolerance {tol} points; '
           f'expected about {duration(total)}')
-    start, done_est, timed = time.time(), 0.0, {}
+    start, done_est = time.time(), 0.0
+    timed: dict[str, Row] = {}
     for n, lv in enumerate(levels, 1):
         t0 = time.time()
         print_progress(n, len(levels), lv, est[lv], total, done_est, t0 - start)
@@ -417,14 +436,14 @@ def run_levels(root, levels, reference, tol, ref_rows):
     return rows, failed, start
 
 
-def print_progress(n, count, lv, expected, total, done_est, elapsed):
+def print_progress(n: int, count: int, lv: str, expected: float, total: float, done_est: float, elapsed: float) -> None:
     """The line before level n's build: its expected time, the run's share done, the time so far and left."""
     left = max(total - done_est, 0) * (elapsed / done_est if done_est else 1.0)   # scaled by the pace so far
     print(f'[{n}/{count}] {lv}: building (about {duration(expected)}); run {100 * done_est / total:.0f} % done, '
           f'{duration(elapsed)} so far, about {duration(left)} left')
 
 
-def build_and_measure(root, lv, out, t0):
+def build_and_measure(root: str, lv: str, out: str, t0: float) -> tuple[Row, dict[str, Any]]:
     """Builds the level into out, checks its structure, measures it (parity with DICE, else self-check): (row, structure)."""
     build_level(root, lv, out, lambda m: print(f'      {m}'))
     structure = {k: v for k, v in hpdcheck.check(out).items() if v}    # what DICE's files always satisfy
@@ -439,7 +458,8 @@ def build_and_measure(root, lv, out, t0):
     return row, structure
 
 
-def reestimate(root, rest, est, total, timed, last_rows, ref_rows):
+def reestimate(root: str, rest: Sequence[str], est: dict[str, float], total: float, timed: Mapping[str, Row],
+               last_rows: Mapping[str, Row], ref_rows: Mapping[str, Row]) -> float:
     """The levels still to come re-estimated with this run's times (est updated in place): the new expected total."""
     if rest:
         new = estimates(root, rest, timed, last_rows, ref_rows)
@@ -448,7 +468,8 @@ def reestimate(root, rest, est, total, timed, last_rows, ref_rows):
     return total
 
 
-def report_level(lv, row, structure, ref, tol, t0):
+def report_level(lv: str, row: Row, structure: Mapping[str, Any], ref: Mapping[str, Any] | None, tol: float,
+                 t0: float) -> bool:
     """Prints the level's result against its reference row (ref, or None) and the changes: whether it failed."""
     if ref is None:
         print(f'{"FAIL" if structure else "new "} {lv}: not in the reference run ({time.time() - t0:.0f} s)')
@@ -474,9 +495,9 @@ def report_level(lv, row, structure, ref, tol, t0):
     return bool(worse)
 
 
-def save_runs(root, rows, name, reference, ref_rows):
+def save_runs(root: str, rows: list[Row], name: str | None, reference: str, ref_rows: Mapping[str, Row]) -> None:
     """Writes the run as regression_last, and with --save (name, else None) as that reference run too."""
-    run = {'name': 'regression_last', 'date': time.strftime('%Y-%m-%d %H:%M'), 'levels': rows}
+    run: dict[str, Any] = {'name': 'regression_last', 'date': time.strftime('%Y-%m-%d %H:%M'), 'levels': rows}
     json.dump(run, open(navparity.save_path(root, 'regression_last'), 'w'), indent=1)
     if name is not None:
         run['name'] = name

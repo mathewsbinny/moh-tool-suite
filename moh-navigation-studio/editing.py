@@ -28,6 +28,8 @@ COLOURS = {'walkable': (0.2, 1.0, 0.35), 'unwalkable': (1.0, 0.25, 0.2), 'seed':
 
 
 def ring(points2, y, colour, closed=True):
+    """Line segments (a, b, colour) joining the (x, z) points at height y, closed back to the first point unless
+    closed is False."""
     p = [np.array([x, y, z]) for x, z in points2]
     if closed and len(p) > 2:
         p.append(p[0])
@@ -35,6 +37,7 @@ def ring(points2, y, colour, closed=True):
 
 
 def region_segments(region, colour):
+    """The outline segments of an edit region: a polygon prism's floor, roof and posts, or a box's 12 edges."""
     if 'polygon' in region:
         lo, hi = region['y']
         segs = ring(region['polygon'], lo, colour) + ring(region['polygon'], hi, colour)
@@ -47,16 +50,19 @@ def region_segments(region, colour):
 
 
 def cross(p, size, colour):
+    """Two horizontal line segments (along x and z) crossing at p, size metres from it each way."""
     p = np.asarray(p, float)
     return [(p - d, p + d, colour) for d in (np.array([size, 0, 0]), np.array([0, 0, size]))]
 
 
 def post(p, height, colour):
+    """A vertical line segment from p up height metres."""
     p = np.asarray(p, float)
     return [(p, p + np.array([0, height, 0]), colour)]
 
 
 def op_segments(o):
+    """The overlay segments that draw one navtune operation, coloured by its kind."""
     name = o['op']
     if name in ('walkable', 'unwalkable'):
         return region_segments(o['region'], COLOURS[name])
@@ -171,6 +177,8 @@ class Editor:
 
     # --- build with the edits (navkit apply) --------------------------------------------------------
     def start_apply(self):
+        """Saves the side file and starts navkit.py apply with it in the background, collecting its output in
+        job_log."""
         import subprocess
         import sys
         import threading
@@ -198,6 +206,7 @@ class Editor:
         return r.returncode
 
     def job_state(self):
+        """The apply job's state: None when there is none, else 'running', 'done' or 'failed'."""
         if self.job is None:
             return None
         code = self.job.poll()
@@ -214,9 +223,12 @@ class Editor:
 
     # --- input --------------------------------------------------------------------------------------
     def active(self):
+        """True when the editor is open and a tool is chosen, so clicks in the level go to it."""
         return self.open and self.tool is not None
 
     def click(self, v, p):
+        """Takes a click on the level at p for the current tool and commits the edit once the tool has all its
+        points."""
         if p is None or self.tool is None:
             return
         p = np.asarray(p, dtype=np.float64)
@@ -244,6 +256,7 @@ class Editor:
         self.refresh(v)
 
     def finish_polygon(self, v):
+        """Commits the polygon being drawn (three points or more) as a walkable or unwalkable region."""
         if self.tool in ('walkable', 'unwalkable') and self.shape == 'polygon' and len(self.clicks) >= 3:
             ys = [c[1] for c in self.clicks]
             region = nt.polygon([(c[0], c[2]) for c in self.clicks], min(ys) - self.y_margin[0], max(ys) + self.y_margin[1])
@@ -251,6 +264,8 @@ class Editor:
             self.refresh(v)
 
     def commit(self, o):
+        """Adds the operation to the edits and reports it, or why it was refused; the pending clicks are cleared
+        either way."""
         self.reload_armed = False
         try:
             self.tune.add(o)
@@ -266,6 +281,8 @@ class Editor:
         return not (getattr(v.camera, 'fly', False) and right_down)
 
     def keys(self, v):
+        """The editor's keys: E opens or closes it, Esc drops the pending clicks, Enter finishes a polygon, Ctrl+Z /
+        Ctrl+Y undo and redo."""
         io = imgui.get_io()
         if io.want_capture_keyboard:
             return
@@ -284,6 +301,7 @@ class Editor:
             self.redo(v)
 
     def set_open(self, v, on):
+        """Opens or closes the editor; closing drops the tool and the pending clicks."""
         self.open = on
         if not on:
             self.tool, self.clicks = None, []
@@ -291,12 +309,14 @@ class Editor:
         self.refresh(v)
 
     def undo(self, v):
+        """Undoes the last edit and redraws."""
         self.reload_armed = False
         o = self.tune.undo()
         self.message = 'undone: ' + o['op'] if o else 'nothing to undo'
         self.refresh(v)
 
     def redo(self, v):
+        """Redoes the last undone edit and redraws."""
         self.reload_armed = False
         o = self.tune.redo()
         self.message = 'redone: ' + o['op'] if o else 'nothing to redo'
@@ -304,6 +324,7 @@ class Editor:
 
     # --- drawing ------------------------------------------------------------------------------------
     def segments(self):
+        """The overlay segments for every edit plus the clicks of the edit being drawn."""
         segs = []
         for o in self.tune.operations:
             segs += op_segments(o)
@@ -317,6 +338,7 @@ class Editor:
         return segs
 
     def refresh(self, v):
+        """Redraws the Studio's overlay."""
         self.st.refresh_overlay(v)
 
     # --- panel --------------------------------------------------------------------------------------

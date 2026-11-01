@@ -29,6 +29,7 @@ def local(ref):
 
 
 def position(e):
+    """The (x, y, z) translation of an instance's 4x4 Transform, or None when it has none."""
     t = e.child('Transform')
     if t is None or t.kind != dbxbin.NUMBERS:
         return None
@@ -37,6 +38,8 @@ def position(e):
 
 
 def text(e, name, default=None):
+    """A field's value as text: TEXT as is, numbers joined with '/', bools as 'true' / 'false'; default when the field
+    is missing or a container."""
     c = e.child(name)
     if c is None:
         return default
@@ -51,11 +54,13 @@ def text(e, name, default=None):
 
 
 def ref_of(e, name):
+    """The ref attribute of the field called name, or None."""
     c = e.child(name)
     return c.attr('ref') if c is not None else None
 
 
 def item_refs(e, name):
+    """The refs of an array field's items ([] when the field is missing or empty)."""
     a = e.child(name)
     return [i.attr('ref') for i in (a.children or ())] if a is not None and a.children is not None else []
 
@@ -71,6 +76,8 @@ class CapturePoint:
     outline: List[Tuple[float, float, float]] = field(default_factory=list)
 
     def half_extents(self, minimum=6.0, maximum=30.0):
+        """Half sizes (x, 3, z) of a box around the capture point's outline, each clamped to minimum..maximum metres;
+        minimum when it has no outline."""
         if not self.outline:
             return (minimum, 3.0, minimum)
         xs = [p[0] for p in self.outline]
@@ -142,6 +149,7 @@ class Model:
                 self.mcoms.append((e.attr('guid').upper(), text(e, 'Name') or '', position(e)))
 
     def typ(self, guid):
+        """The short type name (after the last dot) of the instance with this GUID, or None."""
         e = self.inst.get(guid or '')
         return (e.attr('type') or '').rsplit('.', 1)[-1] if e is not None else None
 
@@ -161,6 +169,7 @@ class Model:
                             outline)
 
     def bases(self, team):
+        """The capture points the team owns at the start."""
         return [cp for cp in self.capture_points if cp.owner == team]
 
     def flags(self):

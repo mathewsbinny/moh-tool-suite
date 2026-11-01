@@ -55,6 +55,8 @@ def _counts(out):
 
 
 def check_dbxedit(orig, authored, bundle_dir, orig_bundle_dir, mp_common):
+    """DbxEdit's check of the authored partition against the stock one: ok when it has no more errors or warnings and
+    the same error lines."""
     _rc, a = _dbxedit('check', authored, '--bundle', bundle_dir, '--bundle', mp_common)
     _rc, o = _dbxedit('check', orig, '--bundle', orig_bundle_dir, '--bundle', mp_common)
     ea, wa = _counts(a)
@@ -67,6 +69,8 @@ def check_dbxedit(orig, authored, bundle_dir, orig_bundle_dir, mp_common):
 
 
 def check_roundtrip(authored, tmp):
+    """Ok when the authored partition round-trips byte for byte through DbxEdit, both directly and through XML export
+    and import."""
     rc, out = _dbxedit('roundtrip', authored)
     ok1 = '1 identical, 0 different' in out
     a = os.path.join(tmp, 'rt.dbx')
@@ -91,6 +95,8 @@ def _refs(e):
 
 
 def check_structure(orig, authored, c):
+    """Ok when every local reference and event connection resolves, each new instance is listed once in Objects, HasAI
+    is true and the pathfinding types are set."""
     f, inst = _core_instances(authored)
     _fo, oinst = _core_instances(orig)
     problems = []
@@ -185,6 +191,8 @@ def _partition_index(folders):
 
 
 def check_external(orig, authored, folders):
+    """Ok when every new reference into another partition (one the stock level does not have) names an instance that
+    exists in the bundle folders."""
     _fo, oinst = _core_instances(orig)
     _f, inst = _core_instances(authored)
     idx = _partition_index(folders)
@@ -219,6 +227,8 @@ def check_external(orig, authored, folders):
 
 
 def check_assets(build_dir, rep, c, lv_upper):
+    """Ok when the added entries are the manifest's tail, each SectorOffsets asset has its name and integer offsets,
+    and the template partitions are packed."""
     bad = []
     lines = [l for l in open(os.path.join(build_dir, 'fbrb.manifest'), encoding='utf-8').read().splitlines() if l.strip()]
     added = rep.get('added_entries', [])
@@ -255,6 +265,8 @@ def check_assets(build_dir, rep, c, lv_upper):
 
 
 def check_navigation(c, hpd):
+    """Ok when every spawner is on the navigation data on a large island, every order has a route node near it, and
+    each order's spawners are route-connected to it."""
     snap = cfgmod.Snapper(hpd)
     if snap.pd is None:
         return False, f'no path data at {hpd}'
@@ -298,6 +310,8 @@ def _nearest_index(snap, p):
 
 
 def check_stages(authored, c):
+    """Ok when later-stage spawners and orders start disabled and each stage's advance source is a
+    MultipleTriggerEntityData of the level."""
     stages = c.get('stages') or []
     if not stages and not any(s.get('stage') for s in c['spawners']):
         return True, 'no stages (one-stage mode)'
@@ -319,6 +333,7 @@ def check_stages(authored, c):
 
 
 def check_packed(out_bundle, build_dir, tmp):
+    """Ok when the packed bundle unpacks to files identical to the build folder's (the manifest aside)."""
     d = os.path.join(tmp, 'unpacked')
     shutil.rmtree(d, ignore_errors=True)
     pipeline.run(pipeline.FBRB, 'unpack', out_bundle, d)
@@ -356,6 +371,8 @@ def _save(paths, results):
 
 
 def validate(paths, c, log=print):
+    """Runs every check on the built AI layer of each variant, logging each result, and saves them; stops after the
+    configuration check when it fails."""
     rep = json.load(open(os.path.join(paths.root, 'build_report.json'), encoding='utf-8'))
     ok, detail = check_config(rep, c)
     log(f'{"ok  " if ok else "FAIL"} configuration: {detail}')

@@ -35,11 +35,13 @@ def find_game():
 
 
 def default_zz():
+    """The game copy's MP config.zz, or None when there is no game copy."""
     g = find_game()
     return os.path.join(g, 'MP', 'dist', 'win32', 'config.zz') if g else None
 
 
 def default_exe():
+    """The game copy's MoHMPGame.exe, or None when there is no game copy."""
     g = find_game()
     return os.path.join(g, 'MP', 'MoHMPGame.exe') if g else None
 
@@ -47,12 +49,14 @@ def default_exe():
 # --- config.zz ---------------------------------------------------------------
 
 def cmd_list(args):
+    """Prints the size and name of each file in config.zz."""
     with zipfile.ZipFile(args.zz) as z:
         for info in z.infolist():
             print('%8d  %s' % (info.file_size, info.filename))
 
 
 def cmd_extract(args):
+    """Writes one file of config.zz to stdout as bytes."""
     with zipfile.ZipFile(args.zz) as z:
         data = z.read(args.name)
     sys.stdout.buffer.write(data)
@@ -76,6 +80,7 @@ def parse_cfg(text):
 
 
 def cmd_settings(args):
+    """Prints the key/value settings of every .cfg file in config.zz."""
     with zipfile.ZipFile(args.zz) as z:
         for info in z.infolist():
             if not info.filename.endswith('.cfg'):
@@ -117,6 +122,7 @@ def _load_pe(exe):
 
 
 def common_prefix(strings):
+    """The longest prefix every string starts with ('' for none)."""
     if not strings:
         return ''
     p = strings[0]
@@ -127,6 +133,8 @@ def common_prefix(strings):
 
 
 def cmd_reflect(args):
+    """Prints the exe's reflection catalog from its fieldinf section: enums with their values, then the types'
+    fields."""
     pe, ib, sections, data, v2f, cstr = _load_pe(args.exe)
     fi = sections['fieldinf']
     raw = data[fi.PointerToRawData:fi.PointerToRawData + fi.Misc_VirtualSize]
@@ -182,6 +190,7 @@ def cmd_reflect(args):
 # --- CLI ----------------------------------------------------------------------
 
 def main(argv=None):
+    """The command line: list, extract, settings or reflect."""
     ap = argparse.ArgumentParser(prog='moh-config', description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--zz', default=default_zz(), help='path to config.zz')

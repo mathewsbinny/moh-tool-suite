@@ -1,8 +1,8 @@
 r"""NavKit's area link rule (navbuild.Level.connected with rule 'terrain' / 'raw', navbuild.components) on a sample
-grid built here (no game data): straight neighbours join an area up to a raw step of navbuild.LINK_STEP (MOH: the
-45 deg slope limit over one 0.8 m cell, 0.8 m; BFBC2: DICE's 0.6), diagonal ones when a route through a side column
-(walkable or not) has both steps within it; the slope rule still joins a plane steeper than that, so portals and
-routes keep it; object surfaces use the slope rule under 'terrain'.
+grid built here (no game data): straight neighbours join an area up to a raw step of the grid's link step
+(navbuild.Pitch.link_step; MOH: the 45 deg slope limit over one 0.8 m cell, 0.8 m; BFBC2: DICE's 0.6), diagonal ones
+when a route through a side column (walkable or not) has both steps within it; the slope rule still joins a plane
+steeper than that, so portals and routes keep it; object surfaces use the slope rule under 'terrain'.
 
   python test_area_link.py
 """
@@ -45,7 +45,7 @@ def main(argv):
         failed += not ok
         print(f'{"ok  " if ok else "FAIL"} {what}')
 
-    L = navbuild.LINK_STEP                               # 0.8 on MOH
+    L = navbuild.NORMAL.link_step                        # 0.8 on MOH (the Level's default grid, pitch 0.8)
     lo, hi = L - 0.05, L + 0.1
     lv = level([[0.0, lo, lo + hi]])
     check(lv.connected(0, 1, 1, 0, 'raw'), f'straight step {lo:.2f} m links')

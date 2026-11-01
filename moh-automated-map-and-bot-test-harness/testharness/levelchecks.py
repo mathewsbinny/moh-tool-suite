@@ -21,9 +21,15 @@ In game (ON HOLD - needs playtest; filled in from an opfor.log of a run the user
   offsets-read       both SectorOffsets loads read the asset's values, no override
   pathfinders        pathfinders appear after spawning (unit counters)
 """
+from __future__ import annotations
+
 from collections import Counter
+from typing import TYPE_CHECKING, Any, cast
 
 from .checks import Result
+
+if TYPE_CHECKING:
+    from .levelinfo import LevelInfo
 
 INGAME = [('loads-ai-init', 'the level loads, reaches the match, and AI init runs'),
           ('offsets-read', 'both SectorOffsets loads read the asset\'s values (no [dev] override)'),
@@ -31,7 +37,8 @@ INGAME = [('loads-ai-init', 'the level loads, reaches the match, and AI init run
 HOLD = 'ON HOLD - needs playtest: run testrun.bat <level> yourself, then harness.py import-log'
 
 
-def has_ai(info):
+def has_ai(info: LevelInfo) -> Result:
+    """LevelData.HasAI: pass when true, fail when false (the server then skips AI init), error when not read."""
     if info.has_ai is None:
         return Result('error', 'no LevelData.HasAI read')
     return Result('pass' if info.has_ai else 'fail',
@@ -39,7 +46,9 @@ def has_ai(info):
                                                    'sets it at load; not yet tried on a stock map)', {'has_ai': int(info.has_ai)})
 
 
-def ai_spawners(info):
+def ai_spawners(info: LevelInfo) -> Result:
+    """The level's AI soldier spawners (PlayerType SSAiPlayer), how many are enabled at level start, and per team;
+    fail when there are none."""
     ai = [s for s in info.spawners if s.ai]
     on = [s for s in ai if s.enabled]
     teams = Counter(s.team for s in ai)
@@ -49,7 +58,9 @@ def ai_spawners(info):
                   if ai else 'no AI spawners (PlayerType SSAiPlayer)', m)
 
 
-def ai_templates(info, placeholder):
+def ai_templates(info: LevelInfo, placeholder: str) -> Result:
+    """Whether the AI spawners have real AI templates: fail when none has, warn when some are on the DefaultSoldier
+    placeholder or null."""
     ai = [s for s in info.spawners if s.ai]
     if not ai:
         return Result('skip', 'no AI spawners')
@@ -58,7 +69,7 @@ def ai_templates(info, placeholder):
     real = [s for s in ai if s.template and s.template != placeholder]
     m = {'real_template': len(real), 'placeholder_template': len(ph), 'null_template': len(null),
          'real_template_pct': round(100.0 * len(real) / len(ai), 2)}
-    used = Counter(s.template.rsplit('/', 1)[-1] for s in real)
+    used = Counter(cast(str, s.template).rsplit('/', 1)[-1] for s in real)     # real ones only: never None
     details = [f'placeholder (DefaultSoldier): "{s.name}" {s.guid}' for s in ph] + [f'null template: "{s.name}" {s.guid}' for s in null]
     status = 'fail' if not real else 'warn' if ph or null else 'pass'
     return Result(status, f'{len(real)} of {len(ai)} AI spawners with a real template'
@@ -67,11 +78,15 @@ def ai_templates(info, placeholder):
                   m, details)
 
 
-def templates_loaded(info, placeholder):
+def templates_loaded(info: LevelInfo, placeholder: str) -> Result:
+    """Whether every real AI template partition, and each partition it refers to, is in a bundle of the level's
+    load set."""
     tpls = sorted({s.template for s in info.spawners if s.ai and s.template and s.template != placeholder})
     if not tpls:
         return Result('skip', 'no real AI templates used')
-    missing, chain_missing, checked = [], [], 0
+    missing: list[str] = []
+    chain_missing: list[str] = []
+    checked = 0
     for t in tpls:
         if info.in_load_set(t) is None:
             missing.append(t)
@@ -88,7 +103,8 @@ def templates_loaded(info, placeholder):
                   f'{checked - len(chain_missing)} of {checked} partitions they refer to', m, details)
 
 
-def kits_loaded(info):
+def kits_loaded(info: LevelInfo) -> Result:
+    """Whether the AI spawners' soldier kits are in the load set (a warning when one is not)."""
     kits = sorted({s.kit for s in info.spawners if s.ai and s.kit})
     if not kits:
         return Result('skip', 'no kits on AI spawners')
@@ -97,13 +113,15 @@ def kits_loaded(info):
                   {'kits': len(kits), 'kits_missing': len(missing)}, [f'not in the load set: {k}' for k in missing])
 
 
-def orders(info):
+def orders(info: LevelInfo) -> Result:
+    """Whether the level has AreaOrders, the AI's destinations."""
     n = info.area_orders
     return Result('pass' if n else 'fail', f'{n} AreaOrders' if n else 'no AreaOrders: the AI has no destinations',
                   {'area_orders': n})
 
 
-def offsets_asset(info):
+def offsets_asset(info: LevelInfo) -> Result:
+    """Whether the level ships a Precomputed/Infantry SectorOffsets asset, and its values when they were read."""
     a = info.assets.get('Infantry')
     v = info.assets.get('Vehicle')
     if a is None:
@@ -111,17 +129,18 @@ def offsets_asset(info):
                       {'asset': 0})
     txt = 'present, not read' if a == 'unread' else f'{a[0]},{a[1]}'
     vt = '' if v is None else f'; Vehicle {"present" if v == "unread" else f"{v[0]},{v[1]}"}'
-    m = {'asset': 1, **({'x': a[0], 'z': a[1]} if a != 'unread' else {})}
+    m: dict[str, Any] = {'asset': 1, **({'x': a[0], 'z': a[1]} if a != 'unread' else {})}
     return Result('pass' if a != 'unread' else 'warn', f'Infantry SectorOffsets {txt}{vt}', m)
 
 
-def path_data(info):
+def path_data(info: LevelInfo) -> Result:
+    """Whether the game copy has the level's infantry path data installed."""
     return Result('pass' if info.installed else 'fail',
                   'infantry path data installed' if info.installed else 'no infantry path data in the game copy '
                   '(Output\\win32\\ai\\levels\\<level>\\infantry\\pathdata.hpd)', {'installed': int(bool(info.installed))})
 
 
-def all_checks(info, placeholder):
+def all_checks(info: LevelInfo, placeholder: str) -> dict[str, Result]:
     """{name: Result} of the file checks, in order, then the in-game ones (on hold)."""
     out = {'has-ai': has_ai(info), 'ai-spawners': ai_spawners(info), 'ai-templates': ai_templates(info, placeholder),
            'templates-loaded': templates_loaded(info, placeholder), 'kits-loaded': kits_loaded(info),

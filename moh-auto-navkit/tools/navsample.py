@@ -47,14 +47,18 @@ class Samples:
     hit: np.ndarray | None = None   # per surface (version 2): shape vtable, shape word +0x0C, collidable word +0x1C
 
     def centre(self, i: int, j: int) -> tuple[float, float]:
+        """The world (x, z) of column (i, j)'s centre."""
         return self.min_x + i * self.pitch, self.min_z + j * self.pitch
 
     def column(self, i: int, j: int) -> range:
+        """The range of surface indices in column (i, j)."""
         c = j * self.nx + i
         return range(self.start[c], self.start[c + 1])
 
 
 def load(path: str) -> tuple[Samples, int]:
+    """Reads a navsample file (versions 1 to 3) as (Samples, number of sampled columns); raises ValueError when it is
+    not one or the run did not finish."""
     data = open(path, 'rb').read()
     magic, version, pitch, min_x, min_z, nx, nz, y_top, y_bottom, radius, cap_b, cap_t, ray_r, _ = \
         HEADER.unpack_from(data, 0)
@@ -188,6 +192,8 @@ def flood(s: Samples, ok: np.ndarray, seeds: Iterable[int], max_dy: float) -> np
 
 def compare(s: Samples, hpd_path: str, png: str | None = None, slope: float = mohsoldier.SLOPE,
             step: float = mohsoldier.STEP, tol: float = 0.6) -> None:
+    """Prints how the samples' walkable surfaces agree with a pathdata.hpd's areas, and writes a map of the agreement
+    to png when given."""
     ref = reference_cells(s, hpd_path)
     ok = walkable(s, slope)
     tp = fn = fp_raw = 0
@@ -245,6 +251,7 @@ def compare(s: Samples, hpd_path: str, png: str | None = None, slope: float = mo
 
 
 def main(argv: list[str]) -> int:
+    """The command line: info or compare on a sample file; returns the exit code."""
     if len(argv) < 3:
         print(__doc__)
         return 1

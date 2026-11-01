@@ -21,11 +21,19 @@ in the new run, that is gone from the new run is a regression (a lost file or le
 regressions"), and so is a test new in the new run that fails or errs. Files are matched by key (dice, navkit ...),
 so two builds of NavKit compare directly; a file whose sha1 is unchanged is expected to give the same numbers.
 """
+from __future__ import annotations
+
 import json
 import os
 import socket
 import subprocess
 import time
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from typing import Any
+
+Run = dict[str, Any]                    # a saved run, as its .json holds it
+Finding = tuple[str, str, str, str, str, Any, Any]   # compare(): (kind, level, scope, test, metric, before, after)
+Log = Callable[[str], object]
 
 FORMAT, VERSION = 'moh-harness-run', 1
 LABEL = {'pass': 'ok  ', 'info': 'info', 'warn': 'warn', 'fail': 'FAIL', 'skip': 'skip', 'hold': 'hold', 'error': 'ERR '}
@@ -42,7 +50,7 @@ except (ImportError, AttributeError):              # quick tests without NavKit 
     PARITY_TOL = 0.05
 
 
-def spec(test, metric):
+def spec(test: str, metric: str) -> tuple[str, float]:
     """(direction, tolerance) of a metric: 'higher' / 'lower' is better, 'one' (closer to 1.0 is better), or 'count'
     (listed when it changes, never a regression)."""
     base = metric.split('.')[-1]
@@ -77,7 +85,8 @@ def spec(test, metric):
     return 'count', 0
 
 
-def suite_version(suite):
+def suite_version(suite: str) -> dict[str, Any]:
+    """The suite's git commit and whether it has uncommitted changes (None for both without git)."""
     try:
         c = subprocess.run(['git', '-C', suite, 'rev-parse', '--short', 'HEAD'], capture_output=True, text=True, timeout=20)
         d = subprocess.run(['git', '-C', suite, 'status', '--porcelain'], capture_output=True, text=True, timeout=20)
@@ -86,26 +95,29 @@ def suite_version(suite):
         return {'commit': None, 'changed': None}
 
 
-def new_run(name, options, suite):
+def new_run(name: str, options: Mapping[str, Any], suite: str) -> Run:
+    """An empty run: its name, date, host, suite version and options, no levels yet."""
     return {'format': FORMAT, 'version': VERSION, 'name': name, 'date': time.strftime('%Y-%m-%d %H:%M'),
             'host': os.environ.get('COMPUTERNAME') or socket.gethostname(), 'suite': suite_version(suite),
             'options': options, 'levels': {}, 'seconds': 0}
 
 
-def runs_dir(root, given=None):
+def runs_dir(root: str, given: str | None = None) -> str:
+    """The folder the runs are saved in (given, else <OPFOR>\\work\\harness\\runs), made if missing."""
     d = given or os.path.join(root, 'work', 'harness', 'runs')
     os.makedirs(d, exist_ok=True)
     return d
 
 
-def path_of(name_or_path, folder):
+def path_of(name_or_path: str, folder: str) -> str:
     """A run's file: a path to a .json as given, else <folder>\\<name>.json."""
     if name_or_path.lower().endswith('.json') or os.path.sep in name_or_path or '/' in name_or_path:
         return name_or_path
     return os.path.join(folder, name_or_path.replace(' ', '_') + '.json')
 
 
-def save(run, path):
+def save(run: Run, path: str) -> str:
+    """Writes the run to path whole or not at all (a temporary file, then os.replace); returns path."""
     tmp = path + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as fh:
         json.dump(run, fh, indent=1)
@@ -113,7 +125,8 @@ def save(run, path):
     return path
 
 
-def load(path):
+def load(path: str) -> Run:
+    """A saved run; ValueError when the file is not a harness run or was written by a newer harness."""
     with open(path, encoding='utf-8') as fh:
         run = json.load(fh)
     if run.get('format') != FORMAT:
@@ -123,8 +136,9 @@ def load(path):
     return run
 
 
-def listing(folder):
-    out = []
+def listing(folder: str) -> list[tuple[str, str, int, dict[str, int]]]:
+    """(name, date, level count, status counts) of every readable run in the folder, by name."""
+    out: list[tuple[str, str, int, dict[str, int]]] = []
     for f in sorted(os.listdir(folder)) if os.path.isdir(folder) else ():
         if f.endswith('.json'):
             try:
@@ -135,7 +149,7 @@ def listing(folder):
     return out
 
 
-def results(run):
+def results(run: Run) -> Iterator[tuple[str, str, str, dict[str, Any]]]:
     """(level, scope, test, result) of every result: scope is a file key, 'level' or 'ingame'."""
     for lv, L in run['levels'].items():
         for key, F in L.get('files', {}).items():
@@ -146,20 +160,22 @@ def results(run):
                 yield lv, scope, test, r
 
 
-def counts(run):
-    c = {}
+def counts(run: Run) -> dict[str, int]:
+    """{status: number of results} over the whole run."""
+    c: dict[str, int] = {}
     for *_x, r in results(run):
         c[r['status']] = c.get(r['status'], 0) + 1
     return c
 
 
-def counts_text(c):
+def counts_text(c: Mapping[str, int]) -> str:
+    """Status counts in words, in a fixed order: '12 ok, 2 warn, 1 FAIL'."""
     order = ['pass', 'info', 'warn', 'fail', 'error', 'skip', 'hold']
     words = {'pass': 'ok', 'info': 'info', 'warn': 'warn', 'fail': 'FAIL', 'error': 'error', 'skip': 'skipped', 'hold': 'on hold'}
     return ', '.join(f'{c[k]} {words[k]}' for k in order if c.get(k))
 
 
-def report(run, log=print, details=3):
+def report(run: Run, log: Log = print, details: int = 3) -> None:
     """The run as text: per level, per file, one line per test (and its first detail lines)."""
     s = run.get('suite') or {}
     log(f"harness run '{run['name']}' ({run['date']}, {run.get('host', '?')}; suite "
@@ -169,7 +185,7 @@ def report(run, log=print, details=3):
         log(f"\n{L.get('name') or lv}   spawns {pts.get('sources', 0)}, targets {pts.get('targets', 0)}, orders {pts.get('orders', 0)}")
         ex = L.get('excluded')
         if ex:
-            words = lambda d: ', '.join(f'{v} {k}' for k, v in sorted(d.items(), key=lambda kv: -kv[1])) or 'none'
+            words: Callable[[Mapping[str, int]], str] = lambda d: ', '.join(f'{v} {k}' for k, v in sorted(d.items(), key=lambda kv: -kv[1])) or 'none'
             log(f"  infantry points tested: {pts.get('infantry_sources', 0)} spawns, {pts.get('infantry_targets', 0)} targets, "
                 f"{pts.get('infantry_orders', 0)} orders")
             log(f"  not infantry (counted, not tested): spawns {words(ex.get('sources', {}))}; targets {words(ex.get('targets', {}))}; "
@@ -188,20 +204,20 @@ def report(run, log=print, details=3):
     log(f"\nsummary: {counts_text(counts(run))} ({run.get('seconds', 0):.0f} s)")
 
 
-def _line(log, test, r, details):
+def _line(log: Log, test: str, r: Mapping[str, Any], details: int) -> None:
     log(f"    {LABEL.get(r['status'], r['status'])} {test:16s} {r.get('summary', '')}")
     if r['status'] in ('fail', 'warn', 'error'):
         for d in r.get('details', [])[:details]:
             log(f'           {d}')
 
 
-def compare(base, new, scale=1.0):
+def compare(base: Run, new: Run, scale: float = 1.0) -> list[Finding]:
     """[(kind, level, scope, test, metric, before, after)]: kind 'worse', 'better', 'changed' (counts), 'missing'
     (a test or level in base, not in new), 'new' (in new only; after is its status), 'status' (a test now failing,
     or now an error: worse), 'fixed' (no longer failing), 'restatus' (any other status change), 'dropped' / 'added'
     (a metric in base only / new only), 'pairs' (battery pairs routed before and not now, with the same points).
     Which of them are regressions: regression()."""
-    out = []
+    out: list[Finding] = []
     a = {(lv, sc, t): r for lv, sc, t, r in results(base)}
     b = {(lv, sc, t): r for lv, sc, t, r in results(new)}
     for k in a.keys() - b.keys():
@@ -258,13 +274,15 @@ def compare(base, new, scale=1.0):
 REGRESSION = {'worse', 'status', 'missing'}
 
 
-def regression(f):
+def regression(f: Sequence[Any]) -> bool:
     """Whether a compare() finding is a regression: worse, now failing or an error, gone from the new run, or a
     test new in the new run that fails or errs."""
     return f[0] in REGRESSION or (f[0] == 'new' and f[6] in BAD)
 
 
-def compare_report(base, new, found, log=print):
+def compare_report(base: Run, new: Run, found: Sequence[Finding], log: Log = print) -> int:
+    """compare()'s findings as text, regressions first, after which files changed; returns the number of
+    regressions."""
     log(f"run '{new['name']}' ({new['date']}) against '{base['name']}' ({base['date']})")
     files_a = {(lv, key): F.get('sha1') for lv, L in base['levels'].items() for key, F in L.get('files', {}).items()}
     for lv, L in new['levels'].items():

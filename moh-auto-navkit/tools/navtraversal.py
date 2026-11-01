@@ -58,6 +58,7 @@ def graph(f):
 
 
 def nearest(g, p):
+    """The route node nearest p within the join limits, as {sector, id, pos, island, distance}, or None."""
     ids, secs, pos, island = g
     if not len(pos):
         return None

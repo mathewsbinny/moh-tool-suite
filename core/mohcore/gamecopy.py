@@ -30,6 +30,7 @@ class GameNotFound(Exception):
 
 
 def is_root(folder: str | None) -> TypeGuard[str]:
+    """True when folder holds the MP client's exe (a game copy's root)."""
     if not folder:
         return False
     return os.path.isfile(os.path.join(folder, MP_EXE))
@@ -157,6 +158,7 @@ class GameCopy:
         return os.path.join(self.output, 'ai', 'levels', lv.lower(), kind, 'pathdata.hpd')
 
     def ai_dir(self) -> str:
+        """The game copy's AI output folder (the path data lives under it)."""
         return os.path.join(self.output, 'ai')
 
 

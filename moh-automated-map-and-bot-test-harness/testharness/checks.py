@@ -23,13 +23,24 @@ Test kinds:
                  level's SectorOffsets asset
   parity         NavKit's DICE-parity measures (navparity.run_level), taken over unchanged
 """
+from __future__ import annotations
+
 import math
 import zlib
 from collections import Counter, deque
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional, cast
 
 import numpy as np
+
+if TYPE_CHECKING:
+    import hpdtool
+    from mohcore import navdata
+
+Pos = tuple[float, ...]         # world x, y, z (y up): a level point, a random ground point
+Adjacency = tuple[np.ndarray, np.ndarray]   # (first edge per node, destinations)
+PairRoute = tuple[bool, float, float, str]  # route_pairs(): (found, length m, cost m, reason)
 
 STATUSES = ['pass', 'info', 'warn', 'skip', 'hold', 'fail', 'error']
 MAX_DETAILS = 25
@@ -38,15 +49,19 @@ MIN_AGREEMENT = 0.75            # sector-offset rule: share of sectors that must
 
 @dataclass
 class Result:
+    """One test's outcome: a status, a one-line summary, the metrics runs are compared on and detail lines."""
+
     status: str
     summary: str = ''
-    metrics: dict = field(default_factory=dict)
+    metrics: dict[str, Any] = field(default_factory=dict)
     details: List[str] = field(default_factory=list)
-    data: dict = field(default_factory=dict)          # kept in the run for later comparison (pair bits ...)
+    data: dict[str, Any] = field(default_factory=dict)          # kept in the run for later comparison (pair bits ...)
     seconds: float = 0.0
 
-    def as_dict(self):
-        d = {'status': self.status, 'summary': self.summary, 'metrics': self.metrics,
+    def as_dict(self) -> dict[str, Any]:
+        """The result as a run file stores it: details capped at MAX_DETAILS, seconds rounded, data only when there
+        is some."""
+        d: dict[str, Any] = {'status': self.status, 'summary': self.summary, 'metrics': self.metrics,
              'details': self.details[:MAX_DETAILS] + ([f'... and {len(self.details) - MAX_DETAILS} more']
                                                       if len(self.details) > MAX_DETAILS else []),
              'seconds': round(self.seconds, 1)}
@@ -57,6 +72,8 @@ class Result:
 
 @dataclass
 class Point:
+    """A level point the tests join to the route graph: a spawn, an AI target or an order, with its class."""
+
     kind: str                       # 'spawn', 'AreaOrder', 'M-COM', 'capture point', 'objective', order kinds ...
     name: str
     pos: tuple                      # world x, y, z (y up)
@@ -65,24 +82,28 @@ class Point:
     cls: str = 'infantry'           # classify.py: infantry points are tested, the others counted
     why: str = ''
 
-    def label(self):
+    def label(self) -> str:
+        """The point in words: kind, team, name and position, and its class when it is not infantry."""
         t = f' team {self.team}' if self.team is not None else ''
         c = f' [{self.cls}: {self.why}]' if self.cls != 'infantry' else ''
         return f'{self.kind}{t} "{self.name or "?"}" at ({self.pos[0]:.0f}, {self.pos[1]:.0f}, {self.pos[2]:.0f}){c}'
 
 
-def pct(a, b):
+def pct(a: float, b: float) -> float:
+    """a as a percentage of b (two decimals); 0 when b is 0."""
     return round(100.0 * a / b, 2) if b else 0.0
 
 
-def worst(statuses):
+def worst(statuses: Sequence[str]) -> str:
+    """The most serious of the statuses (error > fail > warn > hold > pass > info > skip); 'skip' when there are
+    none."""
     order = {'error': 6, 'fail': 5, 'warn': 4, 'hold': 3, 'skip': 0, 'info': 1, 'pass': 2}
     return max(statuses, key=lambda s: order.get(s, 0)) if statuses else 'skip'
 
 
 # ------------------------------------------------------------------------------------------------ structure
 
-def structure(problems):
+def structure(problems: Mapping[str, Sequence[str]]) -> Result:
     """problems: hpdcheck.check(path)'s {check: [descriptions]}."""
     n = {k: len(v) for k, v in problems.items()}
     total = sum(n.values())
@@ -95,14 +116,14 @@ def structure(problems):
 
 # ------------------------------------------------------------------------------------------------ the route graph
 
-def adjacency(nav):
+def adjacency(nav: navdata.NavData) -> Adjacency:
     """(first edge per node, destinations) over the directed edges, sorted by source."""
     from mohcore import navpath
     start, nbr, _cost = navpath._adjacency(nav)
     return start, nbr
 
 
-def reach_from(nav, node, adj=None):
+def reach_from(nav: navdata.NavData, node: int, adj: Adjacency | None = None) -> set[int]:
     """The set of nodes reachable from node along the edges' directions."""
     start, nbr = adj or adjacency(nav)
     seen = {node}
@@ -120,7 +141,7 @@ def reach_from(nav, node, adj=None):
 STAND_XZ, STAND_DY = 1.2, 2.5          # a point stands on a walkable cell this close (m across / in height)
 
 
-def _cell_index(nav):
+def _cell_index(nav: navdata.NavData) -> tuple[np.ndarray, np.ndarray]:
     """Cells sorted by their 0.8 m grid key, for the lookups of join()."""
     idx = getattr(nav, '_harness_cells', None)
     if idx is None:
@@ -129,11 +150,11 @@ def _cell_index(nav):
         key = (ij[:, 0] + 50_000) * 100_000 + (ij[:, 1] + 50_000)
         order = np.argsort(key, kind='stable')
         idx = (key[order], order)
-        nav._harness_cells = idx
+        setattr(nav, '_harness_cells', idx)       # a cache on the object, not a NavData field
     return idx
 
 
-def join(nav, pos):
+def join(nav: navdata.NavData, pos: Pos) -> tuple[int | None, float]:
     """(node or None, horizontal metres) for a level point, the way the runtime starts a route: from the area the
     point stands on (the nearest walkable cell within STAND_XZ / STAND_DY, navdata's cells) - the nearest route node
     of that area's island; a point on no area, or whose island has no node within the limits, takes navpath.join's
@@ -143,13 +164,14 @@ def join(nav, pos):
     if len(nav.cell_xz) and len(nav.node_pos):
         keys, order = _cell_index(nav)
         gi, gj = int(round(pos[0] / navdata.GRID)), int(round(pos[2] / navdata.GRID))
-        cand = []
+        cand: list[int] = []
         for di in (-1, 0, 1):
             for dj in (-1, 0, 1):
                 k = (gi + di + 50_000) * 100_000 + (gj + dj + 50_000)
                 lo, hi = np.searchsorted(keys, k, 'left'), np.searchsorted(keys, k, 'right')
                 cand.extend(order[lo:hi].tolist())
-        best, best_d = None, np.inf
+        best: int | None = None
+        best_d = np.inf
         for c in cand:
             dxz = math.hypot(nav.cell_xz[c, 0] - pos[0], nav.cell_xz[c, 1] - pos[2])
             dy = abs(nav.cell_y[c] - pos[1])
@@ -164,41 +186,43 @@ def join(nav, pos):
                 k = int(np.argmin(d))
                 if d[k] <= navpath.JOIN_XZ:
                     return k, float(d[k])
-    return navpath.join(nav, pos)
+    return navpath.join(nav, cast(np.ndarray, pos))     # navpath indexes it: any (x, y, z) sequence serves
 
 
-def joins(nav, points):
+def joins(nav: navdata.NavData, points: Iterable[Point]) -> list[tuple[int | None, float]]:
     """[(node or None, horizontal metres)] per point (join())."""
     return [join(nav, p.pos) for p in points]
 
 
-def near_text(d):
+def near_text(d: float) -> str:
+    """A join distance in words: how far the nearest node is, or that none is close enough in height."""
     return f'nearest {d:.0f} m' if np.isfinite(d) else 'none within 4 m in height'
 
 
-def baseline_cap(status, baseline):
+def baseline_cap(status: str, baseline: bool) -> str:
     """On the reference file (DICE's, which works in the game) an absolute expectation that fails is a warning: the
     expectation is too strict for that level, the file is not broken."""
     return 'warn' if baseline and status == 'fail' else status
 
 
-def reachability(nav, sources, targets, reference=None, max_parity_loss=5.0, baseline=False):
+def reachability(nav: navdata.NavData, sources: list[Point], targets: list[Point],
+                 reference: Mapping[str, Any] | None = None, max_parity_loss: float = 5.0, baseline: bool = False) -> Result:
     """sources -> targets over the route graph. reference: the 'data' of the reference file's reachability result on
     the same points (its pair bits), for the parity measures. Pair bits: one character per (source, target), source
     major: '1' reached, '0' not, '-' a point without a route node near it."""
     adj = adjacency(nav)
     js, jt = joins(nav, sources), joins(nav, targets)
-    cache = {}
-    bits = []
+    cache: dict[int, set[int]] = {}
+    bit_list: list[str] = []
     for (ns, _), s in zip(js, sources):
         if ns is not None and ns not in cache:
             cache[ns] = reach_from(nav, ns, adj)
         for nt, _ in jt:
             if ns is None or nt is None:
-                bits.append('-')
+                bit_list.append('-')
             else:
-                bits.append('1' if nt in cache[ns] else '0')
-    bits = ''.join(bits)
+                bit_list.append('1' if nt in cache[ns] else '0')
+    bits = ''.join(bit_list)
     S, T = len(sources), len(targets)
     joined_s = sum(n is not None for n, _ in js)
     joined_t = sum(n is not None for n, _ in jt)
@@ -208,8 +232,8 @@ def reachability(nav, sources, targets, reference=None, max_parity_loss=5.0, bas
     s_reached = [any(bits[i * T + j] == '1' for j in range(T)) for i in range(S)]
     island_sizes = [i.nodes for i in nav.islands]
     main = int(np.argmax(island_sizes)) if island_sizes else -1
-    on_main = lambda js_: sum(1 for n, _ in js_ if n is not None and int(nav.node_island[n]) == main)
-    m = {
+    on_main: Callable[[list[tuple[int | None, float]]], int] = lambda js_: sum(1 for n, _ in js_ if n is not None and int(nav.node_island[n]) == main)
+    m: dict[str, Any] = {
         'sources': S, 'targets': T, 'sources_joined_pct': pct(joined_s, S), 'targets_joined_pct': pct(joined_t, T),
         'pairs': pairs, 'pairs_reached_pct': pct(reached, pairs),
         'targets_reached_pct': pct(sum(t_reached), T), 'sources_reaching_pct': pct(sum(s_reached), S),
@@ -250,7 +274,7 @@ def reachability(nav, sources, targets, reference=None, max_parity_loss=5.0, bas
 
 # ------------------------------------------------------------------------------------------------ path batteries
 
-def random_points(nav, n, seed, level):
+def random_points(nav: navdata.NavData, n: int, seed: int, level: str) -> list[tuple[float, float, float]]:
     """n ground points from the file's walkable cells, the same for the same file, seed and level."""
     if not len(nav.cell_xz):
         return []
@@ -259,7 +283,8 @@ def random_points(nav, n, seed, level):
     return [(float(nav.cell_xz[k, 0]), float(nav.cell_y[k]), float(nav.cell_xz[k, 1])) for k in idx]
 
 
-def level_pairs(sources, targets, n, seed, level):
+def level_pairs(sources: Iterable[Point], targets: Sequence[Point], n: int, seed: int,
+                level: str) -> list[tuple[Any, Any]]:
     """Up to n (spawn, target) position pairs, drawn with a fixed seed."""
     allp = [(s.pos, t.pos) for s in sources for t in targets]
     if len(allp) <= n:
@@ -268,42 +293,46 @@ def level_pairs(sources, targets, n, seed, level):
     return [allp[k] for k in sorted(rng.choice(len(allp), size=n, replace=False))]
 
 
-def points_key(pairs):
+def points_key(pairs: Iterable[tuple[Pos, Pos]]) -> str:
+    """A short hash (8 hex digits) of the pairs' positions to the centimetre: whether two batteries ran on the same
+    points."""
     h = zlib.crc32(repr([tuple(round(c, 2) for c in a + b) for a, b in pairs]).encode())
     return f'{h:08x}'
 
 
-def route_pairs(nav, pairs):
+def route_pairs(nav: navdata.NavData, pairs: Iterable[tuple[Pos, Pos]]) -> list[PairRoute]:
     """Per pair (found, length m, cost m, reason): the path test, skipped where the two points' route nodes are on
     different islands (the A* would only search the start island to its end)."""
     from mohcore import navpath
-    out = []
+    out: list[PairRoute] = []
     for a, b in pairs:
-        na, _ = navpath.join(nav, a)
-        nb, _ = navpath.join(nav, b)
+        na, _ = navpath.join(nav, cast(np.ndarray, a))      # navpath indexes them: any (x, y, z) sequence serves
+        nb, _ = navpath.join(nav, cast(np.ndarray, b))
         if na is None or nb is None:
             out.append((False, 0.0, 0.0, 'no node near'))
         elif nav.node_island[na] != nav.node_island[nb]:
             out.append((False, 0.0, 0.0, 'islands'))
         else:
-            r = navpath.route(nav, a, b)
+            r = navpath.route(nav, cast(list[float], a), cast(list[float], b))     # it takes np.asarray of them
             out.append((r.found, r.length, r.cost, '' if r.found else 'one-way'))
     return out
 
 
-def battery(name, pairs, routes, ref_routes=None, max_loss=2.0):
+def battery(name: str, pairs: Sequence[tuple[Pos, Pos]], routes: Sequence[PairRoute],
+            ref_routes: Sequence[PairRoute] | None = None, max_loss: float = 2.0) -> Result:
     """One battery's result from its routes on this file (route_pairs) and, when given, the reference file's routes
     over the same pairs."""
     n = len(pairs)
     found = [r[0] for r in routes]
     why = Counter(r[3] for r in routes if not r[0])
-    m = {'pairs': n, 'found_pct': pct(sum(found), n), 'no_node_pct': pct(why['no node near'], n),
+    m: dict[str, Any] = {'pairs': n, 'found_pct': pct(sum(found), n), 'no_node_pct': pct(why['no node near'], n),
          'other_island_pct': pct(why['islands'], n), 'one_way_pct': pct(why['one-way'], n)}
     detour = [r[1] / max(math.dist(a, b), 1e-6) for (a, b), r in zip(pairs, routes) if r[0] and math.dist(a, b) > 5]
     if detour:
         m['detour_median'] = round(float(np.median(detour)), 3)
     bits = ''.join('1' if f else '0' for f in found)
-    details, status = [], 'info'
+    details: list[str] = []
+    status = 'info'
     if ref_routes is not None and len(ref_routes) == n and any(r[0] for r in ref_routes):
         rf = [r[0] for r in ref_routes]
         ref_n = sum(rf)
@@ -328,9 +357,11 @@ def battery(name, pairs, routes, ref_routes=None, max_loss=2.0):
     return Result(status, summ, m, details, {'bits': bits, 'points': points_key(pairs)})
 
 
-def merge(results, names):
+def merge(results: Sequence[Result], names: Iterable[str]) -> Result:
     """One Result of several batteries: metrics prefixed with the battery's name, the worst status."""
-    m, details, data = {}, [], {}
+    m: dict[str, Any] = {}
+    details: list[str] = []
+    data: dict[str, Any] = {}
     for name, r in zip(names, results):
         m.update({f'{name}.{k}': v for k, v in r.metrics.items()})
         details += [f'{name}: {d}' for d in r.details]
@@ -340,7 +371,8 @@ def merge(results, names):
 
 # ------------------------------------------------------------------------------------------------ orders
 
-def orders(nav, points, on_area, reference=None, baseline=False):
+def orders(nav: navdata.NavData, points: Sequence[Point], on_area: Callable[[Any], object],
+           reference: Mapping[str, Any] | None = None, baseline: bool = False) -> Result:
     """points: [Point] of AI orders and patrol waypoints; on_area(pos) -> bool (ordercheck.PathData.on_area).
     reference: the reference file's orders result data (its 'near' bits): an order near a node there and not here
     fails; without one, every order must have a node near it."""
@@ -351,7 +383,7 @@ def orders(nav, points, on_area, reference=None, baseline=False):
     area = [bool(on_area(p.pos)) for p in points]
     big = max((i.nodes for i in nav.islands), default=0)
     large = [n is not None and nav.islands[int(nav.node_island[n])].nodes >= 0.25 * big for n, _ in js]
-    m = {'orders': len(points), 'near_node_pct': pct(sum(near), len(points)), 'on_area_pct': pct(sum(area), len(points)),
+    m: dict[str, Any] = {'orders': len(points), 'near_node_pct': pct(sum(near), len(points)), 'on_area_pct': pct(sum(area), len(points)),
          'in_large_island_pct': pct(sum(large), len(points))}
     details = [f'no route node within 15 m of {p.label()} ({near_text(d)})' for (n, d), p in zip(js, points) if n is None]
     details += [f'not on an area: {p.label()}' for p, a, nn in zip(points, area, near) if not a and nn]
@@ -372,11 +404,12 @@ def orders(nav, points, on_area, reference=None, baseline=False):
 
 # ------------------------------------------------------------------------------------------------ sector offsets
 
-def sector_offsets(sectors):
+def sector_offsets(sectors: Iterable[hpdtool.Sector]) -> tuple[tuple[int, int], tuple[float, float]] | None:
     """((x, z), (share x, share z)) from a file's sectors (hpdtool.Sector: id 0xXXYY, bounds minX, maxX, minY, maxY,
     minZ, maxZ): per sector floor(centre / 100) - its grid id, the most common value (OPFOR's
     src/tools/onslaught/apply_sector_offsets.py; reproduces all 27 shipped PC assets). None without sectors."""
-    cx, cz = Counter(), Counter()
+    cx: Counter[int] = Counter()
+    cz: Counter[int] = Counter()
     for s in sectors:
         b = s.bounds
         cx[math.floor((b[0] + b[1]) / 200) - (s.id >> 8)] += 1
@@ -388,13 +421,14 @@ def sector_offsets(sectors):
     return (x, z), (nx / n, nz / n)
 
 
-def offsets(implied, asset, kind='Infantry'):
+def offsets(implied: tuple[tuple[int, int], tuple[float, float]] | None, asset: Sequence[float] | str | None,
+            kind: str = 'Infantry') -> Result:
     """implied: sector_offsets() of the file; asset: (x, z) of the level's SectorOffsets asset, or None when the level
     has none, or 'unread' (present, values not readable)."""
     if implied is None:
         return Result('skip', 'no sectors', {})
     (x, z), (ax, az) = implied
-    m = {'implied_x': x, 'implied_z': z, 'agreement_pct': pct(min(ax, az), 1)}
+    m: dict[str, Any] = {'implied_x': x, 'implied_z': z, 'agreement_pct': pct(min(ax, az), 1)}
     if min(ax, az) < MIN_AGREEMENT:
         return Result('warn', f'sector ids disagree ({ax:.0%} / {az:.0%} of sectors give {x},{z})', m)
     if asset is None:

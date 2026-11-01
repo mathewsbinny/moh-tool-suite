@@ -72,6 +72,7 @@ def _offsets_xml(level_dir):
 
 
 def sector_offsets(path):
+    """The (XOffset, ZOffset) of a SectorOffsets XML file, or None when there is no file or it holds no offsets."""
     if not path:
         return None
     t = open(path, encoding='utf-8', errors='replace').read()
@@ -185,6 +186,8 @@ class NavIndex:
         return round(best[0], 2), best[1], self.size[isl], isl == 0
 
     def has_ground(self, p, r=0.6, dy=1.5):
+        """True when a ground cell lies within r metres of p on the xz plane and less than dy metres from its
+        height."""
         return any(math.hypot(self.nav.cell_xz[k, 0] - p[0], self.nav.cell_xz[k, 1] - p[2]) <= r and abs(self.nav.cell_y[k] - p[1]) < dy
                    for k in self._near(self.cells, p[0], p[2], r))
 
@@ -223,6 +226,7 @@ def reference_report(target, source_spec, opfor, candidate=None):
 
 
 def default_candidate(opfor, lv):
+    """The level's NavKit build (work\\navkit\\<lv>\\pathdata.hpd), or None when there is none."""
     p = os.path.join(opfor, 'work', 'navkit', lv, 'pathdata.hpd')
     return p if os.path.isfile(p) else None
 
@@ -259,6 +263,7 @@ def anomalies(nav, layer):
 
 
 def anomaly_report(target, opfor, candidate=None, xml=None):
+    """The anomaly report of the level's NavKit build against its own AI layer, with the count of each kind."""
     cand = candidate or default_candidate(opfor, target)
     if not cand:
         raise FileNotFoundError(f'{target}: no NavKit build (work\\navkit\\{target}\\pathdata.hpd)')
@@ -271,6 +276,8 @@ def anomaly_report(target, opfor, candidate=None, xml=None):
 
 
 def main(argv):
+    """The command line: writes the reference report (--reference) or the anomaly report (--anomalies) of a level as
+    JSON; returns the exit code."""
     opts, args, k = {}, [], 1
     while k < len(argv):
         if argv[k].startswith('--') and k + 1 < len(argv) and not argv[k + 1].startswith('--'):

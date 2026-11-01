@@ -12,6 +12,8 @@ Two sources, on purpose:
     after a level was prepared (ONS_MP_002's templates and assets, 2026-10-21), so the work copy can be out of date.
     A work copy that differs from the game's level partition is reported (re-prepare: navkit.py prepare <level>).
 """
+from __future__ import annotations
+
 import glob
 import hashlib
 import json
@@ -19,10 +21,19 @@ import os
 import struct
 import sys
 import zlib
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional, cast
 
 from .checks import Point
+
+if TYPE_CHECKING:
+    from mohcore import dbx, level
+    from mohcore.terrain import Heightfield
+    from mohcore.water import Water
+
+Log = Callable[..., object]
+Asset = tuple[int, int] | str | None    # a SectorOffsets asset: (x, z), 'unread' (present, values not read), None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SUITE = os.path.abspath(os.path.join(HERE, '..', '..'))
@@ -56,18 +67,18 @@ class LevelInfo:
     has_ai: Optional[bool] = None
     spawners: List[Spawner] = field(default_factory=list)
     area_orders: int = 0
-    load_set: List[tuple] = field(default_factory=list)      # (target as package.mft writes it, path, exists)
-    entries: dict = field(default_factory=dict)              # bundle path -> set of lower-case entry names
-    assets: dict = field(default_factory=dict)               # 'Infantry' / 'Vehicle' -> (x, z), None (absent), 'unread'
-    template_refs: dict = field(default_factory=dict)        # template partition -> [partitions it refers to]
+    load_set: List[tuple[str, str, bool]] = field(default_factory=list)      # (target as package.mft writes it, path, exists)
+    entries: dict[str, set[str]] = field(default_factory=dict)              # bundle path -> set of lower-case entry names
+    assets: dict[str, Asset] = field(default_factory=dict)  # 'Infantry' / 'Vehicle' -> (x, z), None (absent), 'unread'
+    template_refs: dict[str, list[str] | None] = field(default_factory=dict)   # template partition -> [partitions it refers to]
     installed: Optional[str] = None                          # the path data the game loads (infantry), or None
     notes: List[str] = field(default_factory=list)
     level_source: str = ''                                   # bundle the AI layer was read from
     level_partition_sha1: Optional[str] = None
-    heightfield: Optional[object] = None                     # terrain.Heightfield, for the ground classes
-    water: Optional[object] = None                           # water.Water
+    heightfield: Optional[Heightfield] = None                # terrain.Heightfield, for the ground classes
+    water: Optional[Water] = None                            # water.Water
 
-    def in_load_set(self, partition):
+    def in_load_set(self, partition: str) -> str | None:
         """The first load-set bundle holding <partition>.dbx (lower-case match), or None."""
         name = partition.lower() + '.dbx'
         for _t, path, ok in self.load_set:
@@ -78,12 +89,12 @@ class LevelInfo:
 
 # ------------------------------------------------------------------------------------------------ caches
 
-def _stat_key(path):
+def _stat_key(path: str) -> str:
     st = os.stat(path)
     return hashlib.sha1(f'{os.path.abspath(path).lower()}|{st.st_size}|{st.st_mtime_ns}'.encode()).hexdigest()[:16]
 
 
-def _save(cp, data):
+def _save(cp: str, data: bytes | object) -> None:
     """A cache entry written whole or not at all (a temporary file, then os.replace, as runs.save): entries are keyed
     on the bundle's state, so a cut-off one would otherwise be read for as long as the bundle is unchanged."""
     os.makedirs(os.path.dirname(cp), exist_ok=True)
@@ -93,7 +104,8 @@ def _save(cp, data):
     os.replace(tmp, cp)
 
 
-def bundle_names(path, cache_dir):
+def bundle_names(path: str, cache_dir: str | None) -> set[str]:
+    """The lower-case entry names of a bundle, cached per bundle state."""
     from mohcore import fbrb
     if cache_dir:
         cp = os.path.join(cache_dir, 'bundles', _stat_key(path) + '.names.json')
@@ -105,13 +117,14 @@ def bundle_names(path, cache_dir):
     return names
 
 
-def bundle_read(path, wanted, cache_dir):
+def bundle_read(path: str, wanted: Iterable[str], cache_dir: str | None) -> dict[str, bytes]:
     """{name: bytes} of entries (names as the bundle writes them), cached per bundle state and entry."""
     from mohcore import fbrb
-    out, need = {}, []
+    out: dict[str, bytes] = {}
+    need: list[str] = []
     key = _stat_key(path) if cache_dir else None
     for n in wanted:
-        cp = os.path.join(cache_dir, 'bundles', key, n.replace('/', '__')) if cache_dir else None
+        cp = os.path.join(cache_dir, 'bundles', cast(str, key), n.replace('/', '__')) if cache_dir else None
         if cp and os.path.isfile(cp):
             out[n] = open(cp, 'rb').read()
         else:
@@ -121,20 +134,20 @@ def bundle_read(path, wanted, cache_dir):
         for n, b in got.items():
             out[n] = b
             if cache_dir:
-                _save(os.path.join(cache_dir, 'bundles', key, n.replace('/', '__')), b)
+                _save(os.path.join(cache_dir, 'bundles', cast(str, key), n.replace('/', '__')), b)     # set with cache_dir
     return out
 
 
 # ------------------------------------------------------------------------------------------------ game copy
 
-def bundle_path(root, target):
+def bundle_path(root: str, target: str) -> str:
     """package.mft's 'game:levels/x/level-00.fbrb' or 'game:patch/levels/x/...' as a file path (under MP\\dist\\win32)."""
     from mohcore import gamecopy
     _, _, rel = target.partition(':')
     return os.path.join(gamecopy.GameCopy(root).dist, *rel.split('/'))
 
 
-def load_set(root, lv, mft=None):
+def load_set(root: str, lv: str, mft: str | None = None) -> list[tuple[str, str, bool]]:
     """[(target, path, exists)]: the bundles that load with the level's level-00.fbrb (its BundleSource block in
     MP\\dist\\win32\\package.mft: the patch's copy, the level's own, its map's common_mp_<nn>, common_mp); [] when
     there is no block."""
@@ -144,7 +157,7 @@ def load_set(root, lv, mft=None):
     src = f'BundleSource game:levels/{lv}/level-00.fbrb'.lower()
     for i, line in enumerate(lines):
         if line.strip().lower() == src:
-            out = []
+            out: list[tuple[str, str, bool]] = []
             for x in lines[i + 1:]:
                 if not x.startswith('BundleTarget '):
                     break
@@ -155,7 +168,7 @@ def load_set(root, lv, mft=None):
     return []
 
 
-def _refs(el, out):
+def _refs(el: dbx.Element, out: set[str]) -> None:
     for c in el.children or ():
         r = c.attr('ref')
         if r and r != 'null' and '/' in r:
@@ -164,31 +177,32 @@ def _refs(el, out):
             _refs(c, out)
 
 
-def _ref_partition(el, name):
+def _ref_partition(el: dbx.Element, name: str) -> str | None:
     c = el.child(name)
     r = c.attr('ref') if c is not None else None
     return r.rsplit('/', 1)[0].lower() if r and r != 'null' and '/' in r else None
 
 
-def ai_layer(info, data):
+def ai_layer(info: LevelInfo, data: bytes) -> None:
     """HasAI, AI spawners and AreaOrder count from the level partition's bytes (binary DBX)."""
     from mohcore import dbx
     f = dbx.parse(data)
-    teams = {'Team1': 1, 'Team2': 2, 'TeamNeutral': 0}
+    teams: dict[str | None, int] = {'Team1': 1, 'Team2': 2, 'TeamNeutral': 0}
     for el in f.instances:
         t = (el.attr('type') or '').rsplit('.', 1)[-1]
         if t == 'LevelData':
             c = el.child('HasAI')
             info.has_ai = (dbx.value(c) == 'true') if c is not None else None
         elif t == 'SoldierSpawnEntityData':
-            v = lambda n: (dbx.value(el.child(n)) if el.child(n) is not None else None)
+            v: Callable[[str], str | None] = lambda n: (dbx.value(cast('dbx.Element', el.child(n)))
+                                                        if el.child(n) is not None else None)
             info.spawners.append(Spawner(el.attr('guid') or '', v('Name') or '', teams.get(v('Team')), v('PlayerType') == 'SSAiPlayer',
                                          v('Enabled') == 'true', _ref_partition(el, 'Template'), _ref_partition(el, 'SoldierKit')))
         elif t == 'AreaOrderEntityData':
             info.area_orders += 1
 
 
-def game_level(root, lv, info, cache_dir, log):
+def game_level(root: str, lv: str, info: LevelInfo, cache_dir: str | None, log: Log) -> None:
     """The AI layer, assets and load set from the game copy's bundles."""
     from mohcore import dbx
     info.load_set = load_set(root, lv)
@@ -225,7 +239,9 @@ def game_level(root, lv, info, cache_dir, log):
         try:
             real = next(n for n in _real_names(holder, cache_dir) if n.lower() == name)
             el = dbx.parse(bundle_read(holder, [real], cache_dir)[real]).instances[0]
-            info.assets[kind] = (int(dbx.value(el.child('XOffset'))), int(dbx.value(el.child('ZOffset'))))
+            # a missing child is None: dbx.value raises AttributeError on it, caught below as 'unread'
+            info.assets[kind] = (int(dbx.value(cast('dbx.Element', el.child('XOffset')))),
+                                 int(dbx.value(cast('dbx.Element', el.child('ZOffset')))))
         except (OSError, ValueError, KeyError, IndexError, StopIteration, AttributeError, struct.error,
                 zlib.error) as e:                        # present but not readable as expected (no XOffset child...)
             info.assets[kind] = 'unread'
@@ -238,7 +254,7 @@ def game_level(root, lv, info, cache_dir, log):
             continue
         try:
             real = next(n for n in _real_names(holder, cache_dir) if n.lower() == tpl + '.dbx')
-            refs = set()
+            refs: set[str] = set()
             for el in dbx.parse(bundle_read(holder, [real], cache_dir)[real]).instances:
                 _refs(el, refs)
             info.template_refs[tpl] = sorted(refs - {tpl})
@@ -250,13 +266,13 @@ def game_level(root, lv, info, cache_dir, log):
     info.installed = inst if os.path.isfile(inst) else None
 
 
-def _real_names(path, cache_dir):
+def _real_names(path: str, cache_dir: str | None) -> list[str]:
     """Entry names with their case (bundle_names keeps lower case only)."""
     from mohcore import fbrb
     if cache_dir:
         cp = os.path.join(cache_dir, 'bundles', _stat_key(path) + '.real.json')
         if os.path.isfile(cp):
-            return json.load(open(cp))
+            return cast(list[str], json.load(open(cp)))
     names = [e.name for e in fbrb.entries(path) if not e.deleted]
     if cache_dir:
         _save(cp, names)
@@ -265,7 +281,7 @@ def _real_names(path, cache_dir):
 
 # ------------------------------------------------------------------------------------------------ work copy (points)
 
-def level_xml(root, lv):
+def level_xml(root: str, lv: str) -> str | None:
     """The converted level partition NavKit's prepare wrote (Package copy first, as the game loads it), or None."""
     for b in ('pkg', 'dist'):
         for f in glob.glob(os.path.join(root, 'work', 'levels', lv, b, 'levels', '*.xml')):
@@ -274,26 +290,26 @@ def level_xml(root, lv):
     return None
 
 
-def points(root, lv, info, log):
+def points(root: str, lv: str, info: LevelInfo, log: Log) -> level.Level:
     """Spawns, AI targets and orders from the prepared level (core level.load, geometry off)."""
     from mohcore import level
     from . import classify
     import ordercheck
     try:
         lvl = level.load(lv, root, log=log, geometry=False)
-    except Exception as e:
+    except Exception as err:
         # NavKit's prepare stops on a level whose partition is only in its Package bundle (ONS_MP_005GR: its Dist
         # bundle holds MP_005's partitions); it has unpacked both bundles by then, so the loader reads them
         if not os.path.isdir(os.path.join(root, 'work', 'levels', lv, 'dist')):
             raise
-        info.notes.append(f'NavKit\'s prepare stopped ({e}); the level was read from its unpacked bundles')
+        info.notes.append(f'NavKit\'s prepare stopped ({err}); the level was read from its unpacked bundles')
         lvl = level.load(lv, root, log=log, geometry=False)
     info.name = info.name or lvl.name
-    seen = set()
+    seen: set[tuple[str, int, int, int]] = set()
     spawn_cls = classify.spawn_classes(lvl.entities, lv)
     rush_like = any(e.category == 'objective' and (e.blueprint or '').startswith('objects/objects/mpobjective') for e in lvl.entities)
 
-    def add(lst, kind, e, cls=(classify.INFANTRY, '')):
+    def add(lst: list[Point], kind: str, e: level.Entity, cls: tuple[str, str] = (classify.INFANTRY, '')) -> None:
         p = e.position
         if p is None or not any(abs(c) > 1e-3 for c in p):
             return
@@ -340,7 +356,9 @@ def points(root, lv, info, log):
     return lvl
 
 
-def gather(root, lv, cache_dir=None, log=lambda *a: None):
+def gather(root: str, lv: str, cache_dir: str | None = None, log: Log = lambda *a: None) -> LevelInfo:
+    """Everything the harness reads about a level: the AI layer, assets and load set from the game copy, then the
+    points from the prepared level."""
     info = LevelInfo(lv)
     game_level(root, lv, info, cache_dir, log)
     points(root, lv, info, log)
@@ -349,7 +367,8 @@ def gather(root, lv, cache_dir=None, log=lambda *a: None):
 
 # ------------------------------------------------------------------------------------------------ path data
 
-def pathdata_files(root, lv, which=('dice', 'navkit'), navkit_source='auto'):
+def pathdata_files(root: str, lv: str, which: Sequence[str] = ('dice', 'navkit'),
+                   navkit_source: str = 'auto') -> list[tuple[str, str]]:
     """[(key, path)] of the level's path-data files that exist:
       dice       DICE's original (navparity.reference_of: the kept .opfor-orig where NavKit's file is installed)
       installed  what the game loads now, when it is not DICE's file (a NavKit build installed)
@@ -357,7 +376,7 @@ def pathdata_files(root, lv, which=('dice', 'navkit'), navkit_source='auto'):
                  'build' (work\\navkit\\<lv>\\pathdata.hpd, navkit.py build), 'auto' (regress, else build), or a
                  path with {lv}"""
     import navparity
-    out = []
+    out: list[tuple[str, str]] = []
     from mohcore import gamecopy
     dice = navparity.reference_of(root, lv)
     inst = gamecopy.GameCopy(root).pathdata(lv)
@@ -377,7 +396,7 @@ def pathdata_files(root, lv, which=('dice', 'navkit'), navkit_source='auto'):
     return out
 
 
-def _is_dice(path):
+def _is_dice(path: str) -> bool:
     """DICE's file, not a NavKit build installed without a kept original: DICE's sectors carry 2009-2010 build dates
     (hpdtool's Sector.date, YYMMDD; DICE's PC files 2010, the console
     Onslaught files 2010); NavKit writes its build date (2026)."""
@@ -389,7 +408,8 @@ def _is_dice(path):
     return bool(f.sectors) and all(s.date < 200000 for s in f.sectors[:5])
 
 
-def sha1(path):
+def sha1(path: str) -> str:
+    """The file's SHA-1, hex."""
     h = hashlib.sha1()
     with open(path, 'rb') as fh:
         for chunk in iter(lambda: fh.read(1 << 20), b''):

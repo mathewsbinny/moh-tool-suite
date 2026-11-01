@@ -30,6 +30,7 @@ class Entry:
 
     @property
     def deleted(self) -> bool:
+        """True for a bundle's zero-byte deleted marker (nothing to read)."""
         return self.type == DELETED and self.size == 0
 
 
@@ -56,11 +57,13 @@ def _header(fh: BinaryIO) -> tuple[list[Entry], bool, int]:
 
 
 def entries(path: str) -> list[Entry]:
+    """The entries of the bundle at path, in table order."""
     with open(path, 'rb') as fh:
         return _header(fh)[0]
 
 
 def names(path: str) -> dict[str, Entry]:
+    """The bundle's entries that are not deleted markers, by lower-case name."""
     return {e.name.lower(): e for e in entries(path) if not e.deleted}
 
 

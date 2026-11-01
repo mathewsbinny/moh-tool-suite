@@ -86,6 +86,8 @@ def differences(root):
 
 
 def main(argv):
+    """The command line: prints where the game copy's soldier physics differ from NavKit's soldier; returns 1 when
+    they differ or are not unpacked."""
     if len(argv) != 2:
         print(__doc__)
         return 1

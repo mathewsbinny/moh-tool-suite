@@ -53,6 +53,7 @@ class Sector:
 
 
 def load(path):
+    """The sectors of a pathdata.hpd file as {sector id: Sector}."""
     f = hpdtool.parse(open(path, 'rb').read())
     return {s.id: Sector(s) for s in f.sectors}
 
@@ -157,6 +158,8 @@ def pieces(segs, pitch):
 
 
 def compare_sector(ref, cand):
+    """The comparison of one sector in both files: counts of cells, areas, outlines, portals, nodes, edges and costs,
+    and the cells only one has."""
     r = {'cells_ref': 0, 'cells_cand': 0, 'cells_same': 0, 'areas_ref': len(ref.mesh.areas), 'areas_cand': len(cand.mesh.areas),
          'areas_same': 0, 'areas_split': 0, 'areas_other': 0, 'outline_same': 0, 'portals_same': 0, 'borders_same': 0,
          'nodes_ref': len(ref.nodes), 'nodes_cand': len(cand.nodes), 'nodes_same': 0, 'edges_ref': len(ref.edges),
@@ -248,6 +251,7 @@ def compare_sector(ref, cand):
 # ------------------------------------------------------------------------------------------------ report
 
 def pct(a, b):
+    """a / b as a percentage; 100 when b is 0."""
     return 100.0 * a / b if b else 100.0
 
 
@@ -313,6 +317,8 @@ def diff(reference, candidate, per_sector=False, log=print, clip=None):
 
 
 def pngs(rows, R, C, out_dir, top):
+    """Writes a PNG of each of the top sectors with the most differing cells to out_dir (cells only in the reference
+    red, only in the candidate blue)."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -337,6 +343,8 @@ def pngs(rows, R, C, out_dir, top):
 
 
 def main(argv):
+    """The command line: diffs two pathdata.hpd files, optionally saving the result as JSON and sector PNGs; returns
+    the exit code."""
     args = [a for a in argv[1:] if not a.startswith('--')]
     opts = dict(zip(argv[1:], argv[2:]))
     if len(args) < 2:

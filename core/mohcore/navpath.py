@@ -38,6 +38,7 @@ class Route:
 
 
 def ground_nodes(nav: navdata.NavData) -> np.ndarray:
+    """The route nodes' positions lowered to the ground (node_pos minus Y_OFFSET)."""
     return nav.node_pos - np.array([0, navdata.Y_OFFSET, 0])
 
 
@@ -80,6 +81,8 @@ def closest_between(nav: navdata.NavData, ia: int, ib: int) -> tuple[int, int, f
 
 
 def route(nav: navdata.NavData, start: np.ndarray | list[float], end: np.ndarray | list[float]) -> Route:
+    """The cheapest route between two points over the route graph (A*), each point joined to its nearest node; a Route
+    that says why when there is none."""
     start, end = np.asarray(start, float), np.asarray(end, float)
     r = Route(False, straight=float(np.linalg.norm(end - start)))
     r.start_node, r.start_join = join(nav, start)

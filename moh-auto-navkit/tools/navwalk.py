@@ -1082,6 +1082,8 @@ def score(s: navsample.Samples, keep: np.ndarray, hpd: str, tol: float = 0.6) ->
 
 
 def main(argv: list[str]) -> int:
+    """The command line (navwalk.py score <samples.bin> <pathdata.hpd> [forbid_tris.npy]): a sampling run's walkable
+    surfaces scored against a reference pathdata.hpd. Returns the exit code."""
     if len(argv) < 4 or argv[1] != 'score':
         print(__doc__)
         return 1

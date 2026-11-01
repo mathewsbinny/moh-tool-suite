@@ -272,13 +272,16 @@ class Geometry:
         self.vt = vt if vt is not None else kind.copy()
 
     def select(self, mask):
+        """A new Geometry with the triangles where mask is True."""
         return Geometry(self.tris[mask], self.kind[mask], self.solid[mask], self.body[mask], self.inst[mask], self.names,
                         self.off[mask], self.vt[mask])
 
     def bodies(self, letters):
+        """The triangles of the bodies whose one-letter codes are in letters."""
         return self.select(np.isin(self.body, np.frombuffer(letters.encode(), np.uint8)))
 
     def intact(self):
+        """The triangles of intact parts only (no destroyed-state parts)."""
         return self.select(~self.off)
 
 
@@ -452,9 +455,12 @@ class Grid:
 
     @property
     def ncols(self):
+        """The number of columns (nx * nz)."""
         return self.nx * self.nz
 
     def xz(self, cols):
+        """The world x and z of the column indices cols (row-major, x fastest), at the grid's minimum corner plus
+        pitch steps."""
         return (self.min_x + (cols % self.nx) * self.pitch, self.min_z + (cols // self.nx) * self.pitch)
 
 
@@ -678,6 +684,7 @@ class Intervals:
         return len(self.lo)
 
     def contains(self, col, y):
+        """Per query, True where height y lies inside one of column col's intervals (vectorised over arrays)."""
         if not len(self.lo):
             return np.zeros(len(col), bool)
         q = col * self.K + (y + self.off)
@@ -1088,19 +1095,24 @@ def compare(a, b, tol=0.1, slope=mohsoldier.SLOPE, log=print, both_only=True):
 
 # --- level driver ----------------------------------------------------------------------------------------------------
 def out_dir(root):
+    """The folder the offline samples are written to: work\\navsample_offline."""
     return os.path.join(root, 'work', 'navsample_offline')
 
 
 def sample_path(root, lv, suffix=''):
+    """The path of a level's offline sample file (suffix tells variants apart)."""
     return os.path.join(out_dir(root), f'{lv}_navkit{suffix}.bin')
 
 
 def common_bases(root, lv=None):
+    """The shared asset folders the level's objects are read from (navkit.common_dirs)."""
     import navkit
     return navkit.common_dirs(root, lv)
 
 
 def load_level(root, lv, box=None, log=print, bodies=None):
+    """The level's collision geometry (bodies filtered, intact parts only when INTACT_ONLY) and its height field, as
+    (geometry, heightfield)."""
     from mohcore import level as levelmod
     L = os.path.join(root, 'work', 'levels', lv)
     geom = level_geometry(L, common_bases(root, lv), log=log, box=box)
@@ -1446,6 +1458,7 @@ def _opt(args, name, conv=str):
 
 
 def main(argv):
+    """The command line: compare, parity, stockmp, sample, validate, build, check or all; returns the exit code."""
     args = list(argv[1:])
     if not args or args[0] in ('-h', '--help'):
         print(__doc__)

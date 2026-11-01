@@ -67,7 +67,8 @@ def main(argv):
     check(navsample_offline.RADIUS == ms.RADIUS and navsample_offline.HEIGHT == ms.HEIGHT and
           navsample_offline.CAP_BOTTOMS == {'': ms.STEP, '_hi': ms.HIGH_STEP}, 'the sampler uses the soldier')
     check(navbuild.RADIUS == ms.RADIUS and navbuild.Y_OFFSET == ms.Y_OFFSET and navbuild.MAX_WATER_DEPTH == ms.WATER_DEPTH
-          and navbuild.LINK_STEP == ms.link_step(0.8), 'the build uses the soldier')
+          and navbuild.NORMAL.link_step == ms.link_step(0.8)
+          and navbuild.DETAILED.link_step == ms.link_step(0.2), 'the build uses the soldier')
     check(navwalk.HEADROOM_BAND[1] == ms.HEADROOM and navwalk.OUTLINE_Y_OFFSET == ms.Y_OFFSET,
           'walkability uses the soldier')
     check(navsample_offline.BODIES == 'hcdE', "collision layers: h, c, detail, and e where it is an asset's only one")

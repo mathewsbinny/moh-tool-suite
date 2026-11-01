@@ -191,6 +191,8 @@ def diagnose(ref, cand, heightfield=None):
 
 
 def render(path, cells, edges, portals, only, region, title):
+    """Writes a PNG at path of the cells, boundary edges and portals inside region (minX, minZ, maxX, maxZ) of the xz
+    plane."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -251,6 +253,7 @@ def render(path, cells, edges, portals, only, region, title):
 
 
 def export(out, cells, edges, portals):
+    """Writes the cells, boundary edges and portals as CSV files in the folder out."""
     from mohcore import navdata
     G = navdata.GRID
     with open(os.path.join(out, 'cells.csv'), 'w', newline='') as fh:
@@ -279,6 +282,8 @@ def export(out, cells, edges, portals):
 
 
 def worst_square(edges, size=100.0):
+    """The size-metre square (minX, minZ, maxX, maxZ) with the most missing or extra boundary edges, or None when
+    there are none."""
     from mohcore import navdata
     G = navdata.GRID
     bad = edges['mid'][(edges['kind'] == 'missing') | (edges['kind'] == 'extra')].astype(float) / 2 * G
@@ -290,6 +295,8 @@ def worst_square(edges, size=100.0):
 
 
 def main(argv):
+    """The command line: one level's boundary diagnostic against DICE's data, written as PNGs, CSVs and summary.json;
+    returns the exit code."""
     args = argv[1:]
     opt = lambda k, d=None: args[args.index(k) + 1] if k in args else d
     pos = [a for k, a in enumerate(args) if not a.startswith('--') and (k == 0 or not args[k - 1].startswith('--'))]

@@ -124,6 +124,8 @@ class Hub:
         (messagebox.showerror if kind == 'error' else messagebox.showwarning)(title, text, parent=self.root)
 
     def check_libraries(self):
+        """Warns in the log and in a dialog, with the pip command to fix it, when a library the tools use is not
+        installed."""
         import importlib.util
         missing = [(name, used) for name, used in LIBRARIES if importlib.util.find_spec(name) is None]
         if not missing:
@@ -175,6 +177,8 @@ class Hub:
         threading.Thread(target=self.follow, args=(p, log.name, label), daemon=True).start()
 
     def follow(self, proc, path, label):
+        """Follows a detached tool's output file into the log until the process ends, then queues its exit code and
+        removes the file."""
         import time
         with open(path, encoding='utf-8', errors='replace') as fh:
             while True:
@@ -198,6 +202,8 @@ class Hub:
             pass
 
     def reader(self, proc, label, main):
+        """Copies a tool's piped output into the log line by line, keeping its last 12 lines, then queues its exit
+        code."""
         for line in proc.stdout:
             self.lines.put(line)
             tail = self.tails.setdefault(label, [])
@@ -207,6 +213,8 @@ class Hub:
         self.lines.put(('done', label, code, main))
 
     def pump(self):
+        """Moves queued output and exit notices from the reader threads into the log on the Tk thread; runs itself
+        again every 100 ms."""
         try:
             while True:
                 item = self.lines.get_nowait()
@@ -256,10 +264,12 @@ class Hub:
             errors.logger().info('stopped by the user')
 
     def write(self, s):
+        """Appends text to the log and scrolls to it."""
         self.text.insert('end', s)
         self.text.see('end')
 
     def form(self, title, help_text):
+        """A new tab with its help text on top; returns the tab's frame for the rows below."""
         f = ttk.Frame(self.tabs, padding=10)
         self.tabs.add(f, text=title)
         ttk.Label(f, text=help_text, wraplength=820, foreground='#444').grid(row=0, column=0, columnspan=4, sticky='w', pady=(0, 8))
@@ -267,6 +277,8 @@ class Hub:
         return f
 
     def file_row(self, f, row, label, var, kind='open', types=(('All files', '*.*'),)):
+        """A labelled path entry with a Browse button that picks a file to open, a file to save or a folder (kind
+        'open', 'save' or 'dir')."""
         ttk.Label(f, text=label).grid(row=row, column=0, sticky='w', pady=2)
         ttk.Entry(f, textvariable=var).grid(row=row, column=1, sticky='we', padx=6)
 
@@ -283,6 +295,8 @@ class Hub:
 
     @staticmethod
     def need(*values):
+        """True when every (name, variable) pair has a value; otherwise asks for the missing ones in a dialog and
+        returns False."""
         missing = [name for name, v in values if not v.get().strip()]
         if missing:
             messagebox.showwarning('MOH Tool Suite', 'Choose ' + ' and '.join(missing) + ' first.')
@@ -291,6 +305,8 @@ class Hub:
 
     # --- Levels: the 3D tools -----------------------------------------------------------------------
     def tab_levels(self):
+        """The Levels tab: the level list with its preparation and navigation-data state, and the buttons that open a
+        level."""
         f = self.form('Levels', 'Pick a level, then open it in the Map Inspector (the level in 3D: every object, its '
                                 'properties and links; measuring) or in the Navigation Studio (the AI\'s navigation '
                                 'data: NavKit\'s and DICE\'s, islands, path test, edits). A level is unpacked the first '
@@ -319,6 +335,8 @@ class Hub:
         self.fill_levels()
 
     def fill_levels(self):
+        """Refills the level list from the game copy: prepared or not, DICE path data, NavKit builds and the number of
+        saved edits."""
         self.tree.delete(*self.tree.get_children())
         if self.pr is None:
             self.tree.insert('', 'end', text='(no game copy found)', values=('', '', '', ''))
@@ -342,6 +360,7 @@ class Hub:
                 'yes' if self.pr.dice_pathdata(lv) else '-', 'yes' if builds else '-', n_edits or '-'))
 
     def chosen_level(self):
+        """The level chosen in the list, or None (with a hint) when none is."""
         sel = self.tree.selection()
         if not sel or self.pr is None:
             messagebox.showinfo('MOH Tool Suite', 'Choose a level in the list first.')
@@ -349,6 +368,7 @@ class Hub:
         return sel[0]
 
     def open_3d(self, which):
+        """Opens the chosen level in the Map Inspector or the Navigation Studio ('inspector' or 'studio')."""
         lv = self.chosen_level()
         if not lv:
             return
@@ -359,11 +379,13 @@ class Hub:
         self.launch(args, f'{name}: {lv} (the window opens when the level is loaded)')
 
     def prepare(self):
+        """Prepares (unpacks) the chosen level with NavKit."""
         lv = self.chosen_level()
         if lv:
             self.run([PYTHON, SCRIPTS['navkit'], 'prepare', lv], f'Levels: prepare {lv}')
 
     def open_level_folder(self):
+        """Opens the chosen level's work folder in Explorer, or the work folder when the level is not prepared yet."""
         lv = self.chosen_level()
         if lv:
             d = os.path.join(self.pr.work, 'levels', lv)
@@ -371,6 +393,7 @@ class Hub:
 
     # --- Bundles: FbrbTool --------------------------------------------------------------------------
     def tab_bundles(self):
+        """The Bundles tab: list, unpack and pack .fbrb bundles with FbrbTool."""
         f = self.form('Bundles', 'Look inside the game\'s .fbrb bundles, unpack them to a folder, or pack an unpacked '
                                  'folder back into a bundle (FbrbTool). Packing needs the folder\'s fbrb.manifest, '
                                  'which unpacking writes.')
@@ -392,6 +415,7 @@ class Hub:
 
     # --- Level diff ---------------------------------------------------------------------------------
     def tab_diff(self):
+        """The Level diff tab: two .dbx files and the LevelDiff options."""
         f = self.form('Level diff', 'Compare two binary .dbx files (two builds of a level, or any partition) instance by '
                                     'instance: what was added, removed or changed, field by field (LevelDiff).')
         self.ld_a, self.ld_b, self.ld_type, self.ld_ignore, self.ld_json = (tk.StringVar() for _ in range(5))
@@ -412,6 +436,8 @@ class Hub:
         ttk.Button(f, text='Compare', command=self.diff).grid(row=7, column=1, sticky='w', pady=6)
 
     def diff(self):
+        """Runs LevelDiff on the two chosen files with the chosen options; exit code 1 (the files differ) counts as
+        done."""
         if not self.need(('file A', self.ld_a), ('file B', self.ld_b)):
             return
         args = [tool('leveldiff'), self.ld_a.get(), self.ld_b.get()]
@@ -432,6 +458,7 @@ class Hub:
 
     # --- Crash reader -------------------------------------------------------------------------------
     def tab_crash(self):
+        """The Crash reader tab: an optional crash report and game log."""
         f = self.form('Crash reader', 'After the game crashes, this turns its crashreport.xml into something you can act '
                                       'on: where it crashed (function names), the code there, null pointers, the call '
                                       'stack, hints for known crash causes and the log lines before the crash. Leave the '
@@ -444,6 +471,7 @@ class Hub:
         ttk.Button(f, text='Read the crash report', command=self.crash).grid(row=4, column=1, sticky='w', pady=6)
 
     def crash(self):
+        """Runs the crash reader on the chosen report and log, or on the newest report when none is chosen."""
         args = [PYTHON, SCRIPTS['crash']]
         if self.cr_file.get().strip():
             args.append(self.cr_file.get().strip())
@@ -455,6 +483,7 @@ class Hub:
 
     # --- Xbox files ---------------------------------------------------------------------------------
     def tab_xbox(self):
+        """The Xbox files tab: info, list and extract for STFS packages and disc images."""
         f = self.form('Xbox files', 'Read your own Xbox 360 files (read-only): content packages such as the game\'s '
                                     'DLC updates (STFS), and disc images (.iso). List what is inside, or extract it - all, '
                                     'or only paths containing the filter text.')
@@ -475,6 +504,8 @@ class Hub:
         ttk.Button(b, text='Extract', command=lambda: self.xbox('extract')).pack(side='left')
 
     def xbox(self, cmd):
+        """Runs the STFS or ISO reader's command ('info', 'list' or 'extract') on the chosen file, with the filter
+        when one is set."""
         if not self.need(('a file', self.xb_file)):
             return
         iso = self.xb_kind.get() == 'iso'
@@ -491,6 +522,7 @@ class Hub:
 
     # --- Tests --------------------------------------------------------------------------------------
     def tab_tests(self):
+        """The Tests tab: runs the suite's tests in the chosen tier, or lists what would run."""
         f = self.form('Tests', 'Check that the tools work on this PC: quick (about a minute, no game data), game (your '
                                'game copy, about 15 minutes) or full (everything, about 90 minutes). One line per test; '
                                'a failure shows its output at the end.')
@@ -508,6 +540,7 @@ class Hub:
 
     # --- More tools ---------------------------------------------------------------------------------
     def tab_more(self):
+        """The More tools tab: buttons that open the tools with windows of their own and the suite folder."""
         f = self.form('More tools', 'Tools with windows of their own.')
         rows = [('DbxEditGUI', 'View, edit, check and repair binary .dbx files; XML export and import.',
                  lambda: self.launch([tool('dbxgui')], 'DbxEditGUI')),
@@ -529,6 +562,7 @@ def dpi_aware():
 
 
 def main():
+    """Starts the suite's window, with logging and the error guard."""
     errors.setup('suite')
     dpi_aware()
     with errors.guard():

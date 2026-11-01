@@ -327,7 +327,6 @@ def main(argv):
         return navsample.Samples(0.2, 0.0, 0.0, nx, nz, 50.0, -10.0, no.RADIUS, 0.3, no.HEIGHT, no.RAY_RADIUS,
                                  np.arange(n + 1, dtype=np.int64), np.zeros(n, np.float32), normal,
                                  np.full(n, flags, np.uint8), hit)
-    navbuild.set_pitch(0.8)
     with tempfile.TemporaryDirectory() as d:
         paths = {k: os.path.join(d, k + '.bin') for k in ('fine', 'fine_hi', 'other_hi', 'blocked')}
         no.write(paths['fine'], flat_run(17, 13))
@@ -335,11 +334,11 @@ def main(argv):
         no.write(paths['other_hi'], flat_run(21, 13))
         no.write(paths['blocked'], flat_run(17, 13, navsample.BLOCKED))
         sc = navwalk.coarse(navsample.load(paths['fine'])[0])
-        hi = navbuild.on_grid(paths['fine_hi'], sc, 'high-capsule')
+        hi = navbuild.on_grid(paths['fine_hi'], sc, 'high-capsule', navbuild.NORMAL)
         check(abs(hi.pitch - 0.8) < 1e-6 and (hi.nx, hi.nz) == (sc.nx, sc.nz) == (5, 4) and len(hi.y) == len(sc.y),
               f'a fine high-capsule run coarsened with the samples: {hi.nx} x {hi.nz} at {hi.pitch:g}')
         try:
-            navbuild.on_grid(paths['other_hi'], sc, 'high-capsule')
+            navbuild.on_grid(paths['other_hi'], sc, 'high-capsule', navbuild.NORMAL)
             check(False, 'a high-capsule run on another grid: refused')
         except ValueError as e:
             check('not on the grid of the samples' in str(e), f'a high-capsule run on another grid: refused ({e})')

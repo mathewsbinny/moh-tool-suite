@@ -42,10 +42,12 @@ def author() -> str:
 
 
 def now() -> str:
+    """The local time to the second in ISO 8601 form, as recorded with edits."""
     return datetime.datetime.now().replace(microsecond=0).isoformat()
 
 
 def sha1_of(path: str) -> str:
+    """The SHA-1 of the file at path as hex, read in 1 MiB chunks."""
     h = hashlib.sha1()
     with open(path, 'rb') as f:
         for chunk in iter(lambda: f.read(1 << 20), b''):
@@ -54,16 +56,19 @@ def sha1_of(path: str) -> str:
 
 
 def polygon(points: Iterable[Sequence[float]], y_low: float, y_high: float) -> dict[str, list]:
+    """A polygon region: (x, z) points and the y range from y_low to y_high, rounded to millimetres."""
     return {'polygon': [[round(float(x), 3), round(float(z), 3)] for x, z in points], 'y': [round(float(y_low), 3), round(float(y_high), 3)]}
 
 
 def box(x0: float, y0: float, z0: float, x1: float, y1: float, z1: float) -> dict[str, list[float]]:
+    """A box region from two opposite corners in any order, rounded to millimetres."""
     lo = [min(x0, x1), min(y0, y1), min(z0, z1)]
     hi = [max(x0, x1), max(y0, y1), max(z0, z1)]
     return {'box': [round(float(v), 3) for v in lo + hi]}
 
 
 def point(p: Iterable[float]) -> list[float]:
+    """A position as a list of floats rounded to millimetres."""
     return [round(float(v), 3) for v in p]
 
 
@@ -132,18 +137,24 @@ class NavTune:
 
     @classmethod
     def new(cls, level: str, base_path: str, kind: str = 'navkit') -> 'NavTune':
+        """Empty edits for level on the path data at base_path (recorded by kind and SHA-1); raises ValueError for an
+        unknown kind."""
         if kind not in KINDS:
             raise ValueError(f'base kind must be one of {KINDS}')
         return cls(level, {'kind': kind, 'sha1': sha1_of(base_path), 'file': os.path.basename(base_path)})
 
     @property
     def kind(self) -> str:
+        """The kind of path data the edits are made on: 'navkit' or 'dice'."""
         return self.base.get('kind', 'navkit')
 
     def allowed(self, name: str) -> bool:
+        """True when an operation called name may be made on this kind of base (DICE's data takes no region edits)."""
         return not (self.kind == 'dice' and name in REGION_OPS)
 
     def add(self, o: dict[str, Any]) -> dict[str, Any]:
+        """Appends a checked operation (undoable) and returns it; raises ValueError with its problems when it is not
+        valid."""
         problems = validate(o, self.kind)
         if problems:
             raise ValueError('; '.join(problems))
@@ -154,6 +165,7 @@ class NavTune:
         return o
 
     def remove(self, index: int) -> dict[str, Any]:
+        """Removes the operation at index (undoable) and returns it."""
         o = self.operations.pop(index)
         self.undo_stack.append(('remove', index, o))
         self.redo_stack.clear()
@@ -187,6 +199,7 @@ class NavTune:
         return self._apply(action, reverse=True)
 
     def redo(self) -> dict[str, Any] | None:
+        """Redoes the last undone add or remove; returns its operation (None: nothing to redo)."""
         if not self.redo_stack:
             return None
         action = self.redo_stack.pop()
@@ -199,10 +212,13 @@ class NavTune:
         return bool(self.base.get('sha1')) and sha1_of(base_path) != self.base['sha1']
 
     def to_json(self) -> dict[str, Any]:
+        """The side file's content as a JSON-ready dict (the operations deep-copied)."""
         return {'format': FORMAT, 'version': VERSION, 'level': self.level, 'base': self.base,
                 'operations': copy.deepcopy(self.operations)}
 
     def save(self, path: str) -> None:
+        """Writes the side file to path through a temporary file, so it is never half written, and marks the edits
+        saved."""
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         tmp = path + '.tmp'
         with open(tmp, 'w', encoding='utf-8', newline='\n') as f:
@@ -212,6 +228,7 @@ class NavTune:
         self.dirty = False
 
     def summary(self, k: int) -> str:
+        """A one-line description of operation k: its kind, where it is, and who made it when."""
         o = self.operations[k]
         name = o['op']
         if 'region' in o:
@@ -228,10 +245,13 @@ class NavTune:
 
 
 def fmt(p: Iterable[float]) -> str:
+    """A position as '(x, y, z)' with one decimal."""
     return '(' + ', '.join(f'{v:.1f}' for v in p) + ')'
 
 
 def load(path: str) -> NavTune:
+    """Reads and checks a side file; raises ValueError when it is not one, is from a newer version, or holds invalid
+    operations."""
     d = json.load(open(path, encoding='utf-8'))
     if d.get('format') != FORMAT:
         raise ValueError(f'{path}: not a navtune side file')

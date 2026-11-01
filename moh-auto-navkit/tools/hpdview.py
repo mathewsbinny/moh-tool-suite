@@ -40,6 +40,8 @@ def segs_from_lists(m, o, count_off, table_off):
 
 
 def main():
+    """The command line: draws one sector (by index or 0x id) of a pathdata.hpd top-down to a PNG, optionally zoomed
+    to an x/z range."""
     path, which, out = sys.argv[1], sys.argv[2], sys.argv[3]
     f = hpdtool.parse(open(path, 'rb').read())
     if which.startswith('0x'):
