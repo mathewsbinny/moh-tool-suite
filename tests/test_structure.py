@@ -66,7 +66,7 @@ def public_functions(tree: ast.Module) -> list[ast.FunctionDef | ast.AsyncFuncti
 
 def file_problems(path: str, typed: set[str]) -> list[str]:
     """The rule breaks in one file, each as 'path:line: what'."""
-    with open(os.path.join(SUITE, path), encoding='utf-8') as f:
+    with open(os.path.join(SUITE, path), encoding='utf-8-sig') as f:
         tree = ast.parse(f.read(), path)
     test = is_test(path)
     limit = MAX_TEST_LINES if test else MAX_LINES

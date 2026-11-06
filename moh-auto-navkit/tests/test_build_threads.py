@@ -1,4 +1,4 @@
-﻿r"""NavKit builds are thread-safe (navbuild.build: the grid settings in a frozen navbuild.Pitch, the build's own data in
+r"""NavKit builds are thread-safe (navbuild.build: the grid settings in a frozen navbuild.Pitch, the build's own data in
 a BuildState): two levels built at once in two threads come out byte for byte as each built alone - the .hpd, its
 .cells.npz and the build's log lines. Before 2026-11-01 the pitch settings were module globals switched by set_pitch,
 so a detailed-zone pass (pitch 0.2) in one thread changed the grid of a normal build (0.8) in the other: real levels
