@@ -11,6 +11,7 @@ import os
 import sys
 import time
 import traceback
+from collections.abc import Sequence
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [HERE, os.path.dirname(HERE)]
@@ -20,7 +21,7 @@ LEVELS = ['sp_01', 'sp_02', 'sp_03', 'sp_04', 'sp_003_b', 'sp_004_b', 'sp_005', 
           'sp_008_b', 'sp_009', 'ons_mp_002', 'ons_mp_004']
 
 
-def main(argv):
+def main(argv: Sequence[str]) -> int:
     """The command line: samples each level in turn (the smoke level first), logging to a file and going on after a
     failure; returns 1 when any failed."""
     opts = dict(zip(argv[1:], argv[2:]))
@@ -30,14 +31,15 @@ def main(argv):
     budget = int(opts['--budget']) if '--budget' in opts else None
     logf = open(opts.get('--log', os.path.join(navkit.Project(None).work, 'navsample', 'sample_all.log')), 'a', encoding='utf-8')
 
-    def log(*a):
+    def log(*a: object) -> None:
         line = time.strftime('%H:%M:%S ') + ' '.join(str(x) for x in a)
         print(line, flush=True)
         logf.write(line + '\n')
         logf.flush()
     pr = navkit.Project(None)
     order = ([smoke] if smoke else []) + [lv for lv in levels if lv != smoke]
-    done, failed = [], []
+    done: list[str] = []
+    failed: list[tuple[str, str]] = []
     t0 = time.time()
     log(f'== sample_all: {len(order)} levels at pitch {pitch}: {", ".join(order)}')
     for n, lv in enumerate(order, 1):

@@ -38,11 +38,14 @@ Apt converts a movie's offsets to pointers once, in place, by walking its struct
 runtime 0x1309880 for bytecode; the character walk and its inverse at 0x1319730) - see OPFOR's DEVELOPMENT_NOTES.md
 for the rules this sets for editing movies.
 """
+import io
 import os
 import re
 import struct
 import sys
 from collections import namedtuple
+from collections.abc import Callable
+from typing import cast
 
 CHAR_TYPES = {1: 'shape', 2: 'text', 3: 'font', 4: 'button', 5: 'sprite', 6: 'sound', 7: 'image', 8: 'morph',
               9: 'movie', 10: 'statictext', 11: 'none', 12: 'video'}
@@ -83,14 +86,14 @@ NAMES = {
 }
 
 
-def read_bigf(path):
+def read_bigf(path: str) -> dict[str, bytes]:
     """Members of a BIGF archive (menu SwfMovie resource): {name: bytes}. Index entries are big-endian on every
     platform: u32 offset, u32 size, C string name."""
     b = open(path, 'rb').read()
     if b[:4] != b'BIGF':
         raise ValueError(f'{path} is not a BIGF archive (a menu .res)')
     n = struct.unpack_from('>I', b, 8)[0]
-    p, out = 16, {}
+    p, out = 16, dict[str, bytes]()
     for _ in range(n):
         off, size = struct.unpack_from('>II', b, p)
         e = b.index(b'\0', p + 8)
@@ -100,18 +103,23 @@ def read_bigf(path):
 
 
 class Movie:
-    sink = None              # instructions(): called with each decoded instruction while the dump walks the movie
+    # instructions(): called with each decoded instruction while the dump walks the movie
+    sink: Callable[[Ins, int, int, str], None] | None = None
 
-    def __init__(self, path=None, data=None):
+    def __init__(self, path: str | None = None, data: tuple[str, bytes, bytes] | None = None) -> None:
         """path: a menu .res or a .apt with its .const beside it; or data = (name, .apt bytes, .const bytes)."""
+        self.name: str
+        self.a: bytes
+        self.c: bytes
+        src = cast(str, path)              # given whenever data is not
         if data is not None:
             self.name, self.a, self.c = data
-        elif path.lower().endswith('.apt'):
-            self.name = os.path.splitext(os.path.basename(path))[0]
-            self.a = open(path, 'rb').read()
-            self.c = open(os.path.splitext(path)[0] + '.const', 'rb').read()
+        elif src.lower().endswith('.apt'):
+            self.name = os.path.splitext(os.path.basename(src))[0]
+            self.a = open(src, 'rb').read()
+            self.c = open(os.path.splitext(src)[0] + '.const', 'rb').read()
         else:
-            members = read_bigf(path)
+            members = read_bigf(src)
             apt = next(k for k in members if k.lower().endswith('.apt'))
             self.name = apt[:-4]
             self.a, self.c = members[apt], members[self.name + '.const']
@@ -122,7 +130,7 @@ class Movie:
         self.e = '>' if self.big else '<'
         self.movie = be if self.big else le
         count, entries = self.cu(24), self.cu(28)
-        self.const = []
+        self.const: list[str] = []
         for i in range(count):
             t, v = self.cu(entries + 8 * i), self.cu(entries + 8 * i + 4)
             if t == 1:
@@ -133,44 +141,44 @@ class Movie:
                 self.const.append(f'type{t}:{v}')
 
     # field readers in the movie's byte order
-    def cu(self, o):
+    def cu(self, o: int) -> int:
         """The unsigned 32-bit value at offset o of the .const data, in the movie's byte order."""
         return struct.unpack_from(self.e + 'I', self.c, o)[0]
-    def u(self, o):
+    def u(self, o: int) -> int:
         """The unsigned 32-bit value at offset o of the .apt data, in the movie's byte order."""
         return struct.unpack_from(self.e + 'I', self.a, o)[0]
-    def i(self, o):
+    def i(self, o: int) -> int:
         """The signed 32-bit value at offset o of the .apt data, in the movie's byte order."""
         return struct.unpack_from(self.e + 'i', self.a, o)[0]
-    def f(self, o):
+    def f(self, o: int) -> float:
         """The 32-bit float at offset o of the .apt data, in the movie's byte order."""
         return struct.unpack_from(self.e + 'f', self.a, o)[0]
-    def h(self, o):
+    def h(self, o: int) -> int:
         """The signed 16-bit value at offset o of the .apt data, in the movie's byte order."""
         return struct.unpack_from(self.e + 'h', self.a, o)[0]
-    def w(self, o):
+    def w(self, o: int) -> int:
         """The unsigned 16-bit value at offset o of the .apt data, in the movie's byte order."""
         return struct.unpack_from(self.e + 'H', self.a, o)[0]
 
     @staticmethod
-    def cstr(buf, p):
+    def cstr(buf: bytes, p: int) -> str:
         """The zero-terminated Latin-1 string at p in buf; 'null' for a null or out-of-range pointer."""
         if not p or p >= len(buf):
             return 'null'
         e = buf.find(b'\0', p)
         return buf[p:e if e >= 0 else len(buf)].decode('latin1')
 
-    def s(self, p):
+    def s(self, p: int) -> str:
         """The string at pointer p in the .apt data ('null' for none)."""
         return self.cstr(self.a, p)
 
     # --- characters -------------------------------------------------------------------------------------------
-    def characters(self):
+    def characters(self) -> list[tuple[int, int, int | None]]:
         """The movie's character table as (index, pointer, type) triples; type is None for an empty or unreadable
         slot."""
         m = self.movie
         count, ptr = self.u(m + 20), self.u(m + 24)
-        out = []
+        out: list[tuple[int, int, int | None]] = []
         for c in range(count):
             cp = self.u(ptr + 4 * c)
             if not cp or cp + 8 > len(self.a) or self.u(cp + 4) != SIG:
@@ -179,7 +187,7 @@ class Movie:
             out.append((c, cp, self.u(cp)))
         return out
 
-    def describe(self, c, cp, t):
+    def describe(self, c: int, cp: int, t: int | None) -> str:
         """A one-line description of character c at cp of type t (sprite, image, shape, movie or its type name)."""
         if t is None:
             return f'char {c}: (none)'
@@ -196,13 +204,18 @@ class Movie:
         return f'char {c}: {name} @{cp:#x}'
 
     # --- bytecode ---------------------------------------------------------------------------------------------
-    def decode(self, p, pool):
+    def decode(self, p: int, pool: list[str]) -> tuple[Ins, list[str]]:
         """The instruction at p: (Ins, the constant pool after it). Ins.end is the next instruction (for a function
         definition, the start of its body). Raises struct.error / IndexError at the end of the file."""
         a, at, op = self.a, p, self.a[p]
         p += 1
         name = NAMES.get(op, f'op_{op:02X}')
-        arg, target, plist, items, func, index = '', None, None, None, None, None
+        arg = ''
+        target: int | None = None
+        plist: int | None = None
+        items: list[int] | None = None
+        func: Func | None = None
+        index: int | None = None
         K = (lambda k: pool[k] if k < len(pool) else f'pool[{k}]?')
         al = (lambda q: (q + 3) & ~3)
         if op == 0xB7:
@@ -258,7 +271,8 @@ class Movie:
         return Ins(at, op, name, arg, p, target, plist, items, func, index,
                    op >= 0x80 and op not in NAMES, len(pool)), pool
 
-    def disasm(self, start, indent, out, limit=None, pool=None):
+    def disasm(self, start: int, indent: str, out: list[str], limit: int | None = None,
+               pool: list[str] | None = None) -> None:
         """Appends the disassembly of the action stream at start to out, recursing into function bodies; stops at
         limit, an End, or an unknown opcode."""
         pool = list(pool or [])
@@ -283,22 +297,23 @@ class Movie:
             if ins.op == 0x00 and limit == len(a):
                 return
 
-    def instructions(self):
+    def instructions(self) -> list[tuple[Ins, int, int, int]]:
         """Every instruction the dump decodes, once each, in dump order: [(Ins, stream start, stream limit, depth)].
         A frame's action stream has depth 0 and limit = the file's end; a function body's instructions have the
         function's depth + 1 and limit = the body's end. The dump's text is kept in self.dump_lines."""
-        seen, recs = set(), []
+        seen: set[int] = set()
+        recs: list[tuple[Ins, int, int, str]] = []
 
-        def sink(ins, start, limit, indent):
+        def sink(ins: Ins, start: int, limit: int, indent: str) -> None:
             if ins.at not in seen:
                 seen.add(ins.at)
-                recs.append([ins, start, limit, indent])
+                recs.append((ins, start, limit, indent))
         self.sink = sink
         try:
             self.dump_lines = self.dump()
         finally:
             self.sink = None
-        depth = {}                                 # a stream's depth: 0 for the streams that no function contains
+        depth: dict[int, int] = {}                 # a stream's depth: 0 for the streams that no function contains
         for ins, start, limit, _ in recs:
             depth.setdefault(start, 0)
             if ins.func:
@@ -306,7 +321,7 @@ class Movie:
         return [(ins, start, limit, depth.get(start, 0)) for ins, start, limit, _ in recs]
 
     # --- structure --------------------------------------------------------------------------------------------
-    def frames(self, ptr, count, indent, owner, out):
+    def frames(self, ptr: int, count: int, indent: str, owner: str, out: list[str]) -> None:
         """Appends the count frames at ptr of owner, with each frame's items, to out; an unreadable item is noted and
         skipped."""
         for fr in range(count):
@@ -319,7 +334,7 @@ class Movie:
                 except (struct.error, IndexError, ValueError) as e:
                     out.append(f'{ind}** item {k} of this frame unreadable: {e}')
 
-    def item(self, items, k, ind, out):
+    def item(self, items: int, k: int, ind: str, out: list[str]) -> None:
                 """Appends frame item k of the item list at items to out: actions (disassembled), labels, placements
                 with their clip events, removals."""
                 it = self.u(items + 4 * k)
@@ -351,10 +366,10 @@ class Movie:
                 else:
                     out.append(f'{ind}item type {t} @{it:X}')
 
-    def dump(self):
+    def dump(self) -> list[str]:
         """The whole movie as text lines: header, imports, exports, the movie's frames, then each character with its
         sprite frames."""
-        m, out = self.movie, []
+        m, out = self.movie, list[str]()
         frames, fptr = self.u(m + 8), self.u(m + 12)
         out.append(f'Movie {self.name} {self.i(m + 28)}x{self.i(m + 32)} frames={frames} characters={self.u(m + 20)} '
                    f'({"big-endian, Xbox 360" if self.big else "little-endian, PC"})')
@@ -373,7 +388,7 @@ class Movie:
         return out
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
     """The command line: info, chars, dump or find on a movie; returns the exit code."""
     if len(argv) < 3 or argv[1] not in ('info', 'chars', 'dump', 'find'):
         print(__doc__)
@@ -397,7 +412,7 @@ def main(argv):
             open(argv[3], 'w', encoding='utf-8').write(text)
             print(f'{argv[3]}: {text.count(chr(10))} lines')
         else:
-            sys.stdout.reconfigure(errors='replace')            # names in other code pages: no crash on the console
+            cast(io.TextIOWrapper, sys.stdout).reconfigure(errors='replace')   # names in other code pages: no crash
             sys.stdout.write(text)
     elif argv[1] == 'find':
         if len(argv) < 4:

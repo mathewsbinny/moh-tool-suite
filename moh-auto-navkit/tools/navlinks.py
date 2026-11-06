@@ -14,6 +14,8 @@ node's first-edge index (`a`: first outgoing edge + 1, 0 when it has none) is re
 DICE and NavKit file follows.
 """
 import math
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from typing import Any
 
 import numpy as np
 
@@ -24,12 +26,12 @@ JOIN_XZ, JOIN_Y, Y_OFFSET = 15.0, 4.0, mohsoldier.Y_OFFSET
 GRAPH_OPS = ('link-areas', 'route-edge')
 
 
-def cost_tag(p, q):
+def cost_tag(p: Sequence[float], q: Sequence[float]) -> int:
     """The tagged cost of a link edge from p to q: the high bit set, then the distance in 1/16 m."""
     return 0x80000000 | int(math.floor(math.dist(p, q) * 16))
 
 
-def _nearest(sector, p):
+def _nearest(sector: hpdtool.Sector, p: Sequence[float]) -> tuple[int, float] | None:
     """(local index, horizontal distance) of the sector's node nearest p within the join limits, or None."""
     if not sector.nodes:
         return None
@@ -40,9 +42,9 @@ def _nearest(sector, p):
     return (k, float(d[k])) if d[k] <= JOIN_XZ else None
 
 
-def find_pair(f, a, b):
+def find_pair(f: hpdtool.HpdFile, a: Sequence[float], b: Sequence[float]) -> tuple[int, int, int] | None:
     """(sector index, local node a, local node b) - the closest pair of nodes in one sector, or None."""
-    best = None
+    best: tuple[float, int, int, int] | None = None
     for si, s in enumerate(f.sectors):
         x0, x1, _, _, z0, z1 = s.bounds
         reach = JOIN_XZ + 1
@@ -56,20 +58,22 @@ def find_pair(f, a, b):
     return None if best is None else best[1:]
 
 
-def recompute_first_edges(sector):
+def recompute_first_edges(sector: hpdtool.Sector) -> None:
     """Edges sorted by source node (stable: existing order kept within a source); each node's `a` set."""
     sector.edges.sort(key=lambda e: e.src)
-    first = {}
+    first: dict[int, int] = {}
     for k, e in enumerate(sector.edges):
         first.setdefault(e.src, k)
     for n, node in enumerate(sector.nodes):
         node.a = first[n] + 1 if n in first else 0
 
 
-def apply(f, operations, log=print):
+def apply(f: hpdtool.HpdFile, operations: Iterable[Mapping[str, Any]],
+          log: Callable[..., object] = print) -> list[tuple[int, bool, str]]:
     """Applies the graph operations of a side file to a parsed path-data file (hpdtool.HpdFile) in place.
     Returns one result per graph operation: (operation index, applied: bool, message)."""
-    results, touched = [], set()
+    results: list[tuple[int, bool, str]] = []
+    touched: set[int] = set()
     for k, o in enumerate(operations):
         name = o.get('op')
         if name not in GRAPH_OPS:

@@ -21,6 +21,8 @@ import os
 import re
 import sys
 from collections import Counter, defaultdict
+from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 
@@ -36,10 +38,11 @@ SMALL_ISLAND = 25        # islands under this many nodes (navbuild.ORDER_MIN_ISL
 SLIVER_CELLS = 5         # areas under this many cells, with no portal or border portal
 LONELY_NODE = 12.0       # a route node whose nearest same-floor node is farther than this
 OBJECTIVES = ('mpobjective', 'communicationstation')
+Point = Sequence[float] | np.ndarray     # a world position (x, y, z)
 
 
 # --- sources -------------------------------------------------------------------------------------------
-def reference_source(spec, opfor):
+def reference_source(spec: str, opfor: str) -> tuple[str, str | None, str | None, str | None]:
     """(label, level xml, path data or None, SectorOffsets xml or None) for a source spec."""
     if os.path.isfile(spec):
         d = os.path.dirname(spec)
@@ -63,7 +66,7 @@ def reference_source(spec, opfor):
     raise ValueError(f'unknown reference source {spec!r} (level:<lv>, xbox:<lv> or a level .xml)')
 
 
-def _offsets_xml(level_dir):
+def _offsets_xml(level_dir: str) -> str | None:
     for kind in ('Precomputed', 'precomputed'):
         p = os.path.join(level_dir, kind, 'Infantry', 'SectorOffsets.xml')
         if os.path.isfile(p):
@@ -71,7 +74,7 @@ def _offsets_xml(level_dir):
     return None
 
 
-def sector_offsets(path):
+def sector_offsets(path: str | None) -> tuple[int, int] | None:
     """The (XOffset, ZOffset) of a SectorOffsets XML file, or None when there is no file or it holds no offsets."""
     if not path:
         return None
@@ -81,12 +84,12 @@ def sector_offsets(path):
 
 
 # --- the AI layer of a level ----------------------------------------------------------------------------
-def _field(body, name):
+def _field(body: str, name: str) -> str | None:
     m = re.search(rf'<field name="{name}">([^<]*)</field>', body)
     return m.group(1) if m else None
 
 
-def _pos(body):
+def _pos(body: str) -> list[float] | None:
     m = re.search(r'<complex name="Transform">([^<]*)</complex>', body)
     if not m:
         return None
@@ -94,11 +97,11 @@ def _pos(body):
     return [round(v[12], 3), round(v[13], 3), round(v[14], 3)] if any(abs(c) > 1e-3 for c in v[12:15]) else None
 
 
-def read_ai_layer(xml_path):
+def read_ai_layer(xml_path: str) -> dict[str, Any]:
     """The AI layer of a level partition (see the module docstring)."""
     t = open(xml_path, encoding='utf-8', errors='replace').read()
     inst = {g.lower(): (ty, b) for ty, g, b in xmlinst.instances(t)}
-    layer = {'has_ai': None, 'spawners': [], 'area_orders': [], 'patrols': [], 'objectives': []}
+    layer: dict[str, Any] = {'has_ai': None, 'spawners': [], 'area_orders': [], 'patrols': [], 'objectives': []}
     for ty, b in inst.values():
         short = ty.split('.')[-1]
         if short == 'LevelData' and layer['has_ai'] is None:
@@ -116,9 +119,9 @@ def read_ai_layer(xml_path):
             if p:
                 layer['area_orders'].append({'pos': p, 'name': _field(b, 'Name') or '', 'area_type': _field(b, 'AreaType')})
         elif short == 'PatrolOrderEntityData':
-            chain = []
+            chain: list[list[float]] = []
             for ref in re.findall(r'ref="([0-9a-f-]{36})"', b):
-                g, seen = ref.lower(), set()
+                g, seen = ref.lower(), set[str]()
                 while g in inst and g not in seen and inst[g][0].endswith('AreaGeometryEntityData'):
                     seen.add(g)
                     q = _pos(inst[g][1])
@@ -143,37 +146,38 @@ def read_ai_layer(xml_path):
 class NavIndex:
     """Nearest-node and ground lookups on a NavData (10 m buckets)."""
 
-    def __init__(self, nav):
+    def __init__(self, nav: navdata.NavData) -> None:
         self.nav = nav
         self.size = Counter(nav.node_island.tolist())
         self.ground_y = nav.node_pos[:, 1] - navdata.Y_OFFSET
-        self.nodes = defaultdict(list)
+        self.nodes: defaultdict[tuple[int, int], list[int]] = defaultdict(list)
         for k, (x, _y, z) in enumerate(nav.node_pos.tolist()):
             self.nodes[(int(x // 10), int(z // 10))].append(k)
-        self.cells = defaultdict(list)
+        self.cells: defaultdict[tuple[int, int], list[int]] = defaultdict(list)
         for k, (x, z) in enumerate(nav.cell_xz.tolist()):
             self.cells[(int(x // 10), int(z // 10))].append(k)
 
-    def _near(self, grid, x, z, r):
+    def _near(self, grid: dict[tuple[int, int], list[int]], x: float, z: float, r: float) -> list[int]:
         cx, cz, n = int(x // 10), int(z // 10), int(math.ceil(r / 10))
         return [k for i in range(cx - n, cx + n + 1) for j in range(cz - n, cz + n + 1) for k in grid.get((i, j), ())]
 
-    def nearest_node(self, p, r=R_GATHER, exclude=None):
+    def nearest_node(self, p: Point, r: float = R_GATHER,
+                     exclude: int | None = None) -> tuple[float, int, int, bool] | None:
         """(distance, node index, island size, on the main island) of the nearest same-floor node within r, or None.
         Beyond 200 m (any distance) it searches all nodes at once instead of the 10 m buckets."""
         if r > 200.0:
             if not len(self.nav.node_pos):
                 return None
-            d = np.hypot(self.nav.node_pos[:, 0] - p[0], self.nav.node_pos[:, 2] - p[2])
-            d = np.where(np.abs(self.ground_y - p[1]) <= SAME_FLOOR, d, np.inf)
+            dist = np.hypot(self.nav.node_pos[:, 0] - p[0], self.nav.node_pos[:, 2] - p[2])
+            dist = np.where(np.abs(self.ground_y - p[1]) <= SAME_FLOOR, dist, np.inf)
             if exclude is not None:
-                d[exclude] = np.inf
-            k = int(np.argmin(d))
-            if not np.isfinite(d[k]) or d[k] > r:
+                dist[exclude] = np.inf
+            k = int(np.argmin(dist))
+            if not np.isfinite(dist[k]) or dist[k] > r:
                 return None
             isl = int(self.nav.node_island[k])
-            return round(float(d[k]), 2), k, self.size[isl], isl == 0
-        best = None
+            return round(float(dist[k]), 2), k, self.size[isl], isl == 0
+        best: tuple[float, int] | None = None
         for k in self._near(self.nodes, p[0], p[2], r):
             if k == exclude or abs(self.ground_y[k] - p[1]) > SAME_FLOOR:
                 continue
@@ -185,14 +189,14 @@ class NavIndex:
         isl = int(self.nav.node_island[best[1]])
         return round(best[0], 2), best[1], self.size[isl], isl == 0
 
-    def has_ground(self, p, r=0.6, dy=1.5):
+    def has_ground(self, p: Point, r: float = 0.6, dy: float = 1.5) -> bool:
         """True when a ground cell lies within r metres of p on the xz plane and less than dy metres from its
         height."""
         return any(math.hypot(self.nav.cell_xz[k, 0] - p[0], self.nav.cell_xz[k, 1] - p[2]) <= r and abs(self.nav.cell_y[k] - p[1]) < dy
                    for k in self._near(self.cells, p[0], p[2], r))
 
 
-def _node_row(idx, p):
+def _node_row(idx: NavIndex | None, p: Point) -> dict[str, Any]:
     if idx is None:
         return {'navkit_ground': None, 'nearest_node_m': None, 'node_island_size': None, 'node_on_main_island': None}
     n = idx.nearest_node(p)
@@ -200,7 +204,7 @@ def _node_row(idx, p):
             'node_island_size': n[2] if n else None, 'node_on_main_island': n[3] if n else None}
 
 
-def reference_report(target, source_spec, opfor, candidate=None):
+def reference_report(target: str, source_spec: str, opfor: str, candidate: str | None = None) -> dict[str, Any]:
     """The JSON export of piece 1: the reference's AI layer against the target's NavKit build."""
     label, xml, hpd, off_xml = reference_source(source_spec, opfor)
     if not xml:
@@ -208,7 +212,7 @@ def reference_report(target, source_spec, opfor, candidate=None):
     layer = read_ai_layer(xml)
     cand = candidate or default_candidate(opfor, target)
     idx = NavIndex(navdata.load(cand)) if cand else None
-    rows = {'spawners': [], 'area_orders': [], 'patrol_points': [], 'objectives': []}
+    rows: dict[str, list[dict[str, Any]]] = {'spawners': [], 'area_orders': [], 'patrol_points': [], 'objectives': []}
     for s in layer['spawners']:
         rows['spawners'].append({k: s[k] for k in ('pos', 'name', 'player_type', 'enabled', 'team', 'squad_id', 'in_squad_entity')} | _node_row(idx, s['pos']))
     for o in layer['area_orders']:
@@ -225,17 +229,17 @@ def reference_report(target, source_spec, opfor, candidate=None):
             **rows}
 
 
-def default_candidate(opfor, lv):
+def default_candidate(opfor: str, lv: str) -> str | None:
     """The level's NavKit build (work\\navkit\\<lv>\\pathdata.hpd), or None when there is none."""
     p = os.path.join(opfor, 'work', 'navkit', lv, 'pathdata.hpd')
     return p if os.path.isfile(p) else None
 
 
 # --- piece 2: anomalies -------------------------------------------------------------------------------
-def anomalies(nav, layer):
+def anomalies(nav: navdata.NavData, layer: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     """Per class, the anomalies of a NavKit build against the level's own AI layer (read_ai_layer of the target)."""
     idx = NavIndex(nav)
-    out = {'small_islands': [], 'spawners_on_small_islands': [], 'orders_without_node': [], 'sliver_areas': [], 'lonely_nodes': []}
+    out: dict[str, list[dict[str, Any]]] = {'small_islands': [], 'spawners_on_small_islands': [], 'orders_without_node': [], 'sliver_areas': [], 'lonely_nodes': []}
     for k, isl in enumerate(nav.islands):
         if isl.nodes < SMALL_ISLAND:
             out['small_islands'].append({'island': k, 'pos': [round(float(c), 2) for c in isl.centre], 'nodes': isl.nodes, 'cells': isl.cells})
@@ -262,23 +266,27 @@ def anomalies(nav, layer):
     return out
 
 
-def anomaly_report(target, opfor, candidate=None, xml=None):
+def anomaly_report(target: str, opfor: str, candidate: str | None = None, xml: str | None = None) -> dict[str, Any]:
     """The anomaly report of the level's NavKit build against its own AI layer, with the count of each kind."""
     cand = candidate or default_candidate(opfor, target)
     if not cand:
         raise FileNotFoundError(f'{target}: no NavKit build (work\\navkit\\{target}\\pathdata.hpd)')
     if xml is None:
         _label, xml, _hpd, _off = reference_source(f'level:{target}', opfor)
+    if not xml:
+        raise FileNotFoundError(f'{target}: no level .xml found')
     nav = navdata.load(cand)
     out = anomalies(nav, read_ai_layer(xml))
     return {'target': target, 'navkit_build': cand, 'level_xml': xml,
             'counts': {k: len(v) for k, v in out.items()}, **out}
 
 
-def main(argv):
+def main(argv: Sequence[str]) -> int:
     """The command line: writes the reference report (--reference) or the anomaly report (--anomalies) of a level as
     JSON; returns the exit code."""
-    opts, args, k = {}, [], 1
+    opts: dict[str, str | bool] = {}            # an option's value, or True for a flag
+    args: list[str] = []
+    k = 1
     while k < len(argv):
         if argv[k].startswith('--') and k + 1 < len(argv) and not argv[k + 1].startswith('--'):
             opts[argv[k]] = argv[k + 1]
@@ -292,14 +300,19 @@ def main(argv):
     if not args:
         print(__doc__)
         return 1
+    for name in ('--reference', '--candidate', '--out'):
+        if opts.get(name) is True:
+            print(f'{name} needs a value')
+            return 1
+    values = {name: v for name, v in opts.items() if isinstance(v, str)}
     import navparity
     opfor = navparity.opfor_root(None)
     target = args[0].lower()
-    rep = anomaly_report(target, opfor, opts.get('--candidate')) if '--anomalies' in opts else \
-        reference_report(target, opts['--reference'], opfor, opts.get('--candidate'))
-    out = opts.get('--out') or os.path.join(opfor, 'work', 'navstudio',
+    rep = anomaly_report(target, opfor, values.get('--candidate')) if '--anomalies' in opts else \
+        reference_report(target, values['--reference'], opfor, values.get('--candidate'))
+    out = values.get('--out') or os.path.join(opfor, 'work', 'navstudio',
                                             f'{target}_anomalies.json' if '--anomalies' in opts else
-                                            f'{target}_vs_{re.sub(r"[^a-z0-9_]+", "_", opts["--reference"].lower())}.json')
+                                            f'{target}_vs_{re.sub(r"[^a-z0-9_]+", "_", values["--reference"].lower())}.json')
     os.makedirs(os.path.dirname(out), exist_ok=True)
     json.dump(rep, open(out, 'w'), indent=1)
     print(json.dumps(rep.get('summary') or rep.get('counts')), '->', out)

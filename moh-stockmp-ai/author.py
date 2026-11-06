@@ -20,8 +20,11 @@ New GUIDs are deterministic (UUIDv5 of the level, the item's id and its role), s
 """
 import struct
 from collections import Counter, defaultdict
+from collections.abc import Sequence
+from typing import Any, cast
 
 import dbxbin
+import levelmodel
 from levelmodel import text
 
 NS = 'opfor:stockmp'
@@ -33,13 +36,24 @@ class AuthorError(Exception):
     pass
 
 
+def _child(e: dbxbin.Element, name: str) -> dbxbin.Element:
+    # a field the prototype is known to have (an event connection's Source, Target, SourceEvent ...)
+    return cast(dbxbin.Element, e.child(name))
+
+
+def _attr(e: dbxbin.Element, name: str) -> str:
+    # an attribute the element is known to have (an instance's guid, a reference item's ref)
+    return cast(str, e.attr(name))
+
+
 class NumberKinds:
     """Per field name, whether its single 4-byte value is an integer or a decimal, learned from the level and the donor
     (a value counts as evidence when only one reading is plausible; negative integers count, unlike DbxEdit's import
     type book - its known limitation with XOffset -3)."""
 
-    def __init__(self, *files):
-        self.ints, self.floats = Counter(), Counter()
+    def __init__(self, *files: dbxbin.Dbx) -> None:
+        self.ints: Counter[str | None] = Counter()
+        self.floats: Counter[str | None] = Counter()
         for d in files:
             for e in d.partition.walk():
                 if e.kind != dbxbin.NUMBERS or not e.attrs:
@@ -56,7 +70,7 @@ class NumberKinds:
                 else:
                     self.floats[e.name] += 1
 
-    def kind(self, name):
+    def kind(self, name: str) -> str | None:
         """Whether the field called name holds an integer ('i') or a decimal ('f'), by which the stock files use more;
         None when they never set it."""
         i, f = self.ints[name], self.floats[name]
@@ -66,19 +80,19 @@ class NumberKinds:
 
 
 class Author:
-    def __init__(self, d, donor, config, model):
+    def __init__(self, d: dbxbin.Dbx, donor: dbxbin.Dbx, config: dict[str, Any], model: levelmodel.Model) -> None:
         self.d, self.donor, self.cfg, self.m = d, donor, config, model
         self.kinds = NumberKinds(d, donor)
         self.lv = config['lv']
         self.level = model.level
-        self.new = []                  # new instance elements, in order
-        self.events = []               # (source guid, source event, target guid, target event)
-        self.guid_of = {}              # config id -> guid
-        self.report = Counter()
+        self.new: list[dbxbin.Element] = []        # new instance elements, in order
+        self.events: list[tuple[str, str, str, str]] = []  # (source guid, source event, target guid, target event)
+        self.guid_of: dict[str, str] = {}          # config id -> guid
+        self.report: Counter[str] = Counter()
         self._protos()
 
     # ------------------------------------------------------------------ prototypes
-    def _protos(self):
+    def _protos(self) -> None:
         d = self.d
         sp = d.of_type('.SoldierSpawnEntityData')
         if not sp:
@@ -104,11 +118,11 @@ class Author:
         self.p_event = ec.children[0]
 
     # ------------------------------------------------------------------ helpers
-    def guid(self, *parts):
+    def guid(self, *parts: object) -> str:
         """The deterministic GUID for this level and the given parts."""
         return dbxbin.new_guid(NS, self.lv, *parts)
 
-    def instance(self, proto, src, guid):
+    def instance(self, proto: dbxbin.Element, src: dbxbin.Dbx, guid: str) -> dbxbin.Element:
         """A clone of the prototype instance proto (from partition src) with the new GUID and only its guid and type
         attributes."""
         e = self.d.clone(proto, src)
@@ -116,14 +130,14 @@ class Author:
         e.attrs = [(k, v) for k, v in e.attrs if self.d.strings[k] in ('guid', 'type')]
         return e
 
-    def field(self, e, name):
+    def field(self, e: dbxbin.Element, name: str) -> dbxbin.Element:
         """The direct field called name of e; raises AuthorError when it has none."""
         c = e.child(name)
         if c is None:
             raise AuthorError(f'{e.attr("type")}: no field {name}')
         return c
 
-    def set(self, e, name, value):
+    def set(self, e: dbxbin.Element, name: str, value: Any) -> None:
         """Set a direct field, in the kind it has."""
         c = self.field(e, name)
         if c.attr('ref') is not None:
@@ -146,7 +160,7 @@ class Author:
         else:
             self.d.set_bool(c, value)
 
-    def set_items(self, e, name, refs):
+    def set_items(self, e: dbxbin.Element, name: str, refs: Sequence[str]) -> None:
         """An array of references. DICE's files store an empty array as an empty text element (the XML's
         <array name="X" />) and a filled one as a container; both forms are kept that way."""
         a = self.field(e, name)
@@ -161,25 +175,25 @@ class Author:
             self.d.set_ref(it, r)
             a.children.append(it)
 
-    def transform(self, e, pos, yaw_deg=0.0):
+    def transform(self, e: dbxbin.Element, pos: Sequence[float], yaw_deg: float = 0.0) -> None:
         """Sets e's Transform to position pos turned yaw_deg degrees about the vertical axis."""
         import math
         c, s = math.cos(math.radians(yaw_deg)), math.sin(math.radians(yaw_deg))
         self.d.set_transform(self.field(e, 'Transform'), [(c, 0, -s), (0, 1, 0), (s, 0, c), tuple(pos)])
 
-    def event(self, src, src_event, tgt, tgt_event):
+    def event(self, src: str, src_event: str, tgt: str, tgt_event: str) -> None:
         """Queues an event connection from src's src_event to tgt's tgt_event (GUIDs); finish() writes them."""
         self.events.append((src, src_event, tgt, tgt_event))
 
     # ------------------------------------------------------------------ the layer
-    def build(self):
+    def build(self) -> dict[str, int]:
         """Inserts the configured AI layer (HasAI, pathfinding types, spawners, orders, stages) into the level and
         returns the report's counts."""
         cfg = self.cfg
         d = self.d
         self.set(self.level, 'HasAI', True)
         pt = self.field(self.level, 'PathfindingTypes')
-        have = [i.attr('ref') for i in pt.children or ()]
+        have = [_attr(i, 'ref') for i in pt.children or ()]           # reference items: each has its ref
         if not have:
             self.set_items(self.level, 'PathfindingTypes', PATHFINDING)
             self.report['PathfindingTypes set'] += 1
@@ -194,13 +208,13 @@ class Author:
             return self.finish()
         for s in cfg['spawners']:
             self.spawner(s)
-        triggers = {}
+        triggers: dict[tuple[int, int, Any], str] = {}
         for o in cfg['orders']:
             self.order(o, triggers)
         self.stages()
         return self.finish()
 
-    def spawner(self, s):
+    def spawner(self, s: dict[str, Any]) -> None:
         """Adds one configured AI soldier spawner, filled from the defaults and its own fields."""
         cfg, d = self.cfg, self.d
         g = self.guid('spawner', s['id'])
@@ -227,7 +241,7 @@ class Author:
         self.report['AI spawners'] += 1
         self.report[f'AI spawners {s["team"]}'] += 1
 
-    def order(self, o, triggers):
+    def order(self, o: dict[str, Any], triggers: dict[tuple[int, int, Any], str]) -> None:
         """Adds one configured area order with its area box, soldiers and the events that issue it (level start,
         player entering, or an area trigger)."""
         cfg = self.cfg
@@ -255,7 +269,7 @@ class Author:
             struct.pack('>f', float(v)) for v in (hx, hy, hz)) + (old[3] if len(old) == 4 else struct.pack('>f', 0.0))
         if area.child('Name') is not None:
             self.set(area, 'Name', f'OPFOR area {o["id"]}')
-        self.set_items(e, 'Area', [area.attr('guid').lower()])
+        self.set_items(e, 'Area', [_attr(area, 'guid').lower()])
         self.transform(e, o['pos'])
         self.new += [e, area]
         self.report['orders'] += 1
@@ -269,7 +283,7 @@ class Author:
                 hp = self.m.d.of_type('.HumanPlayerEntityData')
                 if not hp:
                     raise AuthorError('issue_on player_enter: the level has no HumanPlayerEntityData')
-                self.event(hp[0].attr('guid').upper(), 'OnPlayerEnter', g, 'IssueOrder')
+                self.event(_attr(hp[0], 'guid').upper(), 'OnPlayerEnter', g, 'IssueOrder')
             elif x == 'trigger':
                 key = (round(o['pos'][0]), round(o['pos'][2]), o.get('trigger_radius', 100))
                 if key not in triggers:
@@ -294,13 +308,13 @@ class Author:
             else:
                 raise AuthorError(f'order {o["id"]}: unknown issue_on {x}')
 
-    def stages(self):
+    def stages(self) -> None:
         """Wires each stage's advance event: it disables the stage's spawners and orders and enables (and issues) the
         next stage's."""
         stages = self.cfg.get('stages') or []
         if not stages:
             return
-        by_stage = defaultdict(lambda: {'spawners': [], 'orders': []})
+        by_stage: defaultdict[int, dict[str, list[str]]] = defaultdict(lambda: {'spawners': [], 'orders': []})
         for s in self.cfg['spawners']:
             if s.get('stage') is not None:
                 by_stage[s['stage']]['spawners'].append(self.guid_of[s['id']])
@@ -325,25 +339,25 @@ class Author:
                 self.event(src, ev, og, 'IssueOrder')
             self.report['stage switches'] += 1
 
-    def finish(self):
+    def finish(self) -> dict[str, int]:
         """Adds the new instances to the partition and the level's Objects, writes the queued event connections, and
         returns the report's counts."""
         d = self.d
         part = d.partition
-        part.children.extend(self.new)
+        cast(list[dbxbin.Element], part.children).extend(self.new)       # containers: their children are lists
         objs = self.field(self.level, 'Objects')
         for e in self.new:
             it = d.clone(self.p_item, d)
-            d.set_ref(it, e.attr('guid').lower())
-            objs.children.append(it)
+            d.set_ref(it, _attr(e, 'guid').lower())
+            cast(list[dbxbin.Element], objs.children).append(it)
         ec = self.field(self.level, 'EventConnections')
         for s, se, t, te in self.events:
             c = d.clone(self.p_event, d)
-            d.set_ref(c.child('Source'), s.lower())
-            d.set_ref(c.child('Target'), t.lower())
-            d.set_text(c.child('SourceEvent').child('Name'), se)
-            d.set_text(c.child('TargetEvent').child('Name'), te)
-            ec.children.append(c)
+            d.set_ref(_child(c, 'Source'), s.lower())
+            d.set_ref(_child(c, 'Target'), t.lower())
+            d.set_text(_child(_child(c, 'SourceEvent'), 'Name'), se)
+            d.set_text(_child(_child(c, 'TargetEvent'), 'Name'), te)
+            cast(list[dbxbin.Element], ec.children).append(c)
         self.report['event connections'] += len(self.events)
         self.report['objects added'] += len(self.new)
         return dict(self.report)

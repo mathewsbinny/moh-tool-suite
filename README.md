@@ -115,10 +115,12 @@ python -m ruff check .         the lint policy alone (the quick tier runs it too
 The lint policy (`pyproject.toml` `[tool.ruff]`, 2026-10-31): pyflakes' rules (unused imports and variables,
 undefined names, f-strings without fields), syntax errors, and no blind `except Exception` - except at a real
 boundary (a GUI's or command line's top level that reports any failure, an optional side file, a test turning any
-failure into a check), marked `# noqa: BLE001` with the reason beside it. The typed modules (`core\mohcore`, the
-format readers, NavKit: navkit, navbuild, navwalk, navdrops, navislands, navexport, navregress; the test harness and
-its crash reader) are checked by mypy (`pyproject.toml`
-`[tool.mypy]`; `python -m mypy`, also in the quick tier). A build's state (ids, counts, the areas' cells) lives in one
+failure into a check), marked `# noqa: BLE001` with the reason beside it; ruff checks the `.pyw` scripts too. Every
+module outside the tests - core, NavKit, the harness, the 3D tools and GUIs, the stock-MP AI, the menu tools, the
+console readers, run_tests.py - is fully annotated and checked by mypy (`pyproject.toml` `[tool.mypy]`;
+`python -m mypy`, also in the quick tier). `tests\test_structure.py` keeps it that way: a function outside the tests
+is at most 80 lines long (a test's 150), every public function has a docstring, and a module left out of mypy's list
+fails it. A build's state (ids, counts, the areas' cells) lives in one
 `navbuild.BuildState` per build, and its grid settings in a frozen `navbuild.Pitch` (`NORMAL` 0.8, `DETAILED` 0.2)
 handed down to every stage, not in module globals: builds in parallel threads come out exactly like their solo builds.
 
@@ -129,7 +131,8 @@ skips it; say why in the commit). Run `game` yourself before pushing a change to
 | Test | Tier | Checks |
 |---|---|---|
 | `tests/test_3d_quick.py` | quick | the 3D tools without game data or a window (offscreen OpenGL; skipped without OpenGL 3.3): the viewer draws, frames, picks the right object, hides layers, recolours batches, takes clicks / drags / keys and runs its frame loop; the Map Inspector lists, selects and measures on a made-up level; the Navigation Studio colours a made-up path-data file by island (two islands, two colours) and by difference (against itself: none), runs the path test and the compare overlay; overlay.py's AI layer, reference and anomaly reports; the level picker on a made-up OPFOR folder |
-| `tests/test_types.py` | quick | mypy over the typed modules (`core\mohcore`, hpdtool, kymesh, hkpack, navsample, NavKit: navkit, navbuild, navwalk, navdrops, navislands, navexport, navregress, and the harness with its crash reader; `pyproject.toml` `[tool.mypy]`): every function annotated and its body checked (skipped, and said so, when mypy is not installed) |
+| `tests/test_types.py` | quick | mypy over every module outside the tests (`pyproject.toml` `[tool.mypy]`, plus `moh-config\config.py` in a run of its own: its module name clashes with the stock-MP AI's `config`): every function annotated and its body checked (skipped, and said so, when mypy is not installed) |
+| `tests/test_structure.py` | quick | the structure rules over every Python file: functions at most 80 lines (150 in tests), a docstring on every public function outside the tests, every module outside the tests in mypy's list |
 | `tests/test_lint.py` | quick | the lint policy: ruff over every Python file (skipped, and said so, when ruff is not installed) |
 | `tests/test_repo.py` | quick | no game files or large files in the history, no co-author lines, no build output tracked, READMEs, LICENSE, every Python file compiles |
 | `tests/test_review_fixes.py` | quick | four defects from a code review (2026-10-26): NavKit's apply builds with the normal build's inputs (detailed zones, ladders); the stock-MP installer reinstalls a rebuilt file and keeps the original as its backup; the Navigation Studio's `--edit` is a flag; the navigation cache key follows the terrain's content |
@@ -171,6 +174,7 @@ skips it; say why in the commit). Run `game` yourself before pushing a change to
 | `moh-auto-navkit/tests/test_havok_index.py` | quick | NavKit's collision index: `<name>_Havok.res` and `<name>_Havok_Havok.res` packfiles found under the blueprint's name |
 | `moh-auto-navkit/tests/test_navsample_offline.py` | quick | NavKit's offline sampler on geometry built in the test: the in-game cast loop (layers, the 0.1 m gap, thin solids stepped through, nothing under the terrain, solid convex pieces, the floor under a convex piece taller than the 10 m solid limit, two-sided meshes, edge contacts), the capsule test (walls, ceilings, steep terrain; capsule-triangle intervals against brute force), the version-3 file read back, navsample.cpp's grid alignment, destroyed-state parts |
 | `moh-auto-navkit/tests/test_navdrops.py` | quick | NavKit's drop links (`navdrops.py`) on samples built in the test: a ledge over larger ground gets links down from its edge (at most 3, 4 m apart), none up; none from a ledge over 3 m, across a wall, onto a covered landing, through a solid column, past a wall corner, beyond a run's reach (a curb's cramped foot counts as floor) or from a region under 4 m2; the region labelling |
+| `moh-auto-navkit/tests/test_build_threads.py` | quick, full | NavKit builds in parallel threads: two synthetic levels (one with a 0.2 m detailed sector) built solo, then three rounds at once in two threads (a barrier, a short switch interval) - the .hpd, .cells.npz and log equal the solo builds (time frozen). Fails on the code with pitch globals. `--game` (full tier, ~11 min): mp_07_koth and mp_03_elimination, solo in their own processes and then in two threads; the NavKit folders untouched |
 | `moh-auto-navkit/tools/hpdcheck.py` | game (NavKit's builds of the 26 MP levels); every regression build | the structure of a path-data file: closed area boundaries, edges, node order, no zero-length edges, D / F features - all hold on DICE's files and on every NavKit build; `navregress.py` fails a level whose build breaks one |
 | `moh-auto-navkit/tests/test_navedits.py` | quick | walkability edits as generator inputs on a sample grid built in the test: outlines, boxes, height ranges over stacked floors, later edits winning, seeds and unseeds |
 | `moh-auto-navkit/tests/test_links.py` | game | links and route edges written into NavKit's export of mp_07_koth: a link joins two islands, one-way edges, removal, costs by the generator's rule (every edge of the build), the first-edge index rule, unreachable links reported, a graph-only base (the build standing in for DICE's) edited on a copy |

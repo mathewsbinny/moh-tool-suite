@@ -129,41 +129,54 @@ def parse_mesh(m: bytes) -> Mesh:
         tiles_raw.append(items)
     tiles = [[TileItem(area_index[p], a, b) for p, a, b in items] for items in tiles_raw]
 
-    areas: list[Area] = []
-    for o in area_offsets:
-        hdr = struct.unpack_from('<4I4f', m, o)
-        cnt = {k: _u32(m, o + k) for k in (0x20, 0x28, 0x30, 0x38, 0x40, 0x48)}
-        offs = {k: _u32(m, o + k + 4) for k in cnt}
-        null_offsets = {k: offs[k] for k in cnt if cnt[k] == 0}
-        area = Area(hdr[0], hdr[1], hdr[2], hdr[3], hdr[4], hdr[5], hdr[6], hdr[7], null_offsets=null_offsets)
-        if cnt[0x20]:
-            raise ValueError('A records present (never seen before)')
-        pos = o + offs[0x28]
-        for k in range(cnt[0x28]):
-            r = pos + k * 0x20
-            area.portals.append(Portal(_v3(m, r), _v3(m, r + 12), _u32(m, r + 0x18)))   # target resolved below
-        pos = o + offs[0x30]
-        for k in range(cnt[0x30]):
-            r = pos + k * 0x2C
-            area.border_portals.append(BorderPortal(_v3(m, r), _v3(m, r + 12), _v3(m, r + 0x20),
-                                                    (_u32(m, r + 0x18), _u32(m, r + 0x1C))))
-        for key, target in ((0x38, area.d_lines), (0x40, area.outline)):
-            if cnt[key]:
-                tab = o + offs[key]
-                idx = [_u32(m, tab + j * 4) for j in range(cnt[key] + 1)]
-                for j in range(cnt[key]):
-                    target.append(_points(m, o + idx[j], o + idx[j + 1]))
-        if cnt[0x48]:
-            tab = o + offs[0x48]
-            rows = [struct.unpack_from('<I3f', m, tab + j * 16) for j in range(cnt[0x48] + 1)]
-            for j in range(cnt[0x48]):
-                area.cells.append(Cell(rows[j][1:], _points(m, o + rows[j][0], o + rows[j + 1][0])))
-            area.end_row = rows[-1][1:]
-        areas.append(area)
+    areas = [_parse_area(m, o) for o in area_offsets]
     for area in areas:
         for p in area.portals:
             p.target = area_index[p.target]
 
+    links = _parse_links(m, n_links, links_off, area_offsets, area_index)
+    end_slot = m[tile_offs[ntiles]:tile_offs[ntiles] + 4]
+    return Mesh(version, flags, loaded, sector_id, resolution, pitch, rect, tx, tz, radius, tiles, areas, links,
+                end_slot, links_off if n_links == 0 else NULL)
+
+
+def _parse_area(m: bytes, o: int) -> Area:
+    """The area object at offset o of a mesh record (portal targets still object offsets: parse_mesh resolves them)."""
+    hdr = struct.unpack_from('<4I4f', m, o)
+    cnt = {k: _u32(m, o + k) for k in (0x20, 0x28, 0x30, 0x38, 0x40, 0x48)}
+    offs = {k: _u32(m, o + k + 4) for k in cnt}
+    null_offsets = {k: offs[k] for k in cnt if cnt[k] == 0}
+    area = Area(hdr[0], hdr[1], hdr[2], hdr[3], hdr[4], hdr[5], hdr[6], hdr[7], null_offsets=null_offsets)
+    if cnt[0x20]:
+        raise ValueError('A records present (never seen before)')
+    pos = o + offs[0x28]
+    for k in range(cnt[0x28]):
+        r = pos + k * 0x20
+        area.portals.append(Portal(_v3(m, r), _v3(m, r + 12), _u32(m, r + 0x18)))   # target resolved below
+    pos = o + offs[0x30]
+    for k in range(cnt[0x30]):
+        r = pos + k * 0x2C
+        area.border_portals.append(BorderPortal(_v3(m, r), _v3(m, r + 12), _v3(m, r + 0x20),
+                                                (_u32(m, r + 0x18), _u32(m, r + 0x1C))))
+    for key, target in ((0x38, area.d_lines), (0x40, area.outline)):
+        if cnt[key]:
+            tab = o + offs[key]
+            idx = [_u32(m, tab + j * 4) for j in range(cnt[key] + 1)]
+            for j in range(cnt[key]):
+                target.append(_points(m, o + idx[j], o + idx[j + 1]))
+    if cnt[0x48]:
+        tab = o + offs[0x48]
+        rows = [struct.unpack_from('<I3f', m, tab + j * 16) for j in range(cnt[0x48] + 1)]
+        for j in range(cnt[0x48]):
+            area.cells.append(Cell(rows[j][1:], _points(m, o + rows[j][0], o + rows[j + 1][0])))
+        area.end_row = rows[-1][1:]
+    return area
+
+
+def _parse_links(m: bytes, n_links: int, links_off: int, area_offsets: list[int],
+                 area_index: dict[int, int]) -> list[NeighbourLink]:
+    """The neighbour links of a mesh record: per neighbouring sector its link objects, their references resolved to
+    (area index, byte offset inside that area object)."""
     links: list[NeighbourLink] = []
     for k in range(n_links):
         sid, cnt, lst = struct.unpack_from('<3I', m, links_off + k * 12)
@@ -179,9 +192,7 @@ def parse_mesh(m: bytes) -> Mesh:
                 refs.append((area_index[owner], ptr - owner))
             objs.append(LinkObject(h, refs))
         links.append(NeighbourLink(sid, objs))
-    end_slot = m[tile_offs[ntiles]:tile_offs[ntiles] + 4]
-    return Mesh(version, flags, loaded, sector_id, resolution, pitch, rect, tx, tz, radius, tiles, areas, links,
-                end_slot, links_off if n_links == 0 else NULL)
+    return links
 
 
 def write_mesh(mesh: Mesh) -> bytes:

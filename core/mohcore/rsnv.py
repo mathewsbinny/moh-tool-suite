@@ -576,9 +576,17 @@ class World:
         rsnav's rsn_load (rsnav_load.c) and with its messages, so a file this accepts the runtime accepts and the other
         way round (2026-10-26: an ANOD node id past the nodes passed and crashed nearest_node)."""
         out: list[str] = []
+        self._validate_graph(out)
+        self._validate_sectors(out)
+        self._validate_areas(out)
+        self._validate_tables(out)
+        return list(dict.fromkeys(out))
+
+    def _validate_graph(self, out: list[str]) -> None:
+        """validate(): the nodes, their aux rows and the edges."""
         n = len(self.node_pos)
         n_edge, n_area, n_sect = len(self.edge_target), len(self.areas), len(self.sectors)
-        coord = lambda v: -1e6 < v < 1e6                    # rsnav's coordinate(): finite, inside +-1e6 m
+        coord = _coord
         if n >= 1 << 24:
             out.append('more nodes than an edge can address')
         if len(self.node_area) != n:
@@ -596,6 +604,12 @@ class World:
         if len(self.node_area) == n and n and (np.any((self.node_area != 0xFFFF) & (self.node_area >= n_area))
                                                or np.any(self.node_sector >= n_sect)):
             out.append('NAUX area or sector out of range')
+
+    def _validate_sectors(self, out: list[str]) -> None:
+        """validate(): the sectors and the grid buckets, area lists and area nodes they index."""
+        n = len(self.node_pos)
+        n_area = len(self.areas)
+        coord = _coord
         for sc in self.sectors:
             _id, _l, _pc, x0, z0, x1, z1, first_bucket, first_area, areas, _r = sc
             if first_bucket + BUCKETS * BUCKETS > len(self.gbkt):
@@ -610,6 +624,11 @@ class World:
             out.append('GLST area out of range')
         if len(self.anod) and int(self.anod.max()) >= n:
             out.append('ANOD node out of range')
+
+    def _validate_areas(self, out: list[str]) -> None:
+        """validate(): each area's ranges into the bitmap, height, node and portal sections, and its fields."""
+        n_sect = len(self.sectors)
+        coord = _coord
         for a in self.areas:
             row = (a.width + 7) >> 3
             if a.bmap + row * a.height > len(self.bmap):
@@ -626,6 +645,11 @@ class World:
                 out.append('AREA height grid step under its pitch or over 100 m')
             if not (a.min_y <= a.max_y and coord(a.x0) and coord(a.z0) and coord(a.min_y) and coord(a.max_y)):
                 out.append('AREA corner or heights inverted, not numbers or past 1e6 m')
+
+    def _validate_tables(self, out: list[str]) -> None:
+        """validate(): portals, ladders, off-mesh links, islands, object references and the conditional edges."""
+        n = len(self.node_pos)
+        n_edge, n_area = len(self.edge_target), len(self.areas)
         if any(p[5] >= n_area or p[6] >= n_area for p in self.ports):
             out.append('PORT area out of range')
         if any(L[7] >= n or L[8] >= n for L in self.ladders):
@@ -653,7 +677,11 @@ class World:
         else:
             if c != len(rows):
                 out.append('CEDG lists an edge out of range or out of order')
-        return list(dict.fromkeys(out))
+
+
+def _coord(v: float) -> bool:
+    """rsnav's coordinate(): finite, inside +-1e6 m."""
+    return -1e6 < v < 1e6
 
 
 def _array(raw: bytes | bytearray, e: str, off: int, count: int, fmt: str) -> list[tuple]:
@@ -680,6 +708,18 @@ def load(src: str | bytes | bytearray) -> World:
     sea, radius, height, step, water = struct.unpack_from(e + '5f', raw, 0x18)
     w = World(level_id, e == '>', sea, radius, height, step, water, raw=bytes(raw))
     w.h_scale_q = struct.unpack_from(e + 'I', raw, H_SCALE_AT)[0]
+    _load_directory(w, raw, e, nsec, size)
+    _load_graph(w, raw, e)
+    _load_areas(w, raw, e)
+    _load_tables(w, raw, e)
+    problems = w.validate()
+    if problems:
+        raise ValueError('RSNV: ' + problems[0])
+    return w
+
+
+def _load_directory(w: World, raw: bytes | bytearray, e: str, nsec: int, size: int) -> None:
+    """load(): the section directory into w.sections, each section checked against the file."""
     if nsec > 4 * len(SCHEMA) + 8 or HEADER + 16 * nsec > size:
         raise ValueError('RSNV: section directory outside the file')
     for k in range(nsec):
@@ -695,6 +735,10 @@ def load(src: str | bytes | bytearray) -> World:
     for need in ('SECT', 'NODE', 'NAUX', 'EDGE', 'AREA', 'BMAP', 'HGHT', 'GBKT', 'GLST', 'ANOD'):
         if need not in w.sections:
             raise ValueError(f'RSNV: no {need} section')
+
+
+def _load_graph(w: World, raw: bytes | bytearray, e: str) -> None:
+    """load(): the nodes, their aux rows and the edges."""
     sec = lambda t: w.sections.get(t, (0, 0, 0))
     if sec('NODE')[1] < 1:
         raise ValueError('RSNV: NODE has no sentinel')
@@ -711,6 +755,11 @@ def load(src: str | bytes | bytearray) -> World:
     w.edge_kind = (edges['t'] >> 24).astype(np.int64)
     w.edge_cost = edges['c'].astype(np.int64)
     w.edge_flags = edges['f'].astype(np.int64)
+
+
+def _load_areas(w: World, raw: bytes | bytearray, e: str) -> None:
+    """load(): the sectors, areas, their bitmaps and heights, the grid buckets and lists and the area nodes."""
+    sec = lambda t: w.sections.get(t, (0, 0, 0))
     w.sectors = _array(raw, e, *sec('SECT')[:2], SCHEMA['SECT'])
     for k, r in enumerate(_array(raw, e, *sec('AREA')[:2], SCHEMA['AREA'])):
         (x0, z0, x1, z1, mny, mxy, bmap, bw, bh, fp, npo, sector, island, flags, fnode, nnode, pmm, hg, hw, hh, _z) = r
@@ -726,6 +775,11 @@ def load(src: str | bytes | bytearray) -> World:
     w.glst = np.frombuffer(raw, np.dtype(e + 'u2'), c, o)
     o, c, _ = sec('ANOD')
     w.anod = np.frombuffer(raw, np.dtype(e + 'u4'), c, o)
+
+
+def _load_tables(w: World, raw: bytes | bytearray, e: str) -> None:
+    """load(): ladders, off-mesh links, islands, portals, objects, the conditional edges and META."""
+    sec = lambda t: w.sections.get(t, (0, 0, 0))
     w.ladders = _array(raw, e, *sec('LADR')[:2], SCHEMA['LADR']) if 'LADR' in w.sections else []
     w.offmesh = _array(raw, e, *sec('OFFM')[:2], SCHEMA['OFFM']) if 'OFFM' in w.sections else []
     w.islands = _array(raw, e, *sec('ISLD')[:2], SCHEMA['ISLD']) if 'ISLD' in w.sections else []
@@ -745,10 +799,6 @@ def load(src: str | bytes | bytearray) -> World:
             w.meta = json.loads(raw[o:o + c].decode('utf-8'))
         except ValueError:                          # provenance only: the runtime does not read META
             w.meta = {'unreadable META': True}
-    problems = w.validate()
-    if problems:
-        raise ValueError('RSNV: ' + problems[0])
-    return w
 
 
 DONE, PARTIAL = 'done', 'partial'

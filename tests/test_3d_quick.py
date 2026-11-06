@@ -176,6 +176,15 @@ class FakeRunner:
 
 # ------------------------------------------------------------------------------------------------ viewer
 def viewer_checks(check, tmp):
+    s, red, lo, hi = viewer_scene_checks(check)
+    v, off, picked, pa = viewer_draw_checks(check, s, red, lo, hi)
+    viewer_input_checks(check, v, off, picked, pa)
+    viewer_problem_checks(check, v, off)
+    viewer_run_checks(check, tmp)
+
+
+def viewer_scene_checks(check):
+    """The scene: layers, batches, bounds, colours, the layer limit. Returns the scene, its red layer and bounds."""
     s = viewer.Scene()
     red, green, blue = s.layer('red', (1.0, 0.1, 0.1)), s.layer('green', (0.1, 1.0, 0.1)), s.layer('lines', (0, 0, 1))
     check(s.layer('green', (0, 0, 0)) == green and s.bounds is None and s.triangle_count() == 0,
@@ -203,7 +212,12 @@ def viewer_checks(check, tmp):
     except ValueError:
         too_many = True
     check(too_many, f'a scene takes {viewer.MAX_LAYERS} layers, no more')
+    return s, red, lo, hi
 
+
+def viewer_draw_checks(check, s, red, lo, hi):
+    """The first view, the upload, drawing, picking, set_colors, a hidden layer, the selection and the overlay.
+    Returns the viewer, its offscreen frames, the picks reported and the red box's pixel."""
     picked = []
     v = viewer.Viewer(s, 'test', on_pick=picked.append, size=(640, 480))
     check(np.allclose(v.camera.target, (lo + hi) / 2) and abs(v.camera.distance - (np.linalg.norm(hi - lo) * 0.6 + 10)) < 1e-6,
@@ -256,7 +270,11 @@ def viewer_checks(check, tmp):
     img = off.frame()
     ov = at(img, v.project((0, -3, 0)))
     check(ov[0] > 200 and ov[1] > 200 and ov[2] < 80 and v._overlay_count == 2, f'overlay lines drawn over the scene ({ov.tolist()})')
+    return v, off, picked, pa
 
+
+def viewer_input_checks(check, v, off, picked, pa):
+    """Input: clicks, a double-click, drags, the wheel, hover, F and fly mode."""
     # input: a click selects and calls on_pick, a second one soon after focuses
     off.click(*pa)
     check(picked[-1:] == [11] and v.selected == 11 and v.pick_point is not None, f'a click selects what is under it ({picked})')
@@ -308,6 +326,9 @@ def viewer_checks(check, tmp):
     m = viewer.look_at((0, 10, 0), (0, 0, 0))
     check(np.isfinite(m).all(), 'look_at straight down (no side vector from up) still gives a matrix')
 
+
+def viewer_problem_checks(check, v, off):
+    """A failing panel and drawing before the context exists."""
     # a failing panel: listed in Problems, the frame goes on
     def panel_broken(_v):
         raise ValueError('broken on purpose')
@@ -322,6 +343,9 @@ def viewer_checks(check, tmp):
     v._background()                                             # before the window opens: nothing to draw
     check(len(v._problems) == 1, 'drawing before the context exists does nothing (no new problem)')
 
+
+def viewer_run_checks(check, tmp):
+    """Viewer.run with ImGui's runner replaced."""
     # Viewer.run, with the runner replaced: the window's settings, frames until exit_after, the screenshot
     s2 = viewer.Scene()
     s2.add_box((0, 0, 0), 2.0, 1, s2.layer('a', (0.8, 0.2, 0.2)))
@@ -556,7 +580,7 @@ def inspector_checks(check, tmp, lvl):
 
 # ------------------------------------------------------------------------------------------------ studio and overlay
 def studio_checks(check, tmp, lvl):
-    import overlay
+    import overlay  # noqa: F401 - imported first, as before the split (overlay_checks uses it)
     import studio as stmod
     import test_level as tl
     import test_navdata as tn
@@ -573,6 +597,24 @@ def studio_checks(check, tmp, lvl):
     tl.put(os.path.join(ref_dir, 'mp_r', 'Precomputed', 'Infantry', 'SectorOffsets.xml'),
            '<partition><field name="XOffset">-12</field><field name="ZOffset">34</field></partition>')
 
+    layer, rep = overlay_checks(check, tmp, nav, ref_xml, a_path)
+    st, v, off = studio_island_checks(check, lvl, nav)
+    studio_path_checks(check, st, v, off)
+    dv = studio_difference_checks(check, lvl, nav, other)
+    cv = studio_compare_checks(check, lvl, nav, other, rep, layer)
+    check(not v._problems and not cv._problems and not dv._problems,
+          f'the studio\'s panels draw without problems ({list(v._problems.values()) + list(cv._problems.values())})')
+    saved = stmod.save_json(tmp, 'x.json', {'a': np.arange(2)})
+    check(os.path.isfile(saved) and saved.startswith(os.path.join(tmp, 'work', 'navstudio')), 'save_json: into work\\navstudio')
+    check(stmod.parse_args(['s', 'lv', '--edit', '--color', 'pitch']) == ({'--edit': True, '--color': 'pitch'}, ['lv']),
+          'parse_args: flags and options')
+    studio_main_checks(check, tmp, ref_xml)
+
+
+def overlay_checks(check, tmp, nav, ref_xml, a_path):
+    """overlay.py: the AI layer, the reference report, anomalies, sources, main(). Returns the reference's AI layer
+    and its report against the NavKit build."""
+    import overlay
     # overlay.py: the AI layer, the reference report, anomalies, sources
     layer = overlay.read_ai_layer(ref_xml)
     check(layer['has_ai'] is True and len(layer['spawners']) == 2 and len(layer['area_orders']) == 1
@@ -629,7 +671,14 @@ def studio_checks(check, tmp, lvl):
     except FileNotFoundError:
         no_build = True
     check(no_build, 'an anomaly report without a NavKit build is refused')
+    return layer, rep
 
+
+def studio_island_checks(check, lvl, nav):
+    """The studio on one file: cell quads, island colours, spawns, island gaps, area ids, the other colour modes, the
+    drawn ground and selection by a click. Returns the studio, its viewer and the offscreen frames."""
+    import studio as stmod
+    import test_navdata as tn
     # studio: islands
     quads = stmod.cell_quads(np.array([[0.4, 0.4]]), np.array([5.0]), tn.flat_heightfield(5.0))
     check(quads.shape == (2, 3, 3) and np.allclose(quads[:, :, 1], 5.0 + stmod.LIFT)
@@ -684,7 +733,12 @@ def studio_checks(check, tmp, lvl):
     v.hovered = viewer.NO_ID
     h(None)
     check(st.selected is None, 'a click on nothing clears the selection')
+    return st, v, off
 
+
+def studio_path_checks(check, st, v, off):
+    """The path test (P): a route between two clicks, the gap to the lone island, and the mode off again."""
+    import studio as stmod
     # the path test
     off.key(imgui.Key.p)
     check(st.path_mode and not v.select_on_click, 'P: the path test, clicks no longer select')
@@ -702,6 +756,10 @@ def studio_checks(check, tmp, lvl):
     st.set_path_mode(v, False)
     check(v.select_on_click, 'the path test off: clicks select again')
 
+
+def studio_difference_checks(check, lvl, nav, other):
+    """Difference colouring: a file against itself, and against another file, drawn. Returns the viewer."""
+    import studio as stmod
     # difference: a file against itself, and against another file
     same = stmod.Studio(lvl, {'NavKit': nav, 'DICE': nav}, 'difference')
     sc = same.cell_colors('NavKit')
@@ -731,7 +789,12 @@ def studio_checks(check, tmp, lvl):
     diff.apply_colors(dv)
     img2 = doff.frame(2)
     check(not near(at(img2, dv.project((12.0, stmod.LIFT, 4.0))), e1, 3), 'the colouring changed in the drawing (island colours)')
+    return dv
 
+
+def studio_compare_checks(check, lvl, nav, other, rep, layer):
+    """The compare overlay: reference markers, the line to the nearest NavKit node. Returns the viewer."""
+    import studio as stmod
     # the compare overlay: reference markers, the line to the nearest NavKit node
     compare = {'report': rep, 'layer': layer, 'pathdata': other, 'slug': 'mp_r'}
     cs = stmod.Studio(lvl, {'NavKit': nav}, 'island', compare)
@@ -754,13 +817,14 @@ def studio_checks(check, tmp, lvl):
     cs.on_pick(cv)(stmod.ID_BASE['NavKit'])
     check(cs.ref_segs == [] and cv.overlay == [], 'a click elsewhere: the line goes')
     coff.frame(2)
-    check(not v._problems and not cv._problems and not dv._problems,
-          f'the studio\'s panels draw without problems ({list(v._problems.values()) + list(cv._problems.values())})')
-    saved = stmod.save_json(tmp, 'x.json', {'a': np.arange(2)})
-    check(os.path.isfile(saved) and saved.startswith(os.path.join(tmp, 'work', 'navstudio')), 'save_json: into work\\navstudio')
-    check(stmod.parse_args(['s', 'lv', '--edit', '--color', 'pitch']) == ({'--edit': True, '--color': 'pitch'}, ['lv']),
-          'parse_args: flags and options')
+    return cv
 
+
+def studio_main_checks(check, tmp, ref_xml):
+    """The studio's main(): no path data; the default files, difference, the path test, a screenshot; --compare."""
+    import studio as stmod
+    import test_level as tl
+    import test_navdata as tn
     # main(): no path data; then the default files (NavKit's build, DICE's), difference, the path test, --compare
     with FakeRunner(tmp) as r:
         rc0 = stmod.main(['studio.py', 'mp_t'])

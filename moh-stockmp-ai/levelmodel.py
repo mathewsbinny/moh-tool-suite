@@ -14,21 +14,24 @@ by the previous stage's MultipleTrigger (OnTrigger -> Enable) and its OnTrigger 
 CombatAreaTrigger. The first stage's trigger is the one no other MultipleTrigger enables.
 """
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import cast
 
 import dbxbin
 
 TEAMS = ('Team1', 'Team2')
+Vec = tuple[float, float, float]
+# an event connection: (source guid, source event, target guid, target event)
+Event = tuple[str | None, str | None, str | None, str | None]
 
 
-def local(ref):
+def local(ref: str | None) -> str | None:
     """The GUID of a local reference (no '/'), upper case; None for null or a reference into another partition."""
     if not ref or ref == 'null' or '/' in ref:
         return None
     return ref.upper()
 
 
-def position(e):
+def position(e: dbxbin.Element) -> Vec | None:
     """The (x, y, z) translation of an instance's 4x4 Transform, or None when it has none."""
     t = e.child('Transform')
     if t is None or t.kind != dbxbin.NUMBERS:
@@ -37,7 +40,17 @@ def position(e):
     return (v[12], v[13], v[14]) if len(v) == 16 else None
 
 
-def text(e, name, default=None):
+def _pos(e: dbxbin.Element) -> Vec:
+    # the position of an instance that has a Transform (capture points, M-COMs: the stock levels' all do)
+    return cast(Vec, position(e))
+
+
+def _guid(e: dbxbin.Element) -> str:
+    # an instance's GUID, upper case (every instance has one)
+    return cast(str, e.attr('guid')).upper()
+
+
+def text(e: dbxbin.Element, name: str, default: str | None = None) -> str | None:
     """A field's value as text: TEXT as is, numbers joined with '/', bools as 'true' / 'false'; default when the field
     is missing or a container."""
     c = e.child(name)
@@ -53,13 +66,13 @@ def text(e, name, default=None):
     return default
 
 
-def ref_of(e, name):
+def ref_of(e: dbxbin.Element, name: str) -> str | None:
     """The ref attribute of the field called name, or None."""
     c = e.child(name)
     return c.attr('ref') if c is not None else None
 
 
-def item_refs(e, name):
+def item_refs(e: dbxbin.Element, name: str) -> list[str | None]:
     """The refs of an array field's items ([] when the field is missing or empty)."""
     a = e.child(name)
     return [i.attr('ref') for i in (a.children or ())] if a is not None and a.children is not None else []
@@ -70,12 +83,12 @@ class CapturePoint:
     guid: str
     name: str
     label: str
-    pos: Tuple[float, float, float]
-    owner: str                       # InitialOwnerTeam
-    spawners: List[str]
-    outline: List[Tuple[float, float, float]] = field(default_factory=list)
+    pos: Vec
+    owner: str | None                # InitialOwnerTeam
+    spawners: list[str]
+    outline: list[Vec] = field(default_factory=list)
 
-    def half_extents(self, minimum=6.0, maximum=30.0):
+    def half_extents(self, minimum: float = 6.0, maximum: float = 30.0) -> Vec:
         """Half sizes (x, 3, z) of a box around the capture point's outline, each clamped to minimum..maximum metres;
         minimum when it has no outline."""
         if not self.outline:
@@ -92,12 +105,12 @@ class CapturePoint:
 class Spawner:
     guid: str
     name: str
-    team: str
-    player_type: str
-    pos: Tuple[float, float, float]
+    team: str | None
+    player_type: str | None
+    pos: Vec | None
     enabled: bool
-    alternates: List[Tuple[str, Tuple[float, float, float]]]
-    flag: Optional[str] = None       # the capture point that lists it (its Spawners)
+    alternates: list[tuple[str | None, Vec]]
+    flag: str | None = None          # the capture point that lists it (its Spawners)
 
 
 @dataclass
@@ -105,11 +118,11 @@ class Stage:
     index: int
     trigger: str                     # MultipleTriggerEntityData guid: OnTrigger = this stage's M-COMs are destroyed
     trigger_name: str
-    mcoms: List[Tuple[str, Tuple[float, float, float]]]
+    mcoms: list[tuple[str, Vec]]
 
 
 class Model:
-    def __init__(self, d):
+    def __init__(self, d: dbxbin.Dbx) -> None:
         self.d = d
         self.inst = {(e.attr('guid') or '').upper(): e for e in d.instances()}
         self.level = next(e for e in d.instances() if (e.attr('type') or '').endswith('.LevelData'))
@@ -124,40 +137,42 @@ class Model:
         self.factions = {t: text(desc, 'Faction' + t) for t in TEAMS} if desc is not None else {}
         self.attacker = text(desc, 'AttackerTeam') if desc is not None else None
         self.has_ai = text(self.level, 'HasAI') == 'true'
-        self.events = []
+        self.events: list[Event] = []
         ec = self.level.child('EventConnections')
         for c in (ec.children or ()) if ec is not None else ():
             src, tgt = local(ref_of(c, 'Source')), local(ref_of(c, 'Target'))
             se, te = c.child('SourceEvent'), c.child('TargetEvent')
-            self.events.append((src, text(se, 'Name'), tgt, text(te, 'Name')))
+            # an EventConnection has both events
+            self.events.append((src, text(cast(dbxbin.Element, se), 'Name'), tgt, text(cast(dbxbin.Element, te), 'Name')))
         self.objects = [local(r) for r in item_refs(self.level, 'Objects')]
         self.capture_points = [self._capture_point(e) for e in d.of_type('.CapturePointEntityData')]
         flag_of = {s: cp.guid for cp in self.capture_points for s in cp.spawners}
-        self.spawners = []
+        self.spawners: list[Spawner] = []
         for e in d.of_type('.SoldierSpawnEntityData'):
-            g = e.attr('guid').upper()
-            alts = []
+            g = _guid(e)
+            alts: list[tuple[str | None, Vec]] = []
             for r in item_refs(e, 'AlternativeSpawnPoints'):
                 a = self.inst.get(local(r) or '')
-                if a is not None and position(a):
-                    alts.append((local(r), position(a)))
+                if a is not None and (p := position(a)):
+                    alts.append((local(r), p))
             self.spawners.append(Spawner(g, text(e, 'Name') or '', text(e, 'Team'), text(e, 'PlayerType'), position(e),
                                          text(e, 'Enabled') == 'true', alts, flag_of.get(g)))
-        self.mcoms = []
+        self.mcoms: list[tuple[str, str, Vec]] = []
         for e in d.of_type('.ReferenceObjectData'):
             if (ref_of(e, 'ReferencedObject') or '').lower().startswith('objects/objects/mpobjective/'):
-                self.mcoms.append((e.attr('guid').upper(), text(e, 'Name') or '', position(e)))
+                self.mcoms.append((_guid(e), text(e, 'Name') or '', _pos(e)))
 
-    def typ(self, guid):
+    def typ(self, guid: str | None) -> str | None:
         """The short type name (after the last dot) of the instance with this GUID, or None."""
         e = self.inst.get(guid or '')
         return (e.attr('type') or '').rsplit('.', 1)[-1] if e is not None else None
 
-    def _capture_point(self, e):
-        g = e.attr('guid').upper()
-        outline = []
+    def _capture_point(self, e: dbxbin.Element) -> CapturePoint:
+        g = _guid(e)
+        outline: list[Vec] = []
         for r in item_refs(e, 'Geometry'):
-            seen, cur = set(), local(r)
+            seen: set[str] = set()
+            cur = local(r)
             while cur and cur in self.inst and cur not in seen:
                 seen.add(cur)
                 p = position(self.inst[cur])
@@ -165,20 +180,20 @@ class Model:
                     outline.append(p)
                 cur = local(ref_of(self.inst[cur], 'Next'))
         return CapturePoint(g, text(e, 'Name') or '', text(e, 'ControlPointName') or text(e, 'LocationName') or '',
-                            position(e), text(e, 'InitialOwnerTeam'), [local(r) for r in item_refs(e, 'Spawners') if local(r)],
+                            _pos(e), text(e, 'InitialOwnerTeam'), [s for s in map(local, item_refs(e, 'Spawners')) if s],
                             outline)
 
-    def bases(self, team):
+    def bases(self, team: str) -> list[CapturePoint]:
         """The capture points the team owns at the start."""
         return [cp for cp in self.capture_points if cp.owner == team]
 
-    def flags(self):
+    def flags(self) -> list[CapturePoint]:
         """Capture points that start neutral (the Conquest flags)."""
         return [cp for cp in self.capture_points if cp.owner not in TEAMS]
 
-    def ground_points(self, team=None, flag=None):
+    def ground_points(self, team: str | None = None, flag: str | None = None) -> list[Vec]:
         """Ground spawn positions (alternate spawn points) of the stock spawners, by team / owning capture point."""
-        out = []
+        out: list[Vec] = []
         for s in self.spawners:
             if team and s.team != team:
                 continue
@@ -187,13 +202,13 @@ class Model:
             out += [p for _g, p in s.alternates]
         return out
 
-    def rush_stages(self):
+    def rush_stages(self) -> list[Stage]:
         """Stages in order, from the stock stage logic: MultipleTriggers fed by M-COM onDestroyed."""
         mcom = {g: p for g, _n, p in self.mcoms}
-        fed = {}
-        enabled_by = {}
+        fed: dict[str, list[tuple[str, Vec]]] = {}
+        enabled_by: dict[str, str | None] = {}
         for s, se, t, te in self.events:
-            if self.typ(t) != 'MultipleTriggerEntityData':
+            if t is None or self.typ(t) != 'MultipleTriggerEntityData':
                 continue
             if s in mcom and se == 'onDestroyed' and te == 'Trigger':
                 fed.setdefault(t, []).append((s, mcom[s]))
@@ -206,7 +221,9 @@ class Model:
         firsts.sort(key=lambda t: -self._chain_len(t, nxt))
         if not firsts:
             return []
-        out, cur, seen = [], firsts[0], set()
+        out: list[Stage] = []
+        cur: str | None = firsts[0]
+        seen: set[str] = set()
         while cur and cur not in seen:
             seen.add(cur)
             out.append(Stage(len(out), cur, text(self.inst[cur], 'Name') or '', sorted(fed[cur])))
@@ -219,8 +236,8 @@ class Model:
         return out
 
     @staticmethod
-    def _chain_len(t, nxt):
-        n, seen = 0, set()
+    def _chain_len(t: str | None, nxt: dict[str, str]) -> int:
+        n, seen = 0, set[str]()
         while t and t not in seen:
             seen.add(t)
             n += 1

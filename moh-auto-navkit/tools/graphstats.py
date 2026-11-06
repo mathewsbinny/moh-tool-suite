@@ -3,12 +3,13 @@ sys.path.insert(0, __import__('os').path.dirname(__import__('os').path.abspath(_
 import hpdtool
 for path in sys.argv[1:]:
     f = hpdtool.parse(open(path, 'rb').read())
-    parent = {}
-    def find(x):
+    parent: dict[int, int] = {}
+
+    def find(x: int) -> int:
         while parent.setdefault(x, x) != x:
             parent[x] = parent[parent[x]]; x = parent[x]
         return x
-    deg = collections.Counter(); ids = set()
+    deg: collections.Counter[int] = collections.Counter(); ids: set[int] = set()
     for s in f.sectors:
         for e in s.edges:
             a, b = s.nodes[e.src].id, s.nodes[e.dst].id

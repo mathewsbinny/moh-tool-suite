@@ -29,6 +29,8 @@ import subprocess
 import sys
 import tempfile
 from collections import Counter
+from collections.abc import Callable, Iterator, Sequence
+from typing import TYPE_CHECKING, Any, cast
 
 import config as cfgmod
 import dbxbin
@@ -39,36 +41,50 @@ SUITE = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(SUITE, 'core'))
 from mohcore import dbx as coredbx  # noqa: E402
 
+if TYPE_CHECKING:
+    import ordercheck
+
 ORDER_NODE = 15.0
 SPAWN_NODE = cfgmod.SNAP_RADIUS + 0.5
 ALLOWED_CHANGED = ('HasAI', 'PlayerType')
+Check = tuple[bool, str]                   # a check's result: ok, and the detail line
 
 
-def _dbxedit(*args):
+def _dbxedit(*args: object) -> tuple[int, str]:
     r = subprocess.run([pipeline.DBX, *map(str, args)], capture_output=True, text=True, errors='replace')
     return r.returncode, r.stdout + r.stderr
 
 
-def _counts(out):
+def _child(e: coredbx.Element, name: str) -> coredbx.Element:
+    # a field the authored level is known to have (a missing one fails the check, through validate's except)
+    return cast(coredbx.Element, e.child(name))
+
+
+def _attr(e: coredbx.Element, name: str) -> str:
+    # an attribute the element is known to have (a reference item's ref)
+    return cast(str, e.attr(name))
+
+
+def _counts(out: str) -> tuple[int, int] | tuple[None, None]:
     m = re.search(r'(\d+) error\(s\), (\d+) warning\(s\)', out)
     return (int(m.group(1)), int(m.group(2))) if m else (None, None)
 
 
-def check_dbxedit(orig, authored, bundle_dir, orig_bundle_dir, mp_common):
+def check_dbxedit(orig: str, authored: str, bundle_dir: str, orig_bundle_dir: str, mp_common: str) -> Check:
     """DbxEdit's check of the authored partition against the stock one: ok when it has no more errors or warnings and
     the same error lines."""
     _rc, a = _dbxedit('check', authored, '--bundle', bundle_dir, '--bundle', mp_common)
     _rc, o = _dbxedit('check', orig, '--bundle', orig_bundle_dir, '--bundle', mp_common)
     ea, wa = _counts(a)
     eo, wo = _counts(o)
-    ok = ea is not None and ea <= (eo or 0) and wa <= wo
+    ok = ea is not None and wa is not None and ea <= (eo or 0) and wa <= (wo or 0)
     errs_a = sorted(l for l in a.splitlines() if l.startswith('ERROR'))
     errs_o = sorted(l for l in o.splitlines() if l.startswith('ERROR'))
     ok = ok and errs_a == errs_o
     return ok, f'authored {ea} error(s), {wa} warning(s); stock {eo} / {wo}'
 
 
-def check_roundtrip(authored, tmp):
+def check_roundtrip(authored: str, tmp: str) -> Check:
     """Ok when the authored partition round-trips byte for byte through DbxEdit, both directly and through XML export
     and import."""
     rc, out = _dbxedit('roundtrip', authored)
@@ -81,12 +97,12 @@ def check_roundtrip(authored, tmp):
     return ok1 and ok2, f'roundtrip {"identical" if ok1 else "DIFFERENT"}; xml -> import {"identical" if ok2 else "DIFFERENT (exit " + str(rc2) + ")"}'
 
 
-def _core_instances(path):
+def _core_instances(path: str) -> tuple[coredbx.DbxFile, dict[str, coredbx.Element]]:
     f = coredbx.read(path)
     return f, {(e.attr('guid') or '').upper(): e for e in f.instances}
 
 
-def _refs(e):
+def _refs(e: coredbx.Element) -> Iterator[tuple[coredbx.Element, str]]:
     for c in e.children or ():
         r = c.attr('ref')
         if r is not None and r != 'null':
@@ -94,18 +110,18 @@ def _refs(e):
         yield from _refs(c)
 
 
-def check_structure(orig, authored, c):
+def check_structure(orig: str, authored: str, c: cfgmod.Config) -> Check:
     """Ok when every local reference and event connection resolves, each new instance is listed once in Objects, HasAI
     is true and the pathfinding types are set."""
     f, inst = _core_instances(authored)
     _fo, oinst = _core_instances(orig)
-    problems = []
+    problems: list[str] = []
     for g, e in inst.items():
         for _c, r in _refs(e):
             if '/' not in r and r.upper() not in inst:
                 problems.append(f'{g}: local reference {r} unresolved')
     lvl = next(e for e in f.instances if (e.attr('type') or '').endswith('.LevelData'))
-    objs = [i.attr('ref').upper() for i in (lvl.child('Objects').children or [])]
+    objs = [_attr(i, 'ref').upper() for i in (_child(lvl, 'Objects').children or [])]
     dup = [k for k, v in Counter(objs).items() if v > 1]
     if dup:
         problems.append(f'{len(dup)} entities listed twice in Objects')
@@ -113,16 +129,16 @@ def check_structure(orig, authored, c):
     unlisted = [g for g in new if g not in set(objs)]
     if unlisted:
         problems.append(f'{len(unlisted)} new instances not in Objects')
-    ec = lvl.child('EventConnections')
+    ec = _child(lvl, 'EventConnections')
     nev = 0
     for cx in ec.children or ():
         for side in ('Source', 'Target'):
-            r = cx.child(side).attr('ref')
+            r = _attr(_child(cx, side), 'ref')
             if '/' not in r and r.upper() not in inst:
                 problems.append(f'event {side} {r} unresolved')
         nev += 1
-    has_ai = coredbx.value(lvl.child('HasAI'))
-    pft = [i.attr('ref') for i in (lvl.child('PathfindingTypes').children or [])]
+    has_ai = coredbx.value(_child(lvl, 'HasAI'))
+    pft = [_attr(i, 'ref') for i in (_child(lvl, 'PathfindingTypes').children or [])]
     if has_ai != 'true':
         problems.append('HasAI is not true')
     if [p.lower() for p in pft] != [p.lower() for p in __import__('author').PATHFINDING]:
@@ -131,15 +147,15 @@ def check_structure(orig, authored, c):
                           f'PathfindingTypes infantry + vehicles' if not problems else '; '.join(problems[:8]))
 
 
-def check_changes(orig, authored, c, tmp):
+def check_changes(orig: str, authored: str, c: cfgmod.Config, tmp: str) -> Check:
     """The existing instances: only HasAI, PathfindingTypes, PlayerType, Objects and EventConnections may differ."""
     fo, oinst = _core_instances(orig)
     fa, ainst = _core_instances(authored)
-    bad = []
-    changed = Counter()
+    bad: list[str] = []
+    changed: Counter[str] = Counter()
 
-    def flat(e, path=''):
-        out = {}
+    def flat(e: coredbx.Element, path: str = '') -> dict[str, tuple[Any, ...]]:
+        out: dict[str, tuple[Any, ...]] = {}
         for k, ch in enumerate(e.children or ()):
             name = ch.attr('name') or ch.tag
             p = f'{path}/{name}[{k}]'
@@ -158,8 +174,8 @@ def check_changes(orig, authored, c, tmp):
             fa_ = {k: v for k, v in flat(a).items() if not k.startswith(('/Objects[', '/EventConnections[', '/PathfindingTypes['))}
             # the old Objects / EventConnections items must be kept, in order, at the front
             for arr in ('Objects', 'EventConnections'):
-                oi = [repr(x) for x in (e.child(arr).children or [])]
-                ai = [repr(x) for x in (a.child(arr).children or [])][:len(oi)]
+                oi = [repr(x) for x in (_child(e, arr).children or [])]
+                ai = [repr(x) for x in (_child(a, arr).children or [])][:len(oi)]
                 if oi != ai:
                     bad.append(f'LevelData.{arr}: existing items changed')
         else:
@@ -177,9 +193,9 @@ def check_changes(orig, authored, c, tmp):
     return not bad, (f'existing instances unchanged except {dict(changed)}' if not bad else '; '.join(bad[:8]))
 
 
-def _partition_index(folders):
+def _partition_index(folders: Sequence[str]) -> dict[str, str]:
     """lower-case partition path (no .dbx) -> folder file path, over unpacked bundle folders."""
-    idx = {}
+    idx: dict[str, str] = {}
     for top in folders:
         for dp, _ds, fs in os.walk(top):
             for fn in fs:
@@ -190,13 +206,13 @@ def _partition_index(folders):
     return idx
 
 
-def check_external(orig, authored, folders):
+def check_external(orig: str, authored: str, folders: Sequence[str]) -> Check:
     """Ok when every new reference into another partition (one the stock level does not have) names an instance that
     exists in the bundle folders."""
     _fo, oinst = _core_instances(orig)
     _f, inst = _core_instances(authored)
     idx = _partition_index(folders)
-    wanted = set()
+    wanted: set[str] = set()
     for g, e in inst.items():
         if g in oinst and not (e.attr('type') or '').endswith('.LevelData'):
             continue
@@ -204,14 +220,14 @@ def check_external(orig, authored, folders):
             if '/' in r:
                 wanted.add(r.lower())
     # only the references the stock level does not already have
-    old = set()
+    old: set[str] = set()
     for e in oinst.values():
         for _c, r in _refs(e):
             if '/' in r:
                 old.add(r.lower())
     wanted -= old
-    bad = []
-    cache = {}
+    bad: list[str] = []
+    cache: dict[str, set[str]] = {}
     for r in sorted(wanted):
         part, guid = r.rsplit('/', 1)
         p = idx.get(part)
@@ -226,10 +242,10 @@ def check_external(orig, authored, folders):
                      if not bad else '; '.join(bad))
 
 
-def check_assets(build_dir, rep, c, lv_upper):
+def check_assets(build_dir: str, rep: dict[str, Any], c: cfgmod.Config, lv_upper: str) -> Check:
     """Ok when the added entries are the manifest's tail, each SectorOffsets asset has its name and integer offsets,
     and the template partitions are packed."""
-    bad = []
+    bad: list[str] = []
     lines = [l for l in open(os.path.join(build_dir, 'fbrb.manifest'), encoding='utf-8').read().splitlines() if l.strip()]
     added = rep.get('added_entries', [])
     tail = [l.split('|', 1)[0] for l in lines[-len(added):]] if added else []
@@ -242,20 +258,20 @@ def check_assets(build_dir, rep, c, lv_upper):
             continue
         f = coredbx.read(p)
         e = f.instances[0]
-        name = coredbx.value(e.child('Name'))
+        name = coredbx.value(_child(e, 'Name'))
         if name != f'Levels/{lv_upper}/Precomputed/{kind}/SectorOffsets':
             bad.append(f'{kind}: Name {name}')
         want = rep['sector_offsets_values'][kind]
         for fld, v in (('XOffset', want[0]), ('ZOffset', want[1])):
-            size, vals = coredbx.numbers(e.child(fld))
+            size, vals = coredbx.numbers(_child(e, fld))
             if size != 4 or struct.unpack('>i', vals[0])[0] != v:
                 bad.append(f'{kind} {fld} is not the integer {v}')
     for p in rep.get('template_pack', []):
         q = pipeline.find_entry(build_dir, p)
         if not q:
             bad.append(f'{p} not packed')
-    if rep.get('template_pack'):
-        t = pipeline.find_entry(build_dir, rep['template_pack'][0])
+    t = pipeline.find_entry(build_dir, rep['template_pack'][0]) if rep.get('template_pack') else None
+    if t is not None:                              # (a template partition not packed: reported above)
         g = c['template'].rsplit('/', 1)[1].lower()
         if g not in {(e.attr('guid') or '').lower() for e in coredbx.read(t).instances}:
             bad.append('the template instance is not in the packed template partition')
@@ -264,14 +280,14 @@ def check_assets(build_dir, rep, c, lv_upper):
                      if not bad else '; '.join(bad))
 
 
-def check_navigation(c, hpd):
+def check_navigation(c: cfgmod.Config, hpd: str) -> Check:
     """Ok when every spawner is on the navigation data on a large island, every order has a route node near it, and
     each order's spawners are route-connected to it."""
     snap = cfgmod.Snapper(hpd)
     if snap.pd is None:
         return False, f'no path data at {hpd}'
-    bad = []
-    groups = {}
+    bad: list[str] = []
+    groups: dict[str, Any] = {}
     for s in c['spawners']:
         p = tuple(s['pos'])
         q = (p[0], p[1] - cfgmod.SPAWN_LIFT, p[2])
@@ -282,7 +298,7 @@ def check_navigation(c, hpd):
         if size < 0.25 * snap.biggest:
             bad.append(f'spawner {s["id"]}: on a small island ({size} nodes)')
         groups[s['id']] = snap.pd.group[snap.pd.ids[_nearest_index(snap, q)]]
-    listed = Counter()
+    listed: Counter[str] = Counter()
     worst = 0.0
     for o in c['orders']:
         dist, node, size = snap.nearest(tuple(o['pos']))
@@ -301,27 +317,27 @@ def check_navigation(c, hpd):
                      f'within {worst:.1f} m, every spawner route-connected to its objectives' if not bad else '; '.join(bad[:8]))
 
 
-def _nearest_index(snap, p):
+def _nearest_index(snap: cfgmod.Snapper, p: cfgmod.Point) -> int:
     import numpy as np
-    P = snap.pd.pos
+    P = cast('ordercheck.PathData', snap.pd).pos       # check_navigation returns first without path data
     d = np.hypot(P[:, 0] - p[0], P[:, 2] - p[2])
     d = np.where(np.abs(P[:, 1] - cfgmod.NODE_Y - p[1]) <= 4.0, d, 1e9)
     return int(np.argmin(d))
 
 
-def check_stages(authored, c):
+def check_stages(authored: str, c: cfgmod.Config) -> Check:
     """Ok when later-stage spawners and orders start disabled and each stage's advance source is a
     MultipleTriggerEntityData of the level."""
     stages = c.get('stages') or []
     if not stages and not any(s.get('stage') for s in c['spawners']):
         return True, 'no stages (one-stage mode)'
     _f, inst = _core_instances(authored)
-    bad = []
+    bad: list[str] = []
     for s in c['spawners'] + c['orders']:
         if (s.get('stage') or 0) > 0:
             role = 'spawner' if s in c['spawners'] else 'order'
             g = dbxbin.new_guid('opfor:stockmp', c['lv'], role, s['id'])
-            if coredbx.value(inst[g].child('Enabled')) != 'false':
+            if coredbx.value(_child(inst[g], 'Enabled')) != 'false':
                 bad.append(f'{s["id"]} (stage {s["stage"]}) starts enabled')
     for st in stages:
         src = st['advance']['source'].upper()
@@ -332,7 +348,7 @@ def check_stages(authored, c):
     return not bad, (f'{len(stages)} stage switches; later stages start disabled' if not bad else '; '.join(bad[:8]))
 
 
-def check_packed(out_bundle, build_dir, tmp):
+def check_packed(out_bundle: str, build_dir: str, tmp: str) -> Check:
     """Ok when the packed bundle unpacks to files identical to the build folder's (the manifest aside)."""
     d = os.path.join(tmp, 'unpacked')
     shutil.rmtree(d, ignore_errors=True)
@@ -353,7 +369,7 @@ def check_packed(out_bundle, build_dir, tmp):
     return bad == 0, f'{n} files unpack identical' if not bad else f'{bad} of {n} files differ after packing'
 
 
-def check_config(rep, c):
+def check_config(rep: dict[str, Any], c: cfgmod.Config) -> Check:
     """0. The build is of this configuration: build_report.json's config_sha256 against the one given."""
     built, now = rep.get('config_sha256'), pipeline.config_sha(c)
     if built == now:
@@ -363,14 +379,14 @@ def check_config(rep, c):
     return False, f'the build is of another configuration ({built[:12]}, this one is {now[:12]}): build again'
 
 
-def _save(paths, results):
+def _save(paths: pipeline.Paths, results: Sequence[tuple[str, bool, str]]) -> dict[str, Any]:
     out = {'passed': all(ok for _n, ok, _d in results), 'results': [{'check': n, 'ok': ok, 'detail': d} for n, ok, d in results]}
     with open(os.path.join(paths.root, 'validation.json'), 'w', encoding='utf-8') as f:
         json.dump(out, f, indent=1)
     return out
 
 
-def validate(paths, c, log=print):
+def validate(paths: pipeline.Paths, c: cfgmod.Config, log: Callable[[str], object] = print) -> dict[str, Any]:
     """Runs every check on the built AI layer of each variant, logging each result, and saves them; stops after the
     configuration check when it fails."""
     rep = json.load(open(os.path.join(paths.root, 'build_report.json'), encoding='utf-8'))
@@ -378,7 +394,7 @@ def validate(paths, c, log=print):
     log(f'{"ok  " if ok else "FAIL"} configuration: {detail}')
     if not ok:                                     # the other checks would judge this configuration against another build
         return _save(paths, [('configuration', ok, detail)])
-    results = [('configuration', ok, detail)]
+    results: list[tuple[str, bool, str]] = [('configuration', ok, detail)]
     tmp = tempfile.mkdtemp(prefix='stockmp_validate_')
     mp_common = pipeline.common(paths, 'mp_common')
     so = {k: (v['x'], v['z']) for k, v in rep['sector_offsets'].items()}

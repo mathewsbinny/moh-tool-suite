@@ -244,6 +244,21 @@ def classes(check):
 # ------------------------------------------------------------------------------------------------ quick
 
 def quick(check, tmp):
+    nav, sources, targets = _quick_reachability(check)
+    _quick_batteries(check, nav, sources, targets)
+    _quick_orders_structure_offsets(check, nav)
+    _quick_level_checks(check, tmp)
+    _quick_fbrb(check, tmp)
+    _quick_sessions(check)
+    base, new, gone, p = _quick_runs(check, tmp)
+    _quick_regressions(check, base, new, gone)
+    _quick_default_files(check, tmp)
+    _quick_command_line(check, tmp, base, new, p)
+
+
+def _quick_reachability(check):
+    """quick(): the point classes, the built route graph and the reachability test; returns the graph, spawns and
+    targets."""
     classes(check)
     # two lattices 200 m apart (islands 0 and 1), and a one-way edge out of a third lattice
     nav = grid_nav([(0, 0, 5, 5, 0.0, 10.0), (200, 0, 3, 3, 0.0, 10.0), (0, 100, 2, 1, 0.0, 10.0)], one_way=[(25 + 9, 0)])
@@ -278,7 +293,11 @@ def quick(check, tmp):
     ka, _ = checks.join(roofed, p)
     check(roofed.node_island[kn] == 1 and roofed.node_island[ka] == 0,
           'a point on the main ground joins the main ground (area join); the nearest-node join takes the roof island')
+    return nav, sources, targets
 
+
+def _quick_batteries(check, nav, sources, targets):
+    """quick(): random points, routes and the route batteries."""
     # batteries
     a = checks.random_points(nav, 20, 1, 'sp_test')
     check(a == checks.random_points(nav, 20, 1, 'sp_test') and a != checks.random_points(nav, 20, 2, 'sp_test')
@@ -299,6 +318,9 @@ def quick(check, tmp):
     lp = checks.level_pairs(sources, targets, 4, 1, 'sp_test')
     check(len(lp) == 4 and lp == checks.level_pairs(sources, targets, 4, 1, 'sp_test'), 'spawn -> target pairs drawn with a fixed seed')
 
+
+def _quick_orders_structure_offsets(check, nav):
+    """quick(): the orders, structure and sector offsets tests."""
     # orders, structure, offsets
     ords = [Point('AreaOrder', 'a', (10.0, 0.0, 10.0)), Point('PatrolWaypoint', 'b', (40.0, 0.0, 0.0)), Point('AreaOrder', 'c', (600.0, 0.0, 0.0))]
     o = checks.orders(nav, ords, lambda p: p[0] < 20)
@@ -320,6 +342,9 @@ def quick(check, tmp):
           and checks.offsets(imp, None).status == 'fail' and checks.offsets(imp, 'unread').status == 'warn',
           'offsets against the asset: equal passes, different or missing fails, unread warns')
 
+
+def _quick_level_checks(check, tmp):
+    """quick(): the level checks and the load set from package.mft."""
     # level checks
     camp = levelchecks.all_checks(level_info(), levelinfo.PLACEHOLDER)
     file_checks = [k for k, r in camp.items() if r.status != 'hold']
@@ -353,6 +378,9 @@ def quick(check, tmp):
           'load set from package.mft: the level-00 block only; patch and base targets as files')
     check(levelinfo.load_set(tmp, 'missing_level', mft) == [], 'a level without a block: an empty load set')
 
+
+def _quick_fbrb(check, tmp):
+    """quick(): the fbrb reader and the bundle cache."""
     # fbrb
     items = [('Levels/TEST.dbx', '<non-resource>', b'level' * 100), ('Levels/Gone.dbx', '*deleted*', b''),
              ('Levels/TEST/Precomputed/Infantry/SectorOffsets.dbx', '<non-resource>', b'offsets!')]
@@ -396,6 +424,9 @@ def quick(check, tmp):
     check(not left and not entries and levelinfo.bundle_read(bp, ['Levels/TEST.dbx'], cut) == r1,
           'a cache entry is written whole or not at all (temporary file, then os.replace): a cut-off write leaves none')
 
+
+def _quick_sessions(check):
+    """quick(): opfor.log sessions and the in-game criteria."""
     # opfor.log sessions
     ss = ingame.sessions(LOG)
     check(len(ss) == 3 and ss[1].level == 'Levels/ONS_MP_002' and ss[1].in_game and ss[1].events == ['AI init']
@@ -413,6 +444,9 @@ def quick(check, tmp):
           'offsets-read: one load with the asset\'s values and one with 0,0 fails (every load must read them)')
     check(all(r.status == 'hold' for r in ingame.telemetry_tests().values()), 'the telemetry tests (M6) are on hold')
 
+
+def _quick_runs(check, tmp):
+    """quick(): saved runs, their comparison and the report; returns the runs base, new and gone and base's file."""
     # saved runs and comparison
     base = saved_run('base', {'pairs_reached_pct': 80.0, 'reach_parity_pct': 99.0, 'islands': 5})
     new = saved_run('new', {'pairs_reached_pct': 79.8, 'reach_parity_pct': 97.0, 'islands': 7, 'found': 95.0, 'ratio': 1.2},
@@ -447,7 +481,11 @@ def quick(check, tmp):
     text = out.getvalue()
     check(bad == 3 and 'FAIL has-ai' in text and '3 regression(s)' in text and 'reach_parity_pct: 99.0 -> 97.0' in text,
           'the report and the comparison as text')
+    return base, new, gone, p
 
+
+def _quick_regressions(check, base, new, gone):
+    """quick(): what must not pass as "no regressions"."""
     # what must not pass as "no regressions"
     def regressions(a, b):
         found = runs.compare(a, b)
@@ -486,6 +524,9 @@ def quick(check, tmp):
         r['levels']['sp_test']['files']['navkit']['tests']['orders'] = result('fail', {'orders_lost': n})
     check(('worse', 'orders', 'orders_lost') in {(f[0], f[3], f[4]) for f in runs.compare(*ol)}, 'one more order lost is worse')
 
+
+def _quick_default_files(check, tmp):
+    """quick(): the --files default."""
     # --files by default: dice only when a chosen level has DICE's path data (MOH ships none)
     import harness
     from mohcore import gamecopy
@@ -500,6 +541,9 @@ def quick(check, tmp):
           and harness.default_files(fake, ['zz_none', 'zz_dice']) == 'dice,navkit',
           '--files default: navkit for levels without DICE path data (NavKit\'s own install is not DICE\'s), dice,navkit with')
 
+
+def _quick_command_line(check, tmp, base, new, p):
+    """quick(): harness.py's commands (compare, show, list, import-log, ingame) and a missing run."""
     # the command line
     np_ = runs.save(new, os.path.join(tmp, 'new.json'))
     env = {**os.environ, 'LOCALAPPDATA': tmp}

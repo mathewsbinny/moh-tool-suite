@@ -13,6 +13,7 @@ import os
 import random
 import sys
 from collections import Counter
+from collections.abc import Callable
 from types import SimpleNamespace
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -23,6 +24,7 @@ import navdetail  # noqa: E402
 
 P = 0.8
 Y = navdetail.Y_OFFSET
+Check = Callable[[bool, str], None]     # main's check(ok, what): prints the line, counts a failure
 
 
 def in_poly(x, z, pts):
@@ -42,14 +44,8 @@ def r2(p):
     return tuple(round(v, 3) for v in p)
 
 
-def main(argv):
-    failed = 0
-
-    def check(ok, what):
-        nonlocal failed
-        failed += not ok
-        print(f'{"ok  " if ok else "FAIL"} {what}')
-
+def flat_and_ledge(check: Check) -> None:
+    """A flat area has none; a ledge gives D lines in facing pairs, owner on the right."""
     # flat ground
     flat = {(i, j): 5.0 for i in range(4) for j in range(4)}
     b, d, f = navdetail.detail_features(flat, P, 0, 0, 0.6)
@@ -75,6 +71,9 @@ def main(argv):
     check([r2(p)[1] for p in hi] == [round(0.7 + Y, 3), round(0.7 + Y, 3)] and r2(hi[0])[0] == 1.2,
           'vertex heights: the mean of the owner-side cells touching it along the line; runs -x (owner on +z)')
 
+
+def raised_corner(check: Check) -> None:
+    """A raised cell joined round a corner: an L and a diagonal (or two Ls without CUT_CORNERS)."""
     # a cell 0.7 m up, joined to the rest round the corner: its two broken sides make a corner cut - its own line is
     # the diagonal across it, the low cells' lines an L round its corner (DICE's 3-point lines)
     cells = {(0, 0): 0.0, (1, 0): 0.0, (0, 1): 0.0, (1, 1): 0.7}
@@ -96,6 +95,9 @@ def main(argv):
     navdetail.CUT_CORNERS = True
     check(len(d) == 2 and all(len(line) == 3 for line in d), 'CUT_CORNERS off: two L lines facing each other')
 
+
+def stairs(check: Check) -> None:
+    """Cells stepped into and out of along x and z: F cell pairs (or D lines without F cells)."""
     # a cell stepped into and out of along x: x-F pair, no D on its x sides
     cells = {(i, j): 0.7 * i for i in range(3) for j in range(2)}
     b, d, f = navdetail.detail_features(cells, P, 0, 0, 0.6)
@@ -119,6 +121,9 @@ def main(argv):
     b, d, f = navdetail.detail_features(cells, P, 0, 0, 0.6, with_f=False)
     check(not f and len(d) == 4, f'with_f off (detailed zones): no F, the stepped sides are D lines ({len(d)})')
 
+
+def bridges_and_exclusions(check: Check) -> None:
+    """Diagonal F cells, half cells, breakable() and portal sides."""
     # two F cells touching only at a corner: one polygon, two 45-degree segments, area of 3 cells (two halves added)
     fset = {(1, 0), (2, 1)}
     cells = {(i, j): 0.0 for i in range(4) for j in range(2)}
@@ -145,6 +150,9 @@ def main(argv):
     b, d, f = navdetail.detail_features(cells, P, 0, 0, 0.6, eligible=lambda i, j, di, dj: dj == 0)
     check(len(d) == 2 and all(len(line) == 2 for line in d), f'a side excluded (portal): its pair is gone, the other pair stays ({len(d)})')
 
+
+def random_areas(check: Check) -> None:
+    """Random areas: D sides pair up, F polygons are closed and cover exactly the F cells."""
     # random areas
     rnd = random.Random(7)
     bad_pair = bad_cover = bad_closed = 0
@@ -183,6 +191,9 @@ def main(argv):
     check(bad_pair == 0, f'random areas: every D side has its facing twin ({bad_pair} without)')
     check(bad_closed == 0 and bad_cover == 0, f'random areas: F polygons closed and cover exactly the F cells ({bad_closed}, {bad_cover})')
 
+
+def kymesh_records(check: Check) -> None:
+    """The records through kymesh's writer and reader."""
     # kymesh writes them and reads them back
     cells = {(i, j): 0.7 * i for i in range(3) for j in range(2)}
     cells[(0, 2)] = 0.0
@@ -196,6 +207,9 @@ def main(argv):
           [c.direction for c in back.cells] == [c.direction for c in f] and len(back.cells) == len(f) and
           kymesh.write_mesh(kymesh.parse_mesh(data)) == data, 'kymesh: D lines and F cells written, read back, rewritten byte for byte')
 
+
+def outline_pairs(check: Check) -> None:
+    """navbuild.detail_pass takes broken sides out of the outline only in pairs."""
     # navbuild.detail_pass: broken sides leave the outline in pairs only
     ys = [0.0, 0.0, 0.0, 0.7]                                 # k: (0,0) (1,0) (0,1) (1,1)
     level = SimpleNamespace(y=ys, pitch=navbuild.NORMAL)     # the grid settings a Level carries (pitch 0.8)
@@ -210,6 +224,10 @@ def main(argv):
     check(e[E('x', 0.5, 1)] == [] and e[E('x', 0.5, -1)] == [] and e[E('z', 0.5, 1)] == [(1, 0.95)] and
           e[E('x', -0.5, -1)] == [(0, 0.95), (1, 0.95)], 'detail_pass: a pair of outline sides moved to D, a one-sided one kept, the rest untouched')
     check(len(out[0][0]) == 2 and dstats.outline_one_sided == 1, 'detail_pass: the D lines of the area (two L-shaped), the one-sided side counted')
+
+
+def route_lines(check: Check) -> None:
+    """navbuild.line_walkable does not step across a D side."""
     # route edges and D sides (DETAIL_BLOCKS_EDGES): a flat 3 x 3 grid, surface k = j * 3 + i
     class Grid:
         y = [0.0] * 9
@@ -229,6 +247,20 @@ def main(argv):
     check(free and not on_line and off_line and not straight,
           'line_walkable: no step across a D side - straight, or diagonal through the side cell the line passes; a D side '
           f'beside the line does not block ({free}, {on_line}, {off_line}, {straight})')
+
+
+def main(argv: list[str]) -> int:
+    """Runs every part in order, printing each check; returns 1 when one failed."""
+    failed = 0
+
+    def check(ok: bool, what: str) -> None:
+        nonlocal failed
+        failed += not ok
+        print(f'{"ok  " if ok else "FAIL"} {what}')
+
+    for part in (flat_and_ledge, raised_corner, stairs, bridges_and_exclusions, random_areas, kymesh_records,
+                 outline_pairs, route_lines):
+        part(check)
     print('all passed' if not failed else f'{failed} check(s) failed')
     return 1 if failed else 0
 

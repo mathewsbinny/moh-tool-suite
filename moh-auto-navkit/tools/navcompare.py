@@ -15,13 +15,15 @@ The reference is normally the level's original (DICE) file, the candidate NavKit
 import json
 import os
 import sys
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hpdtool  # noqa: E402
 import ordercheck  # noqa: E402
 
 
-def main_network(data, points):
+def main_network(data: ordercheck.PathData, points: Sequence[ordercheck.OrderPoint]) -> int:
     """How many of the points are near a route network of at least a quarter of the largest one's size."""
     largest = max(data.group_size.values()) if data.group_size else 0
     count = 0
@@ -32,7 +34,7 @@ def main_network(data, points):
     return count
 
 
-def compare(level_xml, reference, candidate):
+def compare(level_xml: str, reference: str, candidate: str) -> dict[str, Any]:
     """How two pathdata.hpd files cover the level's AI order positions: on an area, on the main network, and pairwise
     route-connected, with each file's counts."""
     points = ordercheck.order_points(level_xml)
@@ -52,7 +54,7 @@ def compare(level_xml, reference, candidate):
                 pairs += 1
                 if group_cand[x] is not None and group_cand[x] == group_cand[y]:
                     connected += 1
-    files = {}
+    files: dict[str, dict[str, Any]] = {}
     for name, path in (('reference', reference), ('candidate', candidate)):
         f = hpdtool.parse(open(path, 'rb').read())
         files[name] = {'file': path, 'sectors': len(f.sectors), 'nodes': sum(len(s.nodes) for s in f.sectors),
@@ -69,7 +71,7 @@ def compare(level_xml, reference, candidate):
     }
 
 
-def report(r, log=print):
+def report(r: Mapping[str, Any], log: Callable[..., object] = print) -> None:
     """Logs a compare() result as three lines of text."""
     log(f"{r['positions']} order positions; the reference covers {r['reference_covers']}, the candidate {r['candidate_covers_of_those']} "
         f"of those ({r['coverage_percent']} %) + {r['candidate_only']} more")
@@ -79,7 +81,7 @@ def report(r, log=print):
     log(f"sectors {fr['sectors']} / {fc['sectors']}; nodes {fr['nodes']} / {fc['nodes']}; edges {fr['edges']} / {fc['edges']}")
 
 
-def main(argv):
+def main(argv: Sequence[str]) -> int:
     """The command line: compares two pathdata.hpd files on a level's order positions, as text or JSON (--json);
     returns the exit code."""
     args = [a for a in argv[1:] if not a.startswith('--')]

@@ -26,43 +26,53 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Callable
+from typing import cast
 
 SUITE = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
 TIERS = ['quick', 'game', 'full']
+# a test's command line, or a function of the Project OPFOR folder that makes it
+Argv = list[str] | Callable[[str], list[str]]
 
 
-def opfor():
+def opfor() -> str:
     """The Project OPFOR folder, found the way NavKit finds it."""
     sys.path.insert(0, os.path.join(SUITE, 'moh-auto-navkit'))
     import navkit
     return navkit.find_opfor(None)
 
 
-def navkit_pathdata_files(root):
+def navkit_pathdata_files(root: str) -> list[str]:
     """NavKit's build of every level (work\\navkit\\<level>\\pathdata.hpd, the current exports): MOH ships no path data."""
     d = os.path.join(root, 'work', 'navkit')
     return sorted(p for p in (os.path.join(d, lv, 'pathdata.hpd') for lv in os.listdir(d)) if os.path.isfile(p))
 
 
-def pathdata_files(root):
+def pathdata_files(root: str) -> list[str]:
     """Every path-data file: the game copy's (with DICE's originals kept as pathdata.hpd.<suffix> where NavKit's
     is installed) and OPFOR's work folder's (Xbox Onslaught copies, NavKit's own builds)."""
     sys.path.insert(0, os.path.join(SUITE, 'core'))
     from mohcore import gamecopy
-    out = []
+    out: list[str] = []
     for top in (gamecopy.GameCopy(root).ai_dir(), os.path.join(root, 'work')):
         for dp, _, fs in os.walk(top):
             out += [os.path.join(dp, f) for f in fs if f.lower().startswith('pathdata.hpd')]
     return sorted(out)
 
 
-def tests():
-    """(name, tier, argv). Game paths are only looked up for the tiers that need them."""
-    t = [
+def tests() -> list[tuple[str, str, Argv]]:
+    """(name, tier, argv), the quick tier first. Game paths are only looked up for the tiers that need them."""
+    return quick_tests() + game_tests()
+
+
+def quick_tests() -> list[tuple[str, str, Argv]]:
+    """The quick tier's tests: no game copy needed."""
+    return [
         ('repository rules', 'quick', [PY, os.path.join(SUITE, 'tests', 'test_repo.py')]),
         ('lint policy (ruff: unused names, blind excepts)', 'quick', [PY, os.path.join(SUITE, 'tests', 'test_lint.py')]),
-        ('type checks (mypy: core, NavKit and the harness)', 'quick', [PY, os.path.join(SUITE, 'tests', 'test_types.py')]),
+        ('structure: function lengths, docstrings, every module type-checked', 'quick', [PY, os.path.join(SUITE, 'tests', 'test_structure.py')]),
+        ('type checks (mypy: every module outside the tests)', 'quick', [PY, os.path.join(SUITE, 'tests', 'test_types.py')]),
         ('DbxEdit unit tests', 'quick', ['cmd', '/c', os.path.join(SUITE, 'moh-dbx-tools', 'tests', 'run_tests.bat')]),
         ('FbrbTool build', 'quick', ['cmd', '/c', os.path.join(SUITE, 'moh-fbrb-tool', 'build.bat')]),
         ('FbrbTool round trip, built bundle', 'quick', [PY, os.path.join(SUITE, 'core', 'tests', 'test_fbrb.py')]),
@@ -101,6 +111,7 @@ def tests():
         ('NavKit shadow islands (navislands)', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_navislands.py')]),
         ('NavKit offline sampler (navsample_offline)', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_navsample_offline.py')]),
         ('NavKit drop links (navdrops)', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_navdrops.py')]),
+        ('NavKit builds in parallel threads match their solo builds (synthetic levels)', 'quick', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_build_threads.py')]),
         ('LevelDiff build', 'quick', ['cmd', '/c', os.path.join(SUITE, 'moh-diff-workbench', 'level-diff', 'build.bat')]),
         ('LevelDiff, built levels', 'quick', [PY, os.path.join(SUITE, 'moh-diff-workbench', 'level-diff', 'tests', 'test_leveldiff.py')]),
         ('crash reader, built reports', 'quick', [PY, os.path.join(SUITE, 'moh-automated-map-and-bot-test-harness', 'crash-reader', 'tests', 'test_crashreader.py')]),
@@ -117,6 +128,12 @@ def tests():
         ('exeref on mohmpgame.exe', 'game', [PY, os.path.join(SUITE, 'moh-automated-map-and-bot-test-harness', 'crash-reader', 'tests', 'test_exeref.py'), '--game']),
         ('FbrbTool round trip, 12 game bundles', 'game', [PY, os.path.join(SUITE, 'core', 'tests', 'test_fbrb.py'), '--game', '12']),
         ('water, every level', 'game', [PY, os.path.join(SUITE, 'core', 'tests', 'test_water.py')]),
+    ]
+
+
+def game_tests() -> list[tuple[str, str, Argv]]:
+    """The game and full tiers' tests: they read the game copy or Project OPFOR's built data."""
+    return [
         ('level loader snapshot', 'game', [PY, os.path.join(SUITE, 'core', 'tests', 'test_level.py')]),
         ('terrain against in-game samples', 'game', [PY, os.path.join(SUITE, 'core', 'tests', 'test_terrain.py')]),
         ('path data round trip (hpdtool)', 'game', lambda root: [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tools', 'hpdtool.py'),
@@ -136,6 +153,7 @@ def tests():
         ('stock-MP AI layer, DBX writer on mp_01, no MOH AI types', 'game', [PY, os.path.join(SUITE, 'moh-stockmp-ai', 'tests', 'test_stockmp.py'), '--game']),
         ('NavKit regression, 2 small levels', 'game', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tools', 'navregress.py'),
                                                        '--levels', 'mp_07_koth,mp_03_elimination']),
+        ('NavKit builds in two threads match their solo builds (mp_07_koth, mp_03_elimination)', 'full', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tests', 'test_build_threads.py'), '--game']),
         ('NavKit regression, every MOH level (self-check)', 'full', [PY, os.path.join(SUITE, 'moh-auto-navkit', 'tools', 'navregress.py')]),
         ('DbxEdit corpus and fingerprints', 'full', lambda root: ['cmd', '/c', os.path.join(SUITE, 'moh-dbx-tools', 'tests', 'run_tests.bat'),
                                                                  os.path.join(root, 'work', 'levels'), os.path.join(root, 'work', 'navkit', 'common')]),
@@ -143,10 +161,9 @@ def tests():
                                                                    os.path.join(root, 'work', 'levels'), os.path.join(root, 'work', 'navkit', 'common')]),
         ('FbrbTool round trip, every game bundle', 'full', [PY, os.path.join(SUITE, 'core', 'tests', 'test_fbrb.py'), '--game', '0']),
     ]
-    return t
 
 
-def refuse(cause, fix, code):
+def refuse(cause: str, fix: str, code: int) -> int:
     """A mistake in the command line: said in words as errors.report says them (cause, what to do, the log)."""
     sys.path.insert(0, os.path.join(SUITE, 'core'))
     from mohcore import errors
@@ -155,10 +172,11 @@ def refuse(cause, fix, code):
     return code
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
     """Runs the tests of the chosen tier (or lists them), printing one line each and the failures' last lines; returns
     1 when any failed."""
-    only, skip = None, set()
+    only: str | None = None
+    skip: set[int] = set()
     if '--only' in argv:
         k = argv.index('--only')
         if k + 1 >= len(argv) or argv[k + 1].startswith('--'):
@@ -189,10 +207,10 @@ def main(argv):
         os.makedirs(cdir, exist_ok=True)
     root = opfor() if any(callable(a) or t != 'quick' for _, t, a in chosen) else None
     print(f'MOH Tool Suite tests: {tier}, {len(chosen)} test(s)' + (f', OPFOR at {root}' if root else ''))
-    failures, start = [], time.time()
-    for name, t, args in chosen:
-        if callable(args):
-            args = args(root)
+    failures: list[tuple[str, str]] = []
+    start = time.time()
+    for name, t, spec in chosen:
+        args = spec(cast(str, root)) if callable(spec) else spec    # root is found whenever a test needs it
         if cover and args[0] == PY and len(args) > 1 and args[1].endswith('.py'):
             args = [PY, '-m', 'coverage', 'run', '--rcfile', os.path.join(SUITE, 'pyproject.toml')] + args[1:]
         t0 = time.time()
@@ -213,7 +231,7 @@ def main(argv):
     return 1 if failures else 0
 
 
-def coverage_report():
+def coverage_report() -> None:
     """Combines the run's coverage data into .coverage-data\\report.txt and html\\, and prints the total."""
     # the run's coverage data combined: .coverage-data\report.txt and html\, the total printed
     rc = ['--rcfile', os.path.join(SUITE, 'pyproject.toml')]

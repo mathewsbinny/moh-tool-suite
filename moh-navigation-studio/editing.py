@@ -13,21 +13,31 @@ editor starts empty with a warning, and the first save (or build) keeps the unre
 edits.
 """
 import os
+import subprocess
+from collections.abc import Iterable, Sequence
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from imgui_bundle import imgui
 
-from mohcore import navtune as nt
+from mohcore import navtune as nt, viewer
+
+if TYPE_CHECKING:
+    import studio
+
+Colour = tuple[float, float, float]
+Segment = tuple[np.ndarray, np.ndarray, Colour]       # overlay line: from, to, colour
+Point = Sequence[float] | np.ndarray
 
 TOOLS = [('walkable', 'walkable region'), ('unwalkable', 'unwalkable region'), ('seed', 'seed'), ('unseed', 'unseed'),
          ('link-areas', 'link two areas'), ('route-edge add', 'add a route edge'), ('route-edge remove', 'remove a route edge'),
          ('traversal', 'traversal (ladder, jump ...)'), ('note', 'note')]
-COLOURS = {'walkable': (0.2, 1.0, 0.35), 'unwalkable': (1.0, 0.25, 0.2), 'seed': (0.2, 0.9, 1.0), 'unseed': (1.0, 0.3, 0.9),
+COLOURS: dict[str, Colour] = {'walkable': (0.2, 1.0, 0.35), 'unwalkable': (1.0, 0.25, 0.2), 'seed': (0.2, 0.9, 1.0), 'unseed': (1.0, 0.3, 0.9),
            'link-areas': (1.0, 0.6, 0.1), 'route-edge': (1.0, 0.9, 0.2), 'route-edge remove': (1.0, 0.2, 0.2),
            'traversal': (0.95, 0.95, 0.95), 'note': (0.8, 0.8, 1.0), 'drawing': (1.0, 1.0, 0.6)}
 
 
-def ring(points2, y, colour, closed=True):
+def ring(points2: Iterable[Sequence[float]], y: float, colour: Colour, closed: bool = True) -> list[Segment]:
     """Line segments (a, b, colour) joining the (x, z) points at height y, closed back to the first point unless
     closed is False."""
     p = [np.array([x, y, z]) for x, z in points2]
@@ -36,7 +46,7 @@ def ring(points2, y, colour, closed=True):
     return [(a, b, colour) for a, b in zip(p[:-1], p[1:])]
 
 
-def region_segments(region, colour):
+def region_segments(region: dict[str, Any], colour: Colour) -> list[Segment]:
     """The outline segments of an edit region: a polygon prism's floor, roof and posts, or a box's 12 edges."""
     if 'polygon' in region:
         lo, hi = region['y']
@@ -49,19 +59,19 @@ def region_segments(region, colour):
     return [(c[a], c[b], colour) for a, b in edges]
 
 
-def cross(p, size, colour):
+def cross(p: Point, size: float, colour: Colour) -> list[Segment]:
     """Two horizontal line segments (along x and z) crossing at p, size metres from it each way."""
-    p = np.asarray(p, float)
-    return [(p - d, p + d, colour) for d in (np.array([size, 0, 0]), np.array([0, 0, size]))]
+    c = np.asarray(p, float)
+    return [(c - d, c + d, colour) for d in (np.array([size, 0, 0]), np.array([0, 0, size]))]
 
 
-def post(p, height, colour):
+def post(p: Point, height: float, colour: Colour) -> list[Segment]:
     """A vertical line segment from p up height metres."""
-    p = np.asarray(p, float)
-    return [(p, p + np.array([0, height, 0]), colour)]
+    b = np.asarray(p, float)
+    return [(b, b + np.array([0, height, 0]), colour)]
 
 
-def op_segments(o):
+def op_segments(o: dict[str, Any]) -> list[Segment]:
     """The overlay segments that draw one navtune operation, coloured by its kind."""
     name = o['op']
     if name in ('walkable', 'unwalkable'):
@@ -74,11 +84,11 @@ def op_segments(o):
         b, t = np.asarray(o['bottom'], float), np.asarray(o['top'], float)
         return [(b, t, COLOURS['traversal'])] + cross(b, 0.4, COLOURS['traversal']) + cross(t, 0.8, COLOURS['traversal'])
     a, b = np.asarray(o['a'], float) + [0, 0.5, 0], np.asarray(o['b'], float) + [0, 0.5, 0]
-    col = COLOURS['route-edge remove'] if name == 'route-edge' and o.get('action') == 'remove' else COLOURS.get(name, (1, 1, 1))
+    col: Colour = COLOURS['route-edge remove'] if name == 'route-edge' and o.get('action') == 'remove' else COLOURS.get(name, (1, 1, 1))
     return [(a, b, col)] + post(a - [0, 0.5, 0], 1.5, col) + post(b - [0, 0.5, 0], 1.5, col)
 
 
-def op_focus(o):
+def op_focus(o: dict[str, Any]) -> Point:
     """Where the camera flies to for an edit: its point, its first end, or the middle of its region's bottom."""
     at = o.get('at') or o.get('a') or o.get('bottom')
     if at is None:
@@ -89,30 +99,30 @@ def op_focus(o):
 
 
 class Editor:
-    def __init__(self, studio, root, lv, level_name):
+    def __init__(self, studio: 'studio.Studio', root: str, lv: str, level_name: str) -> None:
         self.st, self.root, self.lv = studio, root, lv
         self.target = 'NavKit' if 'NavKit' in studio.files else 'DICE'
         nav = studio.files[self.target]
         self.level_name = level_name
         self.message = ''
         self.warning = ''                       # shown at the panel's top until the side file is saved or read
-        self.unreadable = None                  # a side file that could not be read: backed up, never saved over
+        self.unreadable: str | None = None      # a side file that could not be read: backed up, never saved over
         self.reload_armed = False               # reload with unsaved edits: the second click discards them
         self.open_side_file(nt.default_path(root, lv), nav.path)
         self.open = False
-        self.tool = None
+        self.tool: str | None = None
         self.shape = 'polygon'
-        self.clicks = []                        # points of the drawing in progress
+        self.clicks: list[np.ndarray] = []      # points of the drawing in progress
         self.y_margin = [2.0, 4.0]              # region height range around the clicked points: below, above
         self.trav_kind, self.two_way, self.note_text = 0, True, ''
         self.by = nt.author()
-        self.job = None                         # the running `navkit.py apply`
-        self.job_log = []
+        self.job: subprocess.Popen[str] | None = None   # the running `navkit.py apply`
+        self.job_log: list[str] = []
         self.job_out = os.path.join(root, 'work', 'navkit', lv, 'pathdata.hpd')
         self.install_msg = ''
 
     # --- the side file -----------------------------------------------------------------------------
-    def open_side_file(self, path, base_path=None):
+    def open_side_file(self, path: str, base_path: str | None = None) -> None:
         """Reads the side file at path, or starts empty edits when there is none. 2026-10-31: when it cannot be read
         (a newer version's, an invalid operation, a JSON typo), the edits start empty but the file is remembered
         (self.unreadable, a warning on the panel) and save() backs it up first - before, the empty edits were saved
@@ -121,7 +131,7 @@ class Editor:
         self.unreadable = None
         self.warning = ''
         base_path = base_path or self.st.files[self.target].path
-        tune = None
+        tune: nt.NavTune | None = None
         if os.path.isfile(path):
             try:
                 tune = nt.load(path)
@@ -136,14 +146,14 @@ class Editor:
         self.tune = tune or nt.NavTune.new(self.level_name, base_path, kind='navkit' if self.target == 'NavKit' else 'dice')
         self.reload_armed = False
 
-    def backup_path(self):
+    def backup_path(self) -> str:
         """A free name for the unreadable side file's backup: <path>.unreadable.bak, then .unreadable.1.bak ..."""
         p, k = self.path + '.unreadable.bak', 1
         while os.path.exists(p):
             p, k = f'{self.path}.unreadable.{k}.bak', k + 1
         return p
 
-    def save(self):
+    def save(self) -> str:
         """Saves the edits to the side file, an unreadable one there renamed to a backup first. Returns the message."""
         kept = ''
         if self.unreadable is not None and os.path.isfile(self.path) \
@@ -157,7 +167,7 @@ class Editor:
         self.reload_armed = False
         return f'saved {len(self.tune.operations)} edit(s) to {self.path}{kept}'
 
-    def reload(self, v):
+    def reload(self, v: viewer.Viewer) -> bool:
         """Reads the side file again. Unsaved edits are thrown away only on a second click (2026-10-31); a file that
         cannot be read leaves the edits on screen as they are. Returns True when it was read."""
         if self.tune.dirty and not self.reload_armed:
@@ -176,27 +186,26 @@ class Editor:
         return loaded
 
     # --- build with the edits (navkit apply) --------------------------------------------------------
-    def start_apply(self):
+    def start_apply(self) -> None:
         """Saves the side file and starts navkit.py apply with it in the background, collecting its output in
         job_log."""
-        import subprocess
         import sys
         import threading
         self.message = self.save()
         navkit_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'moh-auto-navkit', 'navkit.py')
         cmd = [sys.executable, '-u', navkit_py, 'apply', self.lv, '--navtune', self.path, '--out', self.job_out, '--opfor', self.root]
         self.job_log = ['saved the side file; building with its edits (a full rebuild: about 1-8 minutes) ...']
-        self.job = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace',
-                                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        job = self.job = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                          errors='replace', creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
 
-        def read():
-            for line in self.job.stdout:
+        def read() -> None:
+            assert job.stdout is not None       # started with stdout=PIPE
+            for line in job.stdout:
                 self.job_log.append(line.rstrip())
         threading.Thread(target=read, daemon=True).start()
 
-    def run_navkit(self, args):
+    def run_navkit(self, args: list[str]) -> int:
         """navkit.py install / restore (quick): runs to the end, its last line shown in the panel."""
-        import subprocess
         import sys
         navkit_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'moh-auto-navkit', 'navkit.py')
         r = subprocess.run([sys.executable, navkit_py, *args, '--opfor', self.root], capture_output=True, text=True,
@@ -205,16 +214,15 @@ class Editor:
         self.install_msg = ' / '.join(out[-2:]) if out else f'navkit {args[0]}: exit {r.returncode}'
         return r.returncode
 
-    def job_state(self):
+    def job_state(self) -> str | None:
         """The apply job's state: None when there is none, else 'running', 'done' or 'failed'."""
         if self.job is None:
             return None
         code = self.job.poll()
         return 'running' if code is None else ('done' if code == 0 else 'failed')
 
-    def reopen_on_result(self, v):
+    def reopen_on_result(self, v: viewer.Viewer) -> None:
         """A new studio window on the built file (the scene is uploaded once, so the window is replaced)."""
-        import subprocess
         import sys
         from imgui_bundle import hello_imgui
         studio_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'studio.py')
@@ -222,48 +230,53 @@ class Editor:
         hello_imgui.get_runner_params().app_shall_exit = True
 
     # --- input --------------------------------------------------------------------------------------
-    def active(self):
+    def active(self) -> bool:
         """True when the editor is open and a tool is chosen, so clicks in the level go to it."""
         return self.open and self.tool is not None
 
-    def click(self, v, p):
+    def click(self, v: viewer.Viewer, p: Point | None) -> None:
         """Takes a click on the level at p for the current tool and commits the edit once the tool has all its
         points."""
         if p is None or self.tool is None:
             return
-        p = np.asarray(p, dtype=np.float64)
-        self.clicks.append(p)
+        at = np.asarray(p, dtype=np.float64)
+        self.clicks.append(at)
         name = self.tool
         if name in ('seed', 'unseed', 'note'):
             if name == 'note' and not self.note_text.strip():
                 self.message = 'type the note first'
                 self.clicks = []
                 return
-            self.commit(nt.op(name, at=p, by=self.by, **({'text': self.note_text.strip()} if name == 'note' else {})))
+            text: dict[str, Any] = {'text': self.note_text.strip()} if name == 'note' else {}
+            self.commit(nt.op(name, at=at, by=self.by, **text))
         elif name in ('link-areas', 'route-edge add', 'route-edge remove', 'traversal') and len(self.clicks) == 2:
             a, b = self.clicks
+            two_way: dict[str, Any] = {'two-way': self.two_way}
             if name == 'traversal':
-                o = nt.op('traversal', kind=nt.TRAVERSALS[self.trav_kind], bottom=a, top=b, by=self.by, **{'two-way': self.two_way})
+                o = nt.op('traversal', kind=nt.TRAVERSALS[self.trav_kind], bottom=a, top=b, by=self.by, **two_way)
             elif name == 'link-areas':
                 o = nt.op('link-areas', a=a, b=b, by=self.by)
             else:
-                o = nt.op('route-edge', a=a, b=b, action=name.split()[1], by=self.by, **{'two-way': self.two_way})
+                o = nt.op('route-edge', a=a, b=b, action=name.split()[1], by=self.by, **two_way)
             self.commit(o)
         elif name in ('walkable', 'unwalkable') and self.shape == 'box' and len(self.clicks) == 2:
             a, b = self.clicks
             lo, hi = min(a[1], b[1]) - self.y_margin[0], max(a[1], b[1]) + self.y_margin[1]
-            self.commit(nt.op(name, region=nt.box(a[0], lo, a[2], b[0], hi, b[2]), by=self.by, **({'value': True} if name == 'walkable' else {})))
+            value: dict[str, Any] = {'value': True} if name == 'walkable' else {}
+            self.commit(nt.op(name, region=nt.box(a[0], lo, a[2], b[0], hi, b[2]), by=self.by, **value))
         self.refresh(v)
 
-    def finish_polygon(self, v):
+    def finish_polygon(self, v: viewer.Viewer) -> None:
         """Commits the polygon being drawn (three points or more) as a walkable or unwalkable region."""
         if self.tool in ('walkable', 'unwalkable') and self.shape == 'polygon' and len(self.clicks) >= 3:
+            assert self.tool is not None
             ys = [c[1] for c in self.clicks]
             region = nt.polygon([(c[0], c[2]) for c in self.clicks], min(ys) - self.y_margin[0], max(ys) + self.y_margin[1])
-            self.commit(nt.op(self.tool, region=region, by=self.by, **({'value': True} if self.tool == 'walkable' else {})))
+            value: dict[str, Any] = {'value': True} if self.tool == 'walkable' else {}
+            self.commit(nt.op(self.tool, region=region, by=self.by, **value))
             self.refresh(v)
 
-    def commit(self, o):
+    def commit(self, o: dict[str, Any]) -> None:
         """Adds the operation to the edits and reports it, or why it was refused; the pending clicks are cleared
         either way."""
         self.reload_armed = False
@@ -275,12 +288,12 @@ class Editor:
         self.clicks = []
 
     @staticmethod
-    def e_toggles(v, right_down):
+    def e_toggles(v: viewer.Viewer, right_down: bool) -> bool:
         """Whether E opens / closes the panel: not while flying with the right button held, where the viewer's fly
         mode climbs with E (2026-10-31: it closed the panel and dropped a half-drawn outline)."""
         return not (getattr(v.camera, 'fly', False) and right_down)
 
-    def keys(self, v):
+    def keys(self, v: viewer.Viewer) -> None:
         """The editor's keys: E opens or closes it, Esc drops the pending clicks, Enter finishes a polygon, Ctrl+Z /
         Ctrl+Y undo and redo."""
         io = imgui.get_io()
@@ -300,7 +313,7 @@ class Editor:
         if io.key_ctrl and imgui.is_key_pressed(imgui.Key.y):
             self.redo(v)
 
-    def set_open(self, v, on):
+    def set_open(self, v: viewer.Viewer, on: bool) -> None:
         """Opens or closes the editor; closing drops the tool and the pending clicks."""
         self.open = on
         if not on:
@@ -308,14 +321,14 @@ class Editor:
         self.st.sync_click_mode(v)
         self.refresh(v)
 
-    def undo(self, v):
+    def undo(self, v: viewer.Viewer) -> None:
         """Undoes the last edit and redraws."""
         self.reload_armed = False
         o = self.tune.undo()
         self.message = 'undone: ' + o['op'] if o else 'nothing to undo'
         self.refresh(v)
 
-    def redo(self, v):
+    def redo(self, v: viewer.Viewer) -> None:
         """Redoes the last undone edit and redraws."""
         self.reload_armed = False
         o = self.tune.redo()
@@ -323,9 +336,9 @@ class Editor:
         self.refresh(v)
 
     # --- drawing ------------------------------------------------------------------------------------
-    def segments(self):
+    def segments(self) -> list[Segment]:
         """The overlay segments for every edit plus the clicks of the edit being drawn."""
-        segs = []
+        segs: list[Segment] = []
         for o in self.tune.operations:
             segs += op_segments(o)
         c = COLOURS['drawing']
@@ -337,12 +350,12 @@ class Editor:
                 segs += ring(pts, float(np.mean([p[1] for p in self.clicks])) + 0.3, c, closed=False)
         return segs
 
-    def refresh(self, v):
+    def refresh(self, v: viewer.Viewer) -> None:
         """Redraws the Studio's overlay."""
         self.st.refresh_overlay(v)
 
     # --- panel --------------------------------------------------------------------------------------
-    def panel(self, v):
+    def panel(self, v: viewer.Viewer) -> None:
         """The edit panel, drawn each frame: header, tools, the tool's options, actions, the build, the edits."""
         self.keys(v)
         if not self.open:
@@ -365,7 +378,7 @@ class Editor:
         self.panel_operations(v)
         imgui.end()
 
-    def panel_header(self):
+    def panel_header(self) -> None:
         """The panel's top: the side file's warning, what is edited and where, the author field."""
         kind = self.tune.kind
         if self.warning:
@@ -378,7 +391,7 @@ class Editor:
         changed, self.by = imgui.input_text('recorded as', self.by)
         imgui.separator()
 
-    def panel_tools(self, v):
+    def panel_tools(self, v: viewer.Viewer) -> None:
         """The tool buttons (a second click turns the tool off); region tools disabled on a graph-only base."""
         for key, label in TOOLS:
             base_op = key.split()[0]
@@ -396,7 +409,7 @@ class Editor:
                     imgui.set_tooltip('region edits need a NavKit base (DESIGN.md 5.1)')
         imgui.separator()
 
-    def panel_tool_options(self, v):
+    def panel_tool_options(self, v: viewer.Viewer) -> None:
         """The chosen tool's options and what to click next."""
         t = self.tool
         if t in ('walkable', 'unwalkable'):
@@ -426,7 +439,7 @@ class Editor:
         else:
             imgui.text_disabled('choose a tool; clicks then add to the drawing instead of selecting')
 
-    def panel_actions(self, v):
+    def panel_actions(self, v: viewer.Viewer) -> None:
         """Undo, redo, save and reload (a second click to discard unsaved edits)."""
         if imgui.button('undo (Ctrl+Z)'):
             self.undo(v)
@@ -443,7 +456,7 @@ class Editor:
         if imgui.button('reload: click again to discard the edits' if self.reload_armed else 'reload'):
             self.reload(v)
 
-    def panel_build(self, v):
+    def panel_build(self, v: viewer.Viewer) -> None:
         """The build button (navkit apply in the background, disabled while it runs) and its output file."""
         state = self.job_state()
         if self.tune.kind == 'dice' and os.path.basename(self.job_out) == 'pathdata.hpd':
@@ -461,7 +474,7 @@ class Editor:
         if state is not None:
             self.panel_build_result(v, state)
 
-    def panel_build_result(self, v, state):
+    def panel_build_result(self, v: viewer.Viewer, state: str) -> None:
         """The build's state and last log lines; once built: open the result, install it, restore DICE's file."""
         imgui.text({'running': 'building ...', 'done': 'built.', 'failed': 'the build failed:'}[state])
         for line in self.job_log[-6:]:
@@ -477,11 +490,11 @@ class Editor:
                 self.run_navkit(['restore', self.lv])
             imgui.text_disabled(f'report: {os.path.relpath(self.job_out + ".report.txt", self.root)}')
 
-    def panel_operations(self, v):
+    def panel_operations(self, v: viewer.Viewer) -> None:
         """The list of edits: fly to one, delete one (Ctrl+Z puts it back)."""
         imgui.text(f'{len(self.tune.operations)} edit(s)')
         imgui.begin_child('ops', (0, 0))
-        drop = None
+        drop: int | None = None
         for k in range(len(self.tune.operations)):
             o = self.tune.operations[k]
             if imgui.small_button(f'fly##op{k}'):

@@ -20,6 +20,8 @@ import math
 import os
 import sys
 from collections import defaultdict
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, TypedDict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -27,15 +29,30 @@ import hpdtool  # noqa: E402
 import kymesh  # noqa: E402
 import mohsoldier  # noqa: E402
 
+if TYPE_CHECKING:
+    import navdiff
+
+Key = tuple[str, str, int, int, int]      # D: (cls, axis, line, along, side); F: (cls, axis, sign, i, j)
+Heights = Mapping[Key, Sequence[float]]
+Ground = Mapping[tuple[int, int], Sequence[float]]   # ground_of: {(i, j) on the 0.8 m grid: [ground heights]}
+Log = Callable[..., object]
+
+
+class Features(TypedDict):
+    """features' result: D sides and F cells by key (their heights), and the counts of lines and records."""
+    d: defaultdict[Key, list[float]]
+    f: defaultdict[Key, list[float]]
+    counts: dict[str, int]
+
 DY = 1.0                    # height tolerance of a match (m): one floor
 GRID = 0.8                  # ground cells of navdiff (shared-ground test)
 
 
-def _cls(pitch):
+def _cls(pitch: float) -> str:
     return 'd' if pitch < 0.5 else 'n'
 
 
-def _in_poly(x, z, pts):
+def _in_poly(x: float, z: float, pts: Sequence[kymesh.Vec3]) -> bool:
     inside = False
     n = len(pts)
     for k in range(n):
@@ -45,13 +62,14 @@ def _in_poly(x, z, pts):
     return inside
 
 
-def features(meshes, clip=None):
+def features(meshes: Iterable[kymesh.Mesh], clip: Sequence[float] | None = None) -> Features:
     """{'d': {(cls, axis, line, along, side): [heights]}, 'f': {(cls, axis, sign, i, j): [heights]}, counts}.
     meshes: [kymesh.Mesh]; clip: (minX, minZ, maxX, maxZ) or None (features outside are left out)."""
-    d, f = defaultdict(list), defaultdict(list)
-    cnt = defaultdict(int)
+    d: defaultdict[Key, list[float]] = defaultdict(list)
+    f: defaultdict[Key, list[float]] = defaultdict(list)
+    cnt: defaultdict[str, int] = defaultdict(int)
 
-    def inside(x, z):
+    def inside(x: float, z: float) -> bool:
         return clip is None or (clip[0] <= x <= clip[2] and clip[1] <= z <= clip[3])
     for m in meshes:
         for a in m.areas:
@@ -74,7 +92,7 @@ def features(meshes, clip=None):
                         t = (k + 0.5) / n
                         x, z, y = p0[0] + dx * t, p0[2] + dz * t, p0[1] + (p1[1] - p0[1]) * t
                         if abs(dx) < 1e-3:   # x-line; owner on the right of the direction
-                            key = (c, 'x', int(round(x / H)), int(round(z / P)), 1 if dz > 0 else -1)
+                            key: Key = (c, 'x', int(round(x / H)), int(round(z / P)), 1 if dz > 0 else -1)
                         else:
                             key = (c, 'z', int(round(z / H)), int(round(x / P)), 1 if dx < 0 else -1)
                         d[key].append(y)
@@ -94,9 +112,10 @@ def features(meshes, clip=None):
     return {'d': d, 'f': f, 'counts': dict(cnt)}
 
 
-def _match(ref, cand):
+def _match(ref: Heights, cand: Heights) -> tuple[int, list[float]]:
     """(matched, |dy| of the matches): per key, heights paired greedily by nearest within DY."""
-    hit, dys = 0, []
+    hit = 0
+    dys: list[float] = []
     for key, ys in ref.items():
         cs = list(cand.get(key, ()))
         for y in ys:
@@ -110,7 +129,7 @@ def _match(ref, cand):
     return hit, dys
 
 
-def _near(ref, cand):
+def _near(ref: Heights, cand: Heights) -> int:
     """DICE's D sides with a candidate side on the same line or the next one (one pitch), same direction, within DY."""
     hit = 0
     for (c, axis, line, along, side), ys in ref.items():
@@ -120,9 +139,9 @@ def _near(ref, cand):
     return hit
 
 
-def ground_of(sectors):
+def ground_of(sectors: 'Mapping[Any, navdiff.Sector]') -> dict[tuple[int, int], list[float]]:
     """{(i, j) on the 0.8 m grid: [ground heights]} from navdiff sectors (their cached cells)."""
-    g = defaultdict(list)
+    g: defaultdict[tuple[int, int], list[float]] = defaultdict(list)
     for s in sectors.values():
         for cells in s.cells():
             for ij, y in cells.items():
@@ -130,9 +149,9 @@ def ground_of(sectors):
     return g
 
 
-def _shared(ref_d, ground):
+def _shared(ref_d: Heights, ground: Ground) -> dict[Key, list[float]]:
     """DICE's D sides whose owner cell is ground in the other file: {key: heights} restricted."""
-    out = {}
+    out: dict[Key, list[float]] = {}
     for key, ys in ref_d.items():
         c, axis, line, along, side = key
         P = 0.2 if c == 'd' else 0.8
@@ -145,15 +164,16 @@ def _shared(ref_d, ground):
     return out
 
 
-def pct(a, b):
+def pct(a: float, b: float) -> float:
     """a / b as a percentage rounded to 2 decimals; 100 when b is 0."""
     return round(100.0 * a / b, 2) if b else 100.0
 
 
-def compare(ref_meshes, cand_meshes, clip=None, cand_ground=None):
+def compare(ref_meshes: Iterable[kymesh.Mesh], cand_meshes: Iterable[kymesh.Mesh], clip: Sequence[float] | None = None,
+            cand_ground: Ground | None = None) -> dict[str, Any]:
     """The measures (module doc) as a dict. cand_ground: ground_of(candidate sectors), for df_d_recall_shared."""
     R, C = features(ref_meshes, clip), features(cand_meshes)
-    row = {}
+    row: dict[str, Any] = {}
     for cls in ('', 'n', 'd'):
         rd = {k: v for k, v in R['d'].items() if not cls or k[0] == cls}
         cd = {k: v for k, v in C['d'].items() if not cls or k[0] == cls}
@@ -187,12 +207,12 @@ def compare(ref_meshes, cand_meshes, clip=None, cand_ground=None):
     return row
 
 
-def meshes_of(path):
+def meshes_of(path: str) -> list[kymesh.Mesh]:
     """The parsed runtime meshes of every sector of a pathdata.hpd file."""
     return [kymesh.parse_mesh(s.mesh) for s in hpdtool.parse(open(path, 'rb').read()).sectors]
 
 
-def report(row, log=print):
+def report(row: Mapping[str, Any], log: Log = print) -> None:
     """Logs a comparison row's D-line and F-cell counts, precision and recall, and the D sides' median height
     difference."""
     log(f"D lines   reference {row['df_d_reference']} ({row['df_d_reference_n']} normal / {row['df_d_reference_d']} detailed), "
@@ -209,7 +229,7 @@ def report(row, log=print):
     log(f"D height difference of matched sides, median {row['df_d_dy']} m")
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
     """The command line: compares the D lines and F cells of a candidate with DICE's reference (two files, or
     --level); returns the exit code."""
     args = argv[1:]

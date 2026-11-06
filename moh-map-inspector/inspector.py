@@ -11,6 +11,7 @@ The selection's links are drawn over the scene: yellow to what it references, cy
 """
 import os
 import sys
+from collections.abc import Callable, Sequence
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'core'))
@@ -22,6 +23,8 @@ import numpy as np  # noqa: E402
 from imgui_bundle import imgui  # noqa: E402
 
 from mohcore import dbx, level as levelmod, viewer  # noqa: E402
+
+Segment = tuple[np.ndarray, np.ndarray, tuple[float, float, float]]   # overlay line: from, to, colour
 
 TERRAIN_ID = 0xFFFFFE
 WATER_ID = 0xFFFF00          # + the index of the triangle's shader in Inspector.water_shaders
@@ -50,29 +53,32 @@ LAYERS = [
     ('other', (0.60, 0.60, 0.60), 0.6),
 ]
 HIDDEN_AT_START = {'area point', 'other', 'effect'}
-TEAM_NAME = {1: 'team 1', 2: 'team 2', 0: 'neutral', None: 'no team'}
+TEAM_NAME: dict[int | None, str] = {1: 'team 1', 2: 'team 2', 0: 'neutral', None: 'no team'}
 REF_TO, REF_FROM, MEASURE = (1.0, 0.9, 0.2), (0.3, 0.95, 1.0), (1.0, 1.0, 1.0)
 
 
-def layer_name(e):
+def layer_name(e: levelmod.Entity) -> str:
     """The layer an entity is drawn in: its category, with spawns split by team."""
     if e.category == 'soldier spawn':
-        return {1: 'soldier spawn, team 1', 2: 'soldier spawn, team 2'}.get(e.team, 'soldier spawn, no team')
+        soldier: dict[int | None, str] = {1: 'soldier spawn, team 1', 2: 'soldier spawn, team 2'}
+        return soldier.get(e.team, 'soldier spawn, no team')
     if e.category == 'vehicle spawn':
-        return {1: 'vehicle spawn, team 1', 2: 'vehicle spawn, team 2'}.get(e.team, 'vehicle spawn, neutral')
+        vehicle: dict[int | None, str] = {1: 'vehicle spawn, team 1', 2: 'vehicle spawn, team 2'}
+        return vehicle.get(e.team, 'vehicle spawn, neutral')
     return e.category
 
 
 class Inspector:
-    def __init__(self, lvl):
+    def __init__(self, lvl: levelmod.Level) -> None:
         self.lvl = lvl
         self.scene = viewer.Scene()
-        self.layer_index = {}
+        self.scene_triangles = 0                                           # main sets it once the scene is built
+        self.layer_index: dict[str, int] = {}
         for name, colour, _ in LAYERS:
             self.layer_index[name] = self.scene.layer(name, colour)
         sizes = {name: size for name, _, size in LAYERS}
         self.entity_layer = [self.layer_index.get(layer_name(e), self.layer_index['other']) for e in lvl.entities]
-        with_mesh = set()
+        with_mesh: set[int] = set()
         for m in lvl.meshes:
             self.scene.add_triangles(m.triangles, m.entity, self.entity_layer[m.entity])
             with_mesh.add(m.entity)
@@ -84,8 +90,8 @@ class Inspector:
                 lay = self.entity_layer[e.index]
                 centre = e.position + np.array([0, size / 2, 0])
                 self.scene.add_box(centre, size, e.index, lay)
-                if e.category in ('soldier spawn', 'vehicle spawn'):        # facing: the transform's forward row
-                    self.scene.add_lines([[centre, centre + e.matrix[2, :3] * (size * 2.5)]], e.index, lay)
+                if e.category in ('soldier spawn', 'vehicle spawn') and e.matrix is not None:  # facing: forward row
+                    self.scene.add_lines(np.array([[centre, centre + e.matrix[2, :3] * (size * 2.5)]]), e.index, lay)
         for s in lvl.shapes:                                               # outlines, in their owner's layer
             lay = self.entity_layer[s.entity]
             self.scene.add_polyline(s.points, s.entity, lay, closed=s.closed)
@@ -95,7 +101,7 @@ class Inspector:
                 self.scene.add_lines(np.stack([s.points, top], axis=1), s.entity, lay)
         if lvl.terrain is not None:
             self.scene.add_indexed(lvl.terrain[0], lvl.terrain[1], TERRAIN_ID, self.layer_index['terrain'])
-        self.water_shaders = []
+        self.water_shaders: list[str] = []
         w = lvl.water
         if w is not None and len(w):
             shader = np.array(w.shader if w.shader else [''] * len(w))
@@ -103,11 +109,11 @@ class Inspector:
                 k = len(self.water_shaders)
                 self.water_shaders.append(name)
                 self.scene.add_indexed(w.vertices, w.triangles[shader == name], WATER_ID + k, self.layer_index['water'])
-        self.counts = {}
+        self.counts: dict[str, int] = {}
         for e in lvl.entities:
             self.counts[layer_name(e)] = self.counts.get(layer_name(e), 0) + 1
         self.guids = {e.guid.lower(): e for e in lvl.entities}
-        self.referrers = {}                                                # entity index -> [(field, entity)]
+        self.referrers: dict[int, list[tuple[str, levelmod.Entity]]] = {}  # entity index -> [(field, entity)]
         for e in lvl.entities:
             if e.short_type == 'LevelData':                                # lists every object; not a link
                 continue
@@ -115,20 +121,20 @@ class Inspector:
                 t = self.guids.get(r.lower())
                 if t is not None and t is not e:
                     self.referrers.setdefault(t.index, []).append((path, e))
-        types = {}
+        types: dict[str, int] = {}
         for e in lvl.entities:
             types[e.short_type] = types.get(e.short_type, 0) + 1
         self.types = sorted(types.items(), key=lambda kv: -kv[1])
         self.type_filter = ''
-        self.selected = None
+        self.selected: levelmod.Entity | None = None
         self.search = ''
-        self.results = []
-        self.history = []
+        self.results: list[levelmod.Entity] = []
+        self.history: list[levelmod.Entity | None] = []
         self.measuring = False
-        self.measure = []                                                  # world points
+        self.measure: list[np.ndarray] = []                                # world points
 
     # --- selection ----------------------------------------------------------------------------------
-    def select(self, v, entity, focus=False):
+    def select(self, v: viewer.Viewer, entity: levelmod.Entity | None, focus: bool = False) -> None:
         """Selects an entity (None: nothing), flying the camera to it when focus is set, and redraws the link
         lines."""
         self.selected = entity
@@ -137,9 +143,9 @@ class Inspector:
             v.camera.focus(entity.position, 40.0)
         self.update_overlay(v)
 
-    def links(self, e):
+    def links(self, e: levelmod.Entity | None) -> list[Segment]:
         """Segments to the positioned entities the selection references (yellow) and that reference it (cyan)."""
-        out = []
+        out: list[Segment] = []
         if e is None or e.position is None:
             return out
         for _, r in e.refs():
@@ -151,7 +157,7 @@ class Inspector:
                 out.append((t.position, e.position, REF_FROM))
         return out
 
-    def update_overlay(self, v):
+    def update_overlay(self, v: viewer.Viewer) -> None:
         """Redraws the overlay: the selection's link lines and the measure path with a cross at each point."""
         seg = self.links(self.selected)
         for a, b in zip(self.measure, self.measure[1:]):
@@ -161,10 +167,10 @@ class Inspector:
                 seg.append((p - np.array(d), p + np.array(d), MEASURE))
         v.set_overlay(seg)
 
-    def on_pick(self, v):
+    def on_pick(self, v: viewer.Viewer) -> Callable[[int | None], None]:
         """The viewer's pick handler: adds a measure point while measuring, otherwise selects the clicked entity (or
         nothing)."""
-        def handler(oid):
+        def handler(oid: int | None) -> None:
             if self.measuring:
                 if v.pick_point is not None:
                     self.measure.append(np.asarray(v.pick_point, dtype=np.float64))
@@ -176,12 +182,12 @@ class Inspector:
                 self.select(v, self.lvl.entities[oid])
         return handler
 
-    def set_measuring(self, v, on):
+    def set_measuring(self, v: viewer.Viewer, on: bool) -> None:
         """Turns measure mode on or off; while it is on, clicks do not select."""
         self.measuring = on
         v.select_on_click = not on
 
-    def keys(self, v):
+    def keys(self, v: viewer.Viewer) -> None:
         """The inspector's keys: M toggles measuring, Esc clears the measure points."""
         if imgui.get_io().want_capture_keyboard:
             return
@@ -191,13 +197,13 @@ class Inspector:
             self.measure = []
             self.update_overlay(v)
 
-    def follow(self, v, target):
+    def follow(self, v: viewer.Viewer, target: levelmod.Entity) -> None:
         """Selects target and flies to it, keeping the current selection for the back button."""
         self.history.append(self.selected)
         self.select(v, target, focus=True)
 
     # --- panels -------------------------------------------------------------------------------------
-    def panel_layers(self, v):
+    def panel_layers(self, v: viewer.Viewer) -> None:
         """The layers and search panel: a toggle per layer with its count, and entity search by text and type (up to
         500 results)."""
         self.keys(v)
@@ -245,7 +251,7 @@ class Inspector:
         imgui.end_child()
         imgui.end()
 
-    def tree(self, v, el, path):
+    def tree(self, v: viewer.Viewer, el: dbx.Element, path: str) -> None:
         """Property tree of an element: containers expand, values show inline, local references are links."""
         for k, c in enumerate(el.children or ()):
             name = c.attr('name') or c.tag
@@ -268,7 +274,7 @@ class Inspector:
                 val = dbx.value(c)
                 imgui.text(f'{name} = {val if len(val) < 140 else val[:140] + " ..."}')
 
-    def panel_selection(self, v):
+    def panel_selection(self, v: viewer.Viewer) -> None:
         """The selection panel: the selected entity's facts, its links and its property tree, with a back button."""
         w = imgui.get_io().display_size.x
         imgui.set_next_window_pos((w - 480, 10), imgui.Cond_.first_use_ever)
@@ -316,7 +322,7 @@ class Inspector:
             imgui.end_child()
         imgui.end()
 
-    def panel_measure(self, v):
+    def panel_measure(self, v: viewer.Viewer) -> None:
         """The measure panel: the points, the last point's height above the terrain and depth under water, and the
         distances."""
         if not self.measuring and not self.measure:
@@ -350,7 +356,7 @@ class Inspector:
                 imgui.text(f'path total: {sum(float(np.linalg.norm(b - a)) for a, b in zip(pts, pts[1:])):.2f} m')
         imgui.end()
 
-    def water_above(self, p):
+    def water_above(self, p: np.ndarray) -> float | None:
         """Height of the water surface over point p minus p's height, or None where there is no water."""
         w = self.lvl.water
         if w is None or not len(w):
@@ -368,7 +374,7 @@ class Inspector:
         k = np.nonzero(inside)[0][0]
         return float(l1[k] * a[k, 1] + l2[k] * b[k, 1] + l3[k] * c[k, 1] - p[1])
 
-    def tooltip(self, v):
+    def tooltip(self, v: viewer.Viewer) -> None:
         """The hover tooltip: the terrain, a water surface's shader, or an entity's type, name and team, with the
         point under the mouse."""
         io = imgui.get_io()
@@ -390,7 +396,7 @@ class Inspector:
             text += f'\n{p[0]:.1f}, {p[1]:.1f}, {p[2]:.1f}'
         imgui.set_tooltip(text)
 
-    def panel_status(self, v):
+    def panel_status(self, v: viewer.Viewer) -> None:
         """The hover tooltip and the status line (fps, triangles, camera, click mode, terrain source)."""
         self.tooltip(v)
         io = imgui.get_io()
@@ -403,9 +409,11 @@ class Inspector:
         imgui.end()
 
 
-def main(argv):
+def main(argv: Sequence[str]) -> int:
     """Opens the Map Inspector on a level (asked for when none is given); returns the exit code."""
-    opts, args, k = {}, [], 1
+    opts: dict[str, str] = {}
+    args: list[str] = []
+    k = 1
     while k < len(argv):
         if argv[k].startswith('--') and k + 1 < len(argv):
             opts[argv[k]] = argv[k + 1]

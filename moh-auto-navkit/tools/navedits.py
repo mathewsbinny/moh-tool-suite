@@ -10,13 +10,19 @@ points whose islands are dropped.
 
 Links, route edges and traversal annotations are not walkability: navkit apply handles them after the build.
 """
+from collections.abc import Iterable, Mapping
+from typing import TYPE_CHECKING, Any
+
 import numpy as np
 from matplotlib.path import Path
+
+if TYPE_CHECKING:
+    import navsample
 
 WALKABILITY = ('walkable', 'unwalkable', 'seed', 'unseed')
 
 
-def surface_positions(s):
+def surface_positions(s: 'navsample.Samples') -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """(x, z, y) of every sampled surface."""
     col = np.repeat(np.arange(s.nx * s.nz), np.diff(s.start[:s.nx * s.nz + 1]))
     x = s.min_x + (col % s.nx) * s.pitch
@@ -24,7 +30,7 @@ def surface_positions(s):
     return x, z, s.y.astype(np.float64)
 
 
-def region_mask(x, z, y, region):
+def region_mask(x: np.ndarray, z: np.ndarray, y: np.ndarray, region: Mapping[str, Any]) -> np.ndarray:
     """Per surface (x, z, y arrays), True inside an edit region: a box, or a polygon in plan within its y range."""
     if 'box' in region:
         x0, y0, z0, x1, y1, z1 = region['box']
@@ -39,13 +45,14 @@ def region_mask(x, z, y, region):
     return m
 
 
-def edits_for(s, operations):
+def edits_for(s: 'navsample.Samples', operations: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     """dict(force_walkable, force_unwalkable: bool per surface; seeds, unseeds: lists of (x, y, z); counts)."""
     x, z, y = surface_positions(s)
     fw = np.zeros(len(y), dtype=bool)
     fu = np.zeros(len(y), dtype=bool)
-    seeds, unseeds = [], []
-    counts = {}
+    seeds: list[tuple[float, ...]] = []
+    unseeds: list[tuple[float, ...]] = []
+    counts: dict[str, int] = {}
     for o in operations:
         name = o.get('op')
         if name not in WALKABILITY:

@@ -20,10 +20,20 @@ cells is the area's {(i, j): ground height} on its sector's sample grid (local i
 import os
 import sys
 from collections import defaultdict
+from collections.abc import Callable, Container, Iterable, Mapping, Sequence, Set
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import kymesh  # noqa: E402
 import mohsoldier  # noqa: E402
+
+IJ = tuple[int, int]                    # a cell (i, j), a side's step (di, dj) or a vertex in half units
+Side = tuple[IJ, IJ]                    # a cell's side: (cell, step toward the cell across)
+Cells = Mapping[IJ, float]              # an area's cells: {(i, j): ground height}
+Eligible = Callable[[int, int, int, int], bool]   # eligible(i, j, di, dj): whether the side may break
+Breakable = Callable[[IJ, IJ], bool]    # breakable(a, b): whether the side between cells a and b may break
+Unit = tuple[IJ, IJ, float, float]      # a D unit segment: (start, end, ys, ye) in half units
+Quarter = tuple[IJ, IJ]                 # a quarter triangle: (cell, base side)
+Vec3 = kymesh.Vec3
 
 Y_OFFSET = mohsoldier.Y_OFFSET        # stored heights are ground + the soldier's height / 2 (as the outline)
 SIDES = ((1, 0), (-1, 0), (0, 1), (0, -1))
@@ -37,14 +47,15 @@ F_DIRECTION = {('x', -1): (-1.0, -0.0, -0.0), ('x', 1): (1.0, -0.0, -0.0),
                ('z', -1): (-0.0, -0.0, -1.0), ('z', 1): (-0.0, -0.0, 1.0)}
 
 
-def broken_sides(cells, step, eligible=None, half=None, breakable=None):
+def broken_sides(cells: Cells, step: float, eligible: Eligible | None = None, half: Mapping[Side, float] | None = None,
+                 breakable: Breakable | None = None) -> set[Side]:
     """{((i, j), (di, dj))}: sides between two cells of the area whose heights differ by more than step.
     eligible(i, j, di, dj) -> False leaves a side out (a portal there, for example).
     half: {((i, j), (di, dj)): height} - the legs of 45-degree cut half cells: cell (i, j) is not in the area but half
     of it is (a bridge), its side toward the area cell (i + di, j + dj) lies inside the area; it breaks as any side,
     with the half cell's own height (DICE: 352 of 389 such legs with a step over 0.6 m have D or F, sp_004_b).
     breakable(a, b) -> False: the side between cells a and b never breaks (detailed zones: objects)."""
-    out = set()
+    out: set[Side] = set()
     for (i, j), y in cells.items():
         for di, dj in SIDES:
             n = cells.get((i + di, j + dj))
@@ -58,7 +69,7 @@ def broken_sides(cells, step, eligible=None, half=None, breakable=None):
     return out
 
 
-def f_cell_sets(broken, cells=None):
+def f_cell_sets(broken: Set[Side], cells: Container[IJ] | None = None) -> tuple[set[IJ], set[IJ]]:
     """(x-F cells, z-F cells): cells (of cells, when given - not half cells) whose two sides along x (z) are both
     broken."""
     fx = {c for c, s in broken if s == (1, 0) and (c, (-1, 0)) in broken and (cells is None or c in cells)}
@@ -66,9 +77,9 @@ def f_cell_sets(broken, cells=None):
     return fx, fz
 
 
-def d_sides(broken, fx, fz):
+def d_sides(broken: Iterable[Side], fx: Set[IJ], fz: Set[IJ]) -> set[Side]:
     """Broken sides that are no F cell's side along its axis (on either side of the line)."""
-    out = set()
+    out: set[Side] = set()
     for (i, j), (di, dj) in broken:
         if di and ((i, j) in fx or (i + di, j) in fx):
             continue
@@ -78,7 +89,7 @@ def d_sides(broken, fx, fz):
     return out
 
 
-def _unit(side, cells):
+def _unit(side: Side, cells: Cells) -> Unit:
     """A D side as a directed unit segment in half units with its two vertex heights: (start, end, ys, ye); the owner
     cell on the right; each vertex at the mean height of the owner-side cells touching it along the line."""
     (i, j), (di, dj) = side
@@ -91,7 +102,7 @@ def _unit(side, cells):
         pts = [(a, line), (b, line)]
         rev = dj == -1                          # owner on +z: runs -x
 
-    def y_at(t2):
+    def y_at(t2: int) -> float:
         own = [(i, t) if di else (t, j) for t in ((t2 - 1) // 2, (t2 + 1) // 2)]
         hs = [cells[c] for c in own if c in cells]
         return sum(hs) / len(hs) + Y_OFFSET
@@ -101,19 +112,19 @@ def _unit(side, cells):
     return pts[0], pts[1], ys[0], ys[1]
 
 
-def corner_cuts(sides):
+def corner_cuts(sides: Iterable[Side]) -> dict[IJ, tuple[IJ, ...]]:
     """CUT_CORNERS: {cell: (s1, s2)} for cells owning D on exactly two sides, perpendicular to each other."""
-    own = defaultdict(list)
+    own: defaultdict[IJ, list[IJ]] = defaultdict(list)
     for c, sd in sides:
         own[c].append(sd)
-    out = {}
+    out: dict[IJ, tuple[IJ, ...]] = {}
     for c, sds in own.items():
         if len(sds) == 2 and (sds[0][0] == 0) != (sds[1][0] == 0):
             out[c] = tuple(sorted(sds))
     return out
 
 
-def _cut(c, sds, cells):
+def _cut(c: IJ, sds: Sequence[IJ], cells: Cells) -> Unit:
     """The diagonal D segment of a cut corner, owner (the cell) on the right: between the cell's two corners next to
     the cut one (half units), each at the mean height of the cell and its neighbour along that side's line."""
     (i, j) = c
@@ -121,7 +132,7 @@ def _cut(c, sds, cells):
     a = (2 * i + sx, 2 * j - sz)                                        # far end of the x side
     b = (2 * i - sx, 2 * j + sz)                                        # far end of the z side
 
-    def y(other):
+    def y(other: IJ) -> float:
         hs = [cells[c]] + ([cells[other]] if other in cells else [])
         return sum(hs) / len(hs) + Y_OFFSET
     ya, yb = y((i, j - sz)), y((i - sx, j))
@@ -133,7 +144,8 @@ def _cut(c, sds, cells):
     return a, b, ya, yb
 
 
-def d_lines(sides, cells, pitch, ox, oz, cuts=None):
+def d_lines(sides: Iterable[Side], cells: Cells, pitch: float, ox: float, oz: float,
+            cuts: Mapping[IJ, tuple[IJ, ...]] | None = None) -> list[list[Vec3]]:
     """D polylines (world points) from owned broken sides, owner on the right: unit segments chained end to start
     where the chain is unambiguous (one way on, not back along the twin) - straight runs merge, and so do turns
     (DICE, sp_01: straight 2,785 of 2,785 joints joined, right turns 44 of 44, left turns 387 of 447); collinear
@@ -141,11 +153,12 @@ def d_lines(sides, cells, pitch, ox, oz, cuts=None):
     cuts = cuts or {}
     segs = sorted(_unit(s, cells) for s in sides if not (s[0] in cuts and s[1] in cuts[s[0]]))
     diag = [_cut(c, sds, cells) for c, sds in sorted(cuts.items())]
-    starts = defaultdict(list)
+    starts: defaultdict[IJ, list[int]] = defaultdict(list)
     for k, sg in enumerate(segs):
         starts[sg[0]].append(k)
-    nxt, prv_count = {}, defaultdict(int)
-    cand = {}
+    nxt: dict[int, int] = {}
+    prv_count: defaultdict[int, int] = defaultdict(int)
+    cand: dict[int, list[int]] = {}
     for k, (a, b, _ya, _yb) in enumerate(segs):
         c = [t for t in starts.get(b, ()) if segs[t][1] != a]        # not straight back along the facing twin
         if not CHAIN_TURNS:
@@ -157,9 +170,10 @@ def d_lines(sides, cells, pitch, ox, oz, cuts=None):
         if len(c) == 1 and prv_count[c[0]] == 1:
             nxt[k] = c[0]
     has_prev = set(nxt.values())
-    out, used = [], set()
+    out: list[list[Vec3]] = []
+    used: set[int] = set()
 
-    def emit(chain):
+    def emit(chain: list[int]) -> None:
         pts = [(segs[chain[0]][0], segs[chain[0]][2])]
         for q, k in enumerate(chain):
             a, b, ya, yb = segs[k]
@@ -196,13 +210,15 @@ def d_lines(sides, cells, pitch, ox, oz, cuts=None):
     return out
 
 
-def _components(cellset):
+def _components(cellset: Set[IJ]) -> list[list[IJ]]:
     """8-connected groups of cells, each sorted; groups in order of their first cell (x, then z - DICE's order)."""
-    seen, out = set(), []
+    seen: set[IJ] = set()
+    out: list[list[IJ]] = []
     for c in sorted(cellset):
         if c in seen:
             continue
-        comp, stack = [], [c]
+        comp: list[IJ] = []
+        stack = [c]
         seen.add(c)
         while stack:
             i, j = stack.pop()
@@ -217,11 +233,11 @@ def _components(cellset):
     return out
 
 
-def _quarters(comp):
+def _quarters(comp: Sequence[IJ]) -> set[Quarter]:
     """Quarter triangles (cell, base side) covering a group: its cells, plus for each 45-degree bridge (two cells
     touching only at a corner) the two quarters of each empty cell beside that corner whose bases touch it."""
     cs = set(comp)
-    q = set()
+    q: set[Quarter] = set()
     for i, j in comp:
         for s in SIDES:
             q.add(((i, j), s))
@@ -233,10 +249,10 @@ def _quarters(comp):
     return q
 
 
-def _loops(quarters):
+def _loops(quarters: Iterable[Quarter]) -> list[list[IJ]]:
     """Boundary of a union of quarter triangles: closed loops of half-unit vertices, counter-clockwise (x right,
     z up; inside on the left)."""
-    edges = defaultdict(int)
+    edges: defaultdict[tuple[IJ, IJ], int] = defaultdict(int)
     for (i, j), (sx, sz) in quarters:
         c = (2 * i, 2 * j)
         if sx:
@@ -250,14 +266,15 @@ def _loops(quarters):
                 edges[(r, p)] -= 1             # the same edge the other way round: interior
             else:
                 edges[(p, r)] += 1
-    nxt = defaultdict(list)
+    nxt: defaultdict[IJ, list[IJ]] = defaultdict(list)
     for (p, r), n in edges.items():
         for _ in range(n):
             nxt[p].append(r)
-    loops = []
+    loops: list[list[IJ]] = []
     while any(nxt.values()):
         p0 = min(p for p, v in nxt.items() if v)
-        loop, p, prev = [p0], p0, None
+        loop, p = [p0], p0
+        prev: IJ | None = None
         while True:
             cand = nxt[p]
             if len(cand) > 1 and prev is not None:
@@ -273,19 +290,19 @@ def _loops(quarters):
     return loops
 
 
-def _turn(a, b):
+def _turn(a: IJ, b: IJ) -> float:
     """Turn from direction a to b: negative = right; for sorting (right turns first)."""
     import math
     return math.atan2(a[0] * b[1] - a[1] * b[0], a[0] * b[0] + a[1] * b[1])
 
 
-def _simplify(loop, keep):
+def _simplify(loop: list[IJ], keep: IJ) -> list[IJ]:
     """Drop collinear vertices except keep; rotate the loop to start at keep when it is a vertex."""
     n = len(loop)
     if keep in loop:
         k = loop.index(keep)
         loop = loop[k:] + loop[:k]
-    out = []
+    out: list[IJ] = []
     for k, p in enumerate(loop):
         a, b = loop[k - 1], loop[(k + 1) % n]
         d0 = (p[0] - a[0], p[1] - a[1])
@@ -295,16 +312,16 @@ def _simplify(loop, keep):
     return out
 
 
-def f_cells(fset, axis, cells, pitch, ox, oz):
+def f_cells(fset: Set[IJ], axis: str, cells: Cells, pitch: float, ox: float, oz: float) -> list[kymesh.Cell]:
     """F records of one axis: per group, the -axis record then ... - all -axis records first, then all +axis ones
     (DICE's order). Each is a closed polygon (first point repeated) with every corner's height from the area cells on
     that side of it."""
-    groups = []
+    groups: list[tuple[int, int, list[list[IJ]]]] = []
     for comp in _components(fset):
         loops = _loops(_quarters(comp))
         i0, j0 = comp[0]
         groups.append((i0, j0, loops))
-    out = []
+    out: list[kymesh.Cell] = []
     for sign in (-1, 1):
         for i0, j0, loops in groups:
             # DICE starts at the first cell's top-left corner going -z for -x records, else at its bottom-left corner
@@ -317,7 +334,7 @@ def f_cells(fset, axis, cells, pitch, ox, oz):
     return out
 
 
-def _f_point(p, axis, sign, cells, fset, pitch, ox, oz):
+def _f_point(p: IJ, axis: str, sign: int, cells: Cells, fset: Set[IJ], pitch: float, ox: float, oz: float) -> Vec3:
     """World point of a polygon vertex (half units); height = mean of the area cells on the sign side of it along
     axis that touch it (corner: the two cells beside it; a cell centre: the next cell)."""
     vx, vz = p
@@ -334,14 +351,16 @@ def _f_point(p, axis, sign, cells, fset, pitch, ox, oz):
     return (ox + vx * pitch / 2.0, sum(hs) / len(hs) + Y_OFFSET, oz + vz * pitch / 2.0)
 
 
-def detail_features(cells, pitch, ox, oz, step, eligible=None, half=None, breakable=None, with_f=True):
+def detail_features(cells: Cells, pitch: float, ox: float, oz: float, step: float, eligible: Eligible | None = None,
+                    half: Mapping[Side, float] | None = None, breakable: Breakable | None = None,
+                    with_f: bool = True) -> tuple[set[Side], list[list[Vec3]], list[kymesh.Cell]]:
     """(broken sides, D polylines, F cells) of one area. cells: {(i, j): ground height}; step: the link step (m);
     half, breakable: see broken_sides; with_f False: no F cells (their sides are D lines)."""
     broken = broken_sides(cells, step, eligible, half, breakable)
     if not broken:
         return broken, [], []
     fx, fz = f_cell_sets(broken, cells) if with_f else (set(), set())
-    hcells = dict(cells)
+    hcells: dict[IJ, float] = dict(cells)
     for ((i, j), _s), y in (half or {}).items():
         hcells.setdefault((i, j), y)
     ds = d_sides(broken, fx, fz)

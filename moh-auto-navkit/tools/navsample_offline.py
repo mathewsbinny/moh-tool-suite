@@ -58,6 +58,8 @@ import os
 import struct
 import sys
 import time
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, overload
 
 import numpy as np
 
@@ -67,6 +69,20 @@ sys.path.insert(0, os.path.join(HERE, '..'))
 sys.path.insert(0, os.path.join(HERE, '..', '..', 'core'))
 import hkpack  # noqa: E402
 import navsample  # noqa: E402
+
+if TYPE_CHECKING:
+    import navkit
+    from mohcore.terrain import Heightfield
+
+Log = Callable[..., object]                     # a log: print, or a function taking print's arguments
+Box = Sequence[float]                           # (minX, minZ, maxX, maxZ)
+# an asset's body piece (asset_bodies): (system index, body name, kind, triangles, part, root kind); level_geometry
+# replaces the part by whether it is a destroyed-state part
+BodyPiece = tuple[int, str, int, np.ndarray, Any, int]
+Hits = tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]      # (column, y, triangle index or normal, ...)
+Touch = tuple[np.ndarray, np.ndarray, np.ndarray]                 # (column, lo, hi) height intervals
+Loaded = tuple['Geometry', 'Heightfield | None']                  # load_level's (geometry, height field)
+V = TypeVar('V')
 
 # --- the in-game sampler's settings (navsample.cpp, navkit.py AGENTS) ----------------------------------------------
 RAY_RADIUS = 0.05
@@ -123,13 +139,13 @@ VTABLE_OF_KIND = np.array([TERRAIN_SHAPE_VTABLE, MESH_SHAPE_VTABLE, CONVEX_SHAPE
 #   hkpConvexVerticesShape +0x10 convex radius, +0x40 vertices (FourVectors: x4 y4 z4), +0x4C vertex count,
 #                          +0x50 plane equations (n, d: n . v + d = 0, n outward)
 #   hkpBoxShape            +0x10 convex radius, +0x20 half extents
-def _arr(pf, at):
+def _arr(pf: hkpack.Packfile, at: int) -> tuple[int, int]:
     p = pf.deref(at)
     n = struct.unpack_from('<i', pf.d, at + 4)[0]
-    return p, (n if p else 0)
+    return p or 0, (n if p else 0)             # (address, count); 0, 0 for a null pointer
 
 
-def _hull_faces(verts, planes, radius):
+def _hull_faces(verts: np.ndarray, planes: np.ndarray, radius: float) -> np.ndarray:
     """Triangles of a convex hull given its vertices and outward plane equations: per plane, the vertices on it in
     order around it, fanned. Grown by radius along each face normal (CONVEX_RADIUS)."""
     tris = []
@@ -162,8 +178,8 @@ def _hull_faces(verts, planes, radius):
     return np.array(tris, dtype=np.float64).reshape(-1, 3, 3)
 
 
-def _box_faces(h, radius):
-    h = np.asarray(h[:3], float) + (radius if CONVEX_RADIUS else 0)
+def _box_faces(half: Sequence[float], radius: float) -> np.ndarray:
+    h = np.asarray(half[:3], float) + (radius if CONVEX_RADIUS else 0)
     c = np.array([[x, y, z] for x in (-h[0], h[0]) for y in (-h[1], h[1]) for z in (-h[2], h[2])])
     faces = [(0, 1, 3), (0, 3, 2), (4, 6, 7), (4, 7, 5), (0, 4, 5), (0, 5, 1), (2, 3, 7), (2, 7, 6),
              (0, 2, 6), (0, 6, 4), (1, 5, 7), (1, 7, 3)]
@@ -175,7 +191,8 @@ def _box_faces(h, radius):
     return t
 
 
-def _shape_parts(pf, sh, offset, out, depth=0):
+def _shape_parts(pf: hkpack.Packfile, sh: int | None, offset: np.ndarray, out: list[tuple[int, np.ndarray, int]],
+                 depth: int = 0) -> None:
     """Appends (kind, local triangles) of a shape tree to out; offset: translation of convex-translate parents."""
     if not sh or depth > 8:
         return
@@ -228,7 +245,7 @@ def _shape_parts(pf, sh, offset, out, depth=0):
         out.append((KIND_CONVEX, _box_faces(h, radius) + offset, -1))
 
 
-def asset_bodies(path):
+def asset_bodies(path: str) -> list[BodyPiece]:
     """[(system index, body name, kind, triangles in the asset's space, part)] of a *_Havok.res (body transforms
     applied; part: the index into the asset's PartInfoDatas of a mesh piece, -1 for convex pieces; the last item: the
     kind of the body's root shape - what the in-game file's hit vtable names: a MOPP tree over convex pieces is a
@@ -237,7 +254,7 @@ def asset_bodies(path):
         pf = hkpack.load(path)
     except (ValueError, OSError, struct.error):
         return []
-    out = []
+    out: list[BodyPiece] = []
     for si, sy in enumerate(pf.objects_of('hkpPhysicsSystem')):
         arr, n = _arr(pf, sy + 8)
         for k in range(n):
@@ -247,12 +264,13 @@ def asset_bodies(path):
             np_ = pf.deref(b + 0x70)
             name = pf.cstr(np_) if np_ else ''
             m = np.frombuffer(pf.d, '<f4', 16, b + 0xE0).reshape(4, 4).astype(np.float64)
-            parts = []
+            parts: list[tuple[int, np.ndarray, int]] = []
             try:
                 _shape_parts(pf, pf.deref(b + 0x10), np.zeros(3), parts)
             except (struct.error, ValueError, IndexError):
                 continue
-            root = pf.by_offset.get(pf.deref(b + 0x10))
+            sh = pf.deref(b + 0x10)
+            root = pf.by_offset.get(sh) if sh is not None else None
             rk = KIND_MESH if root in ('hkpMoppBvTreeShape', 'hkpStorageExtendedMeshShape') else KIND_CONVEX
             for kind, t, part in parts:
                 out.append((si, name, kind, t @ m[:3, :3] + m[3, :3], part, rk))
@@ -266,33 +284,34 @@ class Geometry:
     that is not there while the object is intact: its destroyed state), vt (n,) uint8 (the kind of the body's root
     shape, for the hit vtable)."""
 
-    def __init__(self, tris, kind, solid, body, inst, names, off=None, vt=None):
+    def __init__(self, tris: np.ndarray, kind: np.ndarray, solid: np.ndarray, body: np.ndarray, inst: np.ndarray,
+                 names: list[str], off: np.ndarray | None = None, vt: np.ndarray | None = None) -> None:
         self.tris, self.kind, self.solid, self.body, self.inst, self.names = tris, kind, solid, body, inst, names
         self.off = off if off is not None else np.zeros(len(tris), bool)
         self.vt = vt if vt is not None else kind.copy()
 
-    def select(self, mask):
+    def select(self, mask: np.ndarray) -> 'Geometry':
         """A new Geometry with the triangles where mask is True."""
         return Geometry(self.tris[mask], self.kind[mask], self.solid[mask], self.body[mask], self.inst[mask], self.names,
                         self.off[mask], self.vt[mask])
 
-    def bodies(self, letters):
+    def bodies(self, letters: str) -> 'Geometry':
         """The triangles of the bodies whose one-letter codes are in letters."""
         return self.select(np.isin(self.body, np.frombuffer(letters.encode(), np.uint8)))
 
-    def intact(self):
+    def intact(self) -> 'Geometry':
         """The triangles of intact parts only (no destroyed-state parts)."""
         return self.select(~self.off)
 
 
-def _xml_text(path):
+def _xml_text(path: str) -> str:
     try:
         return open(path, encoding='utf-8', errors='replace').read()
     except OSError:
         return ''
 
 
-def part_names(havok_res):
+def part_names(havok_res: str) -> list[str]:
     """The asset's PartInfoDatas names, in order (from the converted <name>_Havok.xml next to the .res)."""
     t = _xml_text(havok_res[:-4] + '.xml')
     if '<array name="PartInfoDatas">' not in t:
@@ -302,7 +321,7 @@ def part_names(havok_res):
     return [m.lower() for m in re.findall(r'<complex>\s*<field name="Name">([^<]*)</field>', body)]
 
 
-def destroyed_parts(blueprint_xml):
+def destroyed_parts(blueprint_xml: str) -> set[str]:
     """Mesh parts a blueprint shows only once damaged: the MeshNames of its PartComponentData health states other than
     each component's full-health state (the highest Health), minus the full-health ones. (House_06_8x8: 'ruin_downed'
     - the rubble - is the 0-health state of the 'ruin' component.)"""
@@ -310,12 +329,13 @@ def destroyed_parts(blueprint_xml):
     t = _xml_text(blueprint_xml)
     if 'PartComponentData' not in t:
         return set()
-    states = {}
+    states: dict[str, tuple[str, float]] = {}
     for g, body in re.findall(r'<instance guid="([^"]+)" type="GameSharedResources.HealthStateData">(.*?)</instance>', t, re.S):
         mn = re.search(r'<field name="MeshName">([^<]*)</field>', body)
         hp = re.search(r'<field name="Health">([-0-9.eE]+)</field>', body)
         states[g.lower()] = ((mn.group(1) if mn else '').lower(), float(hp.group(1)) if hp else 0.0)
-    shown, later = set(), set()
+    shown: set[str] = set()
+    later: set[str] = set()
     for body in re.findall(r'type="GameSharedResources.PartComponentData">(.*?)</instance>', t, re.S):
         hs = re.search(r'<array name="HealthStates">(.*?)</array>', body, re.S)
         refs = re.findall(r'<item ref="([^"]+)"', hs.group(1)) if hs else []
@@ -329,7 +349,57 @@ def destroyed_parts(blueprint_xml):
     return later - shown
 
 
-def level_geometry(level_dir, extra_bases=(), log=print, box=None):
+def _asset_pieces(bp: str, havok: Mapping[str, str], bases: Sequence[str], missing: set[str]) -> list[BodyPiece]:
+    """A blueprint's body pieces (asset_bodies) with the part replaced by whether it is a destroyed-state part (its
+    rubble); [] without a collision asset (then added to missing)."""
+    pieces = asset_bodies(havok[bp]) if bp in havok else []
+    if bp not in havok:
+        missing.add(bp)
+    elif pieces:
+        # parts shown only once the object is damaged (its rubble): marked, left out by intact()
+        later: set[str] = set()
+        for base in bases:
+            if os.path.isfile(os.path.join(base, bp + '.xml')):
+                later = destroyed_parts(os.path.join(base, bp + '.xml'))
+                break
+        names_ = part_names(havok[bp]) if later else []
+        gone = {k for k, nm in enumerate(names_) if nm in later}
+        pieces = [(si, nm, kind, tt, part in gone, rk) for si, nm, kind, tt, part, rk in pieces]
+    return pieces
+
+
+def _place_pieces(pieces: Sequence[BodyPiece], m: np.ndarray, box: Box | None, iid: int, solid_id: int,
+                  cols: Sequence[list[np.ndarray]]) -> int:
+    """Appends one placed object's pieces (world space, cut to box plus 2 m) to cols (triangles, kind, solid, body,
+    instance, destroyed, root kind); returns the next convex piece id."""
+    T, K, S, B, I, OFF, V = cols
+    for _si, name, kind, t, gone, rk in pieces:
+        w = t @ m[:3, :3] + m[3, :3]
+        if box is not None:
+            keep = ((w[:, :, 0].max(1) >= box[0] - 2) & (w[:, :, 0].min(1) <= box[2] + 2) &
+                    (w[:, :, 2].max(1) >= box[1] - 2) & (w[:, :, 2].min(1) <= box[3] + 2))
+            w = w[keep]
+            if not len(w):
+                continue
+        T.append(w)
+        K.append(np.full(len(w), kind, np.uint8))
+        if kind == KIND_CONVEX:
+            S.append(np.full(len(w), solid_id, np.int32))
+            solid_id += 1
+        else:
+            S.append(np.full(len(w), -1, np.int32))
+        letter = name[:1] or '?'
+        if letter == 'e' and not ({nm[:1] for _s, nm, *_r in pieces} & {'h', 'c'}):
+            letter = 'E'                    # the asset's only collision layer (see BODIES)
+        B.append(np.full(len(w), ord(letter), np.uint8))
+        I.append(np.full(len(w), iid, np.int32))
+        OFF.append(np.full(len(w), bool(gone)))
+        V.append(np.full(len(w), rk, np.uint8))
+    return solid_id
+
+
+def level_geometry(level_dir: str, extra_bases: Iterable[str] = (), log: Log = print,
+                   box: Box | None = None) -> Geometry:
     """The collision of a prepared level (work\\levels\\<level>: objects.json, group_instances.json from
     levelobjects.py, the unpacked bundles for the blueprints' *_Havok.res). box (minX, minZ, maxX, maxZ): only
     pieces reaching into it (plus 2 m)."""
@@ -344,28 +414,17 @@ def level_geometry(level_dir, extra_bases=(), log=print, box=None):
         pass
     objs = json.load(open(os.path.join(level_dir, 'objects.json')))
     groups = json.load(open(os.path.join(level_dir, 'group_instances.json')))
-    cache = {}
-    T, K, S, B, I, OFF, V = [], [], [], [], [], [], []
-    names = []
-    name_id = {}
-    missing = set()
+    cache: dict[str, list[BodyPiece]] = {}
+    cols: tuple[list[np.ndarray], ...] = ([], [], [], [], [], [], [])
+    T, K, S, B, I, OFF, V = cols
+    names: list[str] = []
+    name_id: dict[str, int] = {}
+    missing: set[str] = set()
     solid_id = 0
     for o in objs + groups:
         bp = o['bp']
         if bp not in cache:
-            cache[bp] = asset_bodies(havok[bp]) if bp in havok else []
-            if bp not in havok:
-                missing.add(bp)
-            elif cache[bp]:
-                # parts shown only once the object is damaged (its rubble): marked, left out by intact()
-                later = set()
-                for base in bases:
-                    if os.path.isfile(os.path.join(base, bp + '.xml')):
-                        later = destroyed_parts(os.path.join(base, bp + '.xml'))
-                        break
-                names_ = part_names(havok[bp]) if later else []
-                gone = {k for k, nm in enumerate(names_) if nm in later}
-                cache[bp] = [(si, nm, kind, tt, part in gone, rk) for si, nm, kind, tt, part, rk in cache[bp]]
+            cache[bp] = _asset_pieces(bp, havok, bases, missing)
         if not cache[bp]:
             continue
         if len(cache[bp][0]) == 6 and not isinstance(cache[bp][0][4], bool):
@@ -378,28 +437,7 @@ def level_geometry(level_dir, extra_bases=(), log=print, box=None):
         iid = name_id.setdefault(bp, len(names))
         if iid == len(names):
             names.append(bp)
-        for _si, name, kind, t, gone, rk in cache[bp]:
-            w = t @ m[:3, :3] + m[3, :3]
-            if box is not None:
-                keep = ((w[:, :, 0].max(1) >= box[0] - 2) & (w[:, :, 0].min(1) <= box[2] + 2) &
-                        (w[:, :, 2].max(1) >= box[1] - 2) & (w[:, :, 2].min(1) <= box[3] + 2))
-                w = w[keep]
-                if not len(w):
-                    continue
-            T.append(w)
-            K.append(np.full(len(w), kind, np.uint8))
-            if kind == KIND_CONVEX:
-                S.append(np.full(len(w), solid_id, np.int32))
-                solid_id += 1
-            else:
-                S.append(np.full(len(w), -1, np.int32))
-            letter = name[:1] or '?'
-            if letter == 'e' and not ({nm[:1] for _s, nm, *_r in cache[bp]} & {'h', 'c'}):
-                letter = 'E'                    # the asset's only collision layer (see BODIES)
-            B.append(np.full(len(w), ord(letter), np.uint8))
-            I.append(np.full(len(w), iid, np.int32))
-            OFF.append(np.full(len(w), bool(gone)))
-            V.append(np.full(len(w), rk, np.uint8))
+        solid_id = _place_pieces(cache[bp], m, box, iid, solid_id, cols)
     if not T:
         return Geometry(np.zeros((0, 3, 3)), np.zeros(0, np.uint8), np.zeros(0, np.int32), np.zeros(0, np.uint8),
                         np.zeros(0, np.int32), names)
@@ -414,20 +452,23 @@ def level_geometry(level_dir, extra_bases=(), log=print, box=None):
 
 # --- the grid --------------------------------------------------------------------------------------------------------
 class Grid:
-    def __init__(self, pitch, min_x, min_z, nx, nz, y_bottom, y_top, mask=None):
+    """A sampling grid: pitch, minimum corner, column counts, the cast's height range and the columns to sample."""
+
+    def __init__(self, pitch: float, min_x: float, min_z: float, nx: int, nz: int, y_bottom: float, y_top: float,
+                 mask: np.ndarray | None = None) -> None:
         self.pitch, self.min_x, self.min_z, self.nx, self.nz = float(pitch), float(min_x), float(min_z), int(nx), int(nz)
         self.y_bottom, self.y_top = float(y_bottom), float(y_top)
         self.mask = mask          # bool (nz, nx): columns to sample (None: all)
 
     @staticmethod
-    def from_box(pitch, box, y, rects=None):
+    def from_box(pitch: float, box: Box, y: Sequence[float], rects: Sequence[Box] | None = None) -> 'Grid':
         """As navsample.cpp's Begin(): aligned to whole multiples of the pitch."""
         p = np.float32(pitch)
         min_x = np.float32(math.floor(np.float32(box[0]) / p)) * p
         min_z = np.float32(math.floor(np.float32(box[1]) / p)) * p
         nx = int(math.ceil((np.float32(box[2]) - min_x) / p)) + 1
         nz = int(math.ceil((np.float32(box[3]) - min_z) / p)) + 1
-        g = Grid(p, min_x, min_z, nx, nz, y[0], y[1])
+        g = Grid(float(p), float(min_x), float(min_z), nx, nz, y[0], y[1])
         if rects:
             xs = g.min_x + np.arange(nx) * g.pitch
             zs = g.min_z + np.arange(nz) * g.pitch
@@ -448,30 +489,31 @@ class Grid:
         return g
 
     @staticmethod
-    def like(s):
+    def like(s: navsample.Samples) -> 'Grid':
         """The grid of an in-game sample file (navsample.Samples); columns it left empty under navsample_rects stay
         sampled here (compare() looks at the columns both have)."""
         return Grid(s.pitch, s.min_x, s.min_z, s.nx, s.nz, s.y_bottom, s.y_top)
 
     @property
-    def ncols(self):
+    def ncols(self) -> int:
         """The number of columns (nx * nz)."""
         return self.nx * self.nz
 
-    def xz(self, cols):
+    def xz(self, cols: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """The world x and z of the column indices cols (row-major, x fastest), at the grid's minimum corner plus
         pitch steps."""
         return (self.min_x + (cols % self.nx) * self.pitch, self.min_z + (cols // self.nx) * self.pitch)
 
 
 # --- rasterising triangles onto columns ------------------------------------------------------------------------------
-def _ranges(lo, hi, origin, pitch, n):
+def _ranges(lo: np.ndarray, hi: np.ndarray, origin: float, pitch: float, n: int) -> tuple[np.ndarray, np.ndarray]:
     a = np.ceil((lo - origin) / pitch - 1e-9).astype(np.int64)
     b = np.floor((hi - origin) / pitch + 1e-9).astype(np.int64)
     return np.maximum(a, 0), np.minimum(b, n - 1)
 
 
-def _pairs(i0, i1, j0, j1, budget=12_000_000):
+def _pairs(i0: np.ndarray, i1: np.ndarray, j0: np.ndarray, j1: np.ndarray,
+           budget: int = 12_000_000) -> Iterator[tuple[np.ndarray, np.ndarray, np.ndarray]]:
     """Yields (triangle index, i, j) for every column in each triangle's index rectangle, in chunks."""
     ni = np.maximum(i1 - i0 + 1, 0)
     nj = np.maximum(j1 - j0 + 1, 0)
@@ -493,7 +535,14 @@ def _pairs(i0, i1, j0, j1, budget=12_000_000):
         start = end
 
 
-def raster_hits(grid, tris, grow=EDGE_GROW, up_only=True, touch=False):
+@overload
+def raster_hits(grid: Grid, tris: np.ndarray, grow: float = ..., up_only: bool = ...,
+                touch: Literal[False] = ...) -> Hits: ...
+@overload
+def raster_hits(grid: Grid, tris: np.ndarray, grow: float = ..., up_only: bool = ..., *,
+                touch: Literal[True]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Touch]: ...
+def raster_hits(grid: Grid, tris: np.ndarray, grow: float = EDGE_GROW, up_only: bool = True,
+                touch: bool = False) -> Hits | tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Touch]:
     """Where the cast meets each triangle in each column: (column, y, triangle index, normal[, touch]).
     The vertical line through the column centre passing through a (non-vertical) triangle hits it at its plane height
     (NaN normal row: the triangle's own). grow > 0: the cast's sphere (radius grow) also touches triangles up to grow
@@ -516,7 +565,8 @@ def raster_hits(grid, tris, grow=EDGE_GROW, up_only=True, touch=False):
     xs, zs = tris[tid, :, 0], tris[tid, :, 2]
     i0, i1 = _ranges(xs.min(1) - grow, xs.max(1) + grow, grid.min_x, grid.pitch, grid.nx)
     j0, j1 = _ranges(zs.min(1) - grow, zs.max(1) + grow, grid.min_z, grid.pitch, grid.nz)
-    C, Y, TI, N, TC, TL, TH = [], [], [], [], [], [], []
+    lists: tuple[list[np.ndarray], ...] = ([], [], [], [], [], [], [])
+    C, Y, TI, N, TC, TL, TH = lists
     for t_, i, j in _pairs(i0, i1, j0, j1):
         T = tid[t_]
         if grid.mask is not None:
@@ -565,7 +615,7 @@ def raster_hits(grid, tris, grow=EDGE_GROW, up_only=True, touch=False):
     return out + (tc,) if touch else out
 
 
-def _edge_dist2(t, px, pz):
+def _edge_dist2(t: np.ndarray, px: np.ndarray, pz: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Horizontal squared distance from (px, pz) to the nearest edge of each triangle, the height there, and that
     point's x, z."""
     best = np.full(len(px), np.inf)
@@ -590,7 +640,8 @@ def _edge_dist2(t, px, pz):
 
 
 # --- terrain ---------------------------------------------------------------------------------------------------------
-def terrain_at(hf, x, z, normals=True):
+def terrain_at(hf: 'Heightfield', x: np.ndarray | float, z: np.ndarray | float,
+               normals: bool = True) -> tuple[np.ndarray, np.ndarray | None]:
     """Height and normal of the height field at (x, z) (its grid squares split as terrain.Heightfield.height splits
     them); height NaN outside it."""
     cx, cz = hf.cell
@@ -615,7 +666,7 @@ def terrain_at(hf, x, z, normals=True):
     return y, nrm
 
 
-def _rings(radius=RADIUS):
+def _rings(radius: float = RADIUS) -> np.ndarray:
     """Points under the capsule's lower hemisphere: its axis, rings every 0.1 m and one at its radius. Up to the
     radius only: a ring outside it (BFBC2's 0.4 m ring under MOH's 0.35 m capsule) tested terrain the hemisphere does
     not reach, at its full lowest height (2026-10-31)."""
@@ -634,13 +685,14 @@ def _rings(radius=RADIUS):
 RINGS = _rings()
 
 
-def capsule_axis(bottom, radius=RADIUS, height=HEIGHT):
+def capsule_axis(bottom: float, radius: float = RADIUS, height: float = HEIGHT) -> tuple[float, float]:
     """Heights above the surface of the capsule's lowest and highest sphere centres: CAPSULE_AXIS for the two runs
     navkit.py makes, else navsample.cpp's nominal capsule (bottom + radius .. height - radius)."""
     return CAPSULE_AXIS.get(round(float(bottom), 2), (bottom + radius, height - radius))
 
 
-def terrain_blocks(hf, x, z, y, bottom, radius=RADIUS, chunk=100_000, height=HEIGHT):
+def terrain_blocks(hf: 'Heightfield | None', x: np.ndarray, z: np.ndarray, y: np.ndarray, bottom: float,
+                   radius: float = RADIUS, chunk: int = 100_000, height: float = HEIGHT) -> np.ndarray:
     """Capsule (radius, stepMax bottom: capsule_axis) overlaps the height field: the terrain under its lower hemisphere
     rises above the hemisphere's surface somewhere (sampled on RINGS)."""
     out = np.zeros(len(y), bool)
@@ -660,7 +712,7 @@ def terrain_blocks(hf, x, z, y, bottom, radius=RADIUS, chunk=100_000, height=HEI
 class Intervals:
     """A union of height intervals per column, for 'is this height inside one' queries (vectorised)."""
 
-    def __init__(self, grid, col, lo, hi):
+    def __init__(self, grid: Grid, col: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> None:
         self.K = 2.0 ** int(math.ceil(math.log2(grid.y_top - grid.y_bottom + 200)))
         self.off = 100.0 - grid.y_bottom
         lo = np.clip(lo, grid.y_bottom - 50, grid.y_top + 50)
@@ -680,10 +732,10 @@ class Intervals:
         else:
             self.lo = self.hi = np.zeros(0)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.lo)
 
-    def contains(self, col, y):
+    def contains(self, col: np.ndarray, y: np.ndarray) -> np.ndarray:
         """Per query, True where height y lies inside one of column col's intervals (vectorised over arrays)."""
         if not len(self.lo):
             return np.zeros(len(col), bool)
@@ -691,13 +743,14 @@ class Intervals:
         k = np.searchsorted(self.lo, q, 'right') - 1
         return (k >= 0) & (self.hi[np.maximum(k, 0)] >= q)
 
-    def bottom(self, col, y):
+    def bottom(self, col: np.ndarray, y: np.ndarray) -> np.ndarray:
         """The lower end of the interval holding y (heights inside one)."""
         k = np.maximum(np.searchsorted(self.lo, col * self.K + (y + self.off), 'right') - 1, 0)
         return self.lo[k] - col * self.K - self.off
 
 
-def cast_columns(grid, hits_col, hits_y, hits_n, hits_kind, terrain_y, solid=None, log=print):
+def cast_columns(grid: Grid, hits_col: np.ndarray, hits_y: np.ndarray, hits_n: np.ndarray, hits_kind: np.ndarray,
+                 terrain_y: np.ndarray | None, solid: Touch | None = None, log: Log = print) -> Hits:
     """Replays navsample.cpp's SampleColumn on every column. hits_*: candidate hits (column, y, normal, kind) of
     the meshes, convex faces and the terrain; terrain_y: per column (NaN outside the height field) - the solid under
     it; solid: (column, lo, hi) heights where a cast starting there hits at once (the sphere overlaps geometry, or
@@ -719,7 +772,10 @@ def cast_columns(grid, hits_col, hits_y, hits_n, hits_kind, terrain_y, solid=Non
     solid_run = np.zeros(len(cols))
     count = np.zeros(len(cols), np.int32)
     ty = terrain_y[cols] if terrain_y is not None else np.full(len(cols), np.nan)
-    out_c, out_y, out_n, out_k = [], [], [], []
+    out_c: list[np.ndarray] = []
+    out_y: list[np.ndarray] = []
+    out_n: list[np.ndarray] = []
+    out_k: list[np.ndarray] = []
     act = np.arange(len(cols))
     it = 0
     while len(act):
@@ -757,6 +813,7 @@ def cast_columns(grid, hits_col, hits_y, hits_n, hits_kind, terrain_y, solid=Non
         # wall over a house, 2026-10-30) the floors, stairs and ground below were all lost, cutting the house off
         long = skip & inside & (solid_run[act] > MAX_SOLID)
         if long.any():
+            assert inside_set is not None        # long: inside a convex piece
             s = act[long]
             start[s] = np.minimum(start[s], inside_set.bottom(cols[s], st[long]) - SKIP)
             # ... as a new cast: the run inside solid starts over there (a floor just under the piece, hit at once,
@@ -775,7 +832,7 @@ def cast_columns(grid, hits_col, hits_y, hits_n, hits_kind, terrain_y, solid=Non
 
 
 # --- the capsule test ------------------------------------------------------------------------------------------------
-def _line_tri_interval(t, px, pz, r):
+def _line_tri_interval(t: np.ndarray, px: np.ndarray, pz: np.ndarray, r: float) -> tuple[np.ndarray, np.ndarray]:
     """Height interval [lo, hi] of the vertical line (px, ., pz) inside the triangle t (n, 3, 3) grown by a ball of
     radius r (lo > hi: none). Exact: the union of the face slab, the three edge cylinders and the vertex spheres."""
     n = len(px)
@@ -790,44 +847,57 @@ def _line_tri_interval(t, px, pz, r):
         s = np.sqrt(np.where(ok, q, 0))
         lo = np.where(ok, np.minimum(lo, v[:, 1] - s), lo)
         hi = np.where(ok, np.maximum(hi, v[:, 1] + s), hi)
-    # edge cylinders (capped by the edge's ends): points P = (px, h, pz) with dist(P, segment) <= r and the
-    # projection parameter in [0, 1]
     for u, v in ((a, b), (b, c), (c, a)):
-        e = v - u
-        ee = (e * e).sum(1)
-        ee = np.where(ee > 1e-12, ee, 1e-12)
-        w0 = np.stack([px - u[:, 0], -u[:, 1], pz - u[:, 2]], 1)    # P - u with h = 0
-        # P - u = w0 + h * Y; distance^2 to the line = |w|^2 - (w.e)^2 / ee: quadratic in h
-        we0 = (w0 * e).sum(1)
-        ey = e[:, 1]
-        A = 1 - ey * ey / ee
-        B = 2 * (w0[:, 1] - we0 * ey / ee)
-        Cc = (w0 * w0).sum(1) - we0 * we0 / ee - r * r
-        disc = B * B - 4 * A * Cc
-        okq = (disc >= 0) & (A > 1e-9)
-        sq = np.sqrt(np.where(okq, disc, 0))
-        A2 = np.where(A > 1e-9, 2 * A, 1)
-        h1, h2 = (-B - sq) / A2, (-B + sq) / A2
-        # a vertical edge: the distance to its line does not change with h - inside for every h or for none
-        vert = (A <= 1e-9) & (Cc <= 0)
-        okq = okq | vert
-        h1 = np.where(vert, -np.inf, h1)
-        h2 = np.where(vert, np.inf, h2)
-        # parameter s(h) = (we0 + h * ey) / ee in [0, 1]: an interval of h
-        if True:
-            with np.errstate(divide='ignore', invalid='ignore'):
-                s1 = np.where(np.abs(ey) > 1e-12, (0 * ee - we0) / ey, -np.inf)
-                s2 = np.where(np.abs(ey) > 1e-12, (1 * ee - we0) / ey, np.inf)
-            sl, sh = np.minimum(s1, s2), np.maximum(s1, s2)
-            flat = np.abs(ey) <= 1e-12
-            inrange = (we0 >= 0) & (we0 <= ee)
-            sl = np.where(flat, np.where(inrange, -np.inf, np.inf), sl)
-            sh = np.where(flat, np.where(inrange, np.inf, -np.inf), sh)
-        l2, h2b = np.maximum(h1, sl), np.minimum(h2, sh)
-        ok = okq & (l2 <= h2b)
+        ok, l2, h2b = _edge_cylinder(u, v, px, pz, r)
         lo = np.where(ok, np.minimum(lo, l2), lo)
         hi = np.where(ok, np.maximum(hi, h2b), hi)
-    # face slab: |n . (P - a)| <= r and the projection of P onto the plane inside the triangle
+    ok, fl, fh = _face_slab(a, b, c, px, pz, r)
+    lo = np.where(ok, np.minimum(lo, fl), lo)
+    hi = np.where(ok, np.maximum(hi, fh), hi)
+    return lo, hi
+
+
+def _edge_cylinder(u: np.ndarray, v: np.ndarray, px: np.ndarray, pz: np.ndarray,
+                   r: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """_line_tri_interval's edge cylinder (capped by the edge's ends): points P = (px, h, pz) with dist(P, segment)
+    <= r and the projection parameter in [0, 1]. Returns (any, lo, hi) per line."""
+    e = v - u
+    ee = (e * e).sum(1)
+    ee = np.where(ee > 1e-12, ee, 1e-12)
+    w0 = np.stack([px - u[:, 0], -u[:, 1], pz - u[:, 2]], 1)    # P - u with h = 0
+    # P - u = w0 + h * Y; distance^2 to the line = |w|^2 - (w.e)^2 / ee: quadratic in h
+    we0 = (w0 * e).sum(1)
+    ey = e[:, 1]
+    A = 1 - ey * ey / ee
+    B = 2 * (w0[:, 1] - we0 * ey / ee)
+    Cc = (w0 * w0).sum(1) - we0 * we0 / ee - r * r
+    disc = B * B - 4 * A * Cc
+    okq = (disc >= 0) & (A > 1e-9)
+    sq = np.sqrt(np.where(okq, disc, 0))
+    A2 = np.where(A > 1e-9, 2 * A, 1)
+    h1, h2 = (-B - sq) / A2, (-B + sq) / A2
+    # a vertical edge: the distance to its line does not change with h - inside for every h or for none
+    vert = (A <= 1e-9) & (Cc <= 0)
+    okq = okq | vert
+    h1 = np.where(vert, -np.inf, h1)
+    h2 = np.where(vert, np.inf, h2)
+    # parameter s(h) = (we0 + h * ey) / ee in [0, 1]: an interval of h
+    with np.errstate(divide='ignore', invalid='ignore'):
+        s1 = np.where(np.abs(ey) > 1e-12, (0 * ee - we0) / ey, -np.inf)
+        s2 = np.where(np.abs(ey) > 1e-12, (1 * ee - we0) / ey, np.inf)
+    sl, sh = np.minimum(s1, s2), np.maximum(s1, s2)
+    flat = np.abs(ey) <= 1e-12
+    inrange = (we0 >= 0) & (we0 <= ee)
+    sl = np.where(flat, np.where(inrange, -np.inf, np.inf), sl)
+    sh = np.where(flat, np.where(inrange, np.inf, -np.inf), sh)
+    l2, h2b = np.maximum(h1, sl), np.minimum(h2, sh)
+    return okq & (l2 <= h2b), l2, h2b
+
+
+def _face_slab(a: np.ndarray, b: np.ndarray, c: np.ndarray, px: np.ndarray, pz: np.ndarray,
+               r: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """_line_tri_interval's face slab: |n . (P - a)| <= r and the projection of P onto the plane inside the triangle.
+    Returns (any, lo, hi) per line."""
     nrm = np.cross(b - a, c - a)
     ln = np.linalg.norm(nrm, axis=1)
     good = ln > 1e-12
@@ -860,13 +930,12 @@ def _line_tri_interval(t, px, pz, r):
         fh = np.where(neg, np.minimum(fh, hb), fh)
         bad = zero & (g0 < 0)
         fl = np.where(bad, np.inf, fl)
-    ok = okf & (fl <= fh)
-    lo = np.where(ok, np.minimum(lo, fl), lo)
-    hi = np.where(ok, np.maximum(hi, fh), hi)
-    return lo, hi
+    return okf & (fl <= fh), fl, fh
 
 
-def capsule_blocked(grid, cols, ys, tris, bottoms, hf=None, radius=RADIUS, height=HEIGHT, log=print):
+def capsule_blocked(grid: Grid, cols: np.ndarray, ys: np.ndarray, tris: np.ndarray, bottoms: Sequence[float],
+                    hf: 'Heightfield | None' = None, radius: float = RADIUS, height: float = HEIGHT,
+                    log: Log = print) -> dict[float, np.ndarray]:
     """Per surface (column, y) and capsule bottom (stepMax): does the soldier capsule overlap the triangles or the
     height field? Returns {bottom: bool array}."""
     out = {b: np.zeros(len(ys), bool) for b in bottoms}
@@ -917,7 +986,8 @@ def capsule_blocked(grid, cols, ys, tris, bottoms, hf=None, radius=RADIUS, heigh
 
 
 # --- one sampling run ------------------------------------------------------------------------------------------------
-def sample_grid(grid, geom, hf, log=print, bottoms=(mohsoldier.STEP, mohsoldier.HIGH_STEP)):
+def sample_grid(grid: Grid, geom: Geometry, hf: 'Heightfield | None', log: Log = print,
+                bottoms: Sequence[float] = (mohsoldier.STEP, mohsoldier.HIGH_STEP)) -> dict[float, navsample.Samples]:
     """Samples a grid: {bottom: navsample.Samples} for each capsule bottom (one cast, one capsule test per bottom)."""
     t0 = time.time()
     # mesh hits (up-facing triangles), convex faces (their upper faces), terrain per column
@@ -933,13 +1003,39 @@ def sample_grid(grid, geom, hf, log=print, bottoms=(mohsoldier.STEP, mohsoldier.
     ct = np.nonzero(conv)[0][ct]
     tri_n = np.cross(geom.tris[:, 1] - geom.tris[:, 0], geom.tris[:, 2] - geom.tris[:, 0])
     tri_n /= np.maximum(np.linalg.norm(tri_n, axis=1, keepdims=True), 1e-12)
-    # convex: solid intervals per (column, piece), hits only on the upward faces
+    del mtouch, ctouch
+    (cc, cy, ct, cen), solid = _convex_solid(geom, (cc, cy, ct, cen), tri_n)
+    log(f'  hits: {len(mc):,} mesh, {len(cc):,} convex ({time.time() - t0:.0f} s)')
+    ty, tc, tn, tyh = _terrain_hits(grid, hf)
+    hits_col = np.concatenate([mc, cc, tc])
+    hits_y = np.concatenate([my, cy, tyh])
+    mn = tri_n[mt]
+    if MESH_TWO_SIDED:
+        flip = (mn[:, 1] < 0) & (geom.kind[mt] == KIND_MESH)   # convex pieces keep their outward normal
+        mn = np.where(flip[:, None], -mn, mn)            # the hit normal faces the ray
+    mn = np.where(np.isnan(men[:, :1]), mn, men)        # edge contacts
+    cn = np.where(np.isnan(cen[:, :1]), tri_n[ct], cen)
+    hits_n = np.concatenate([mn, cn, tn])
+    hits_k = np.concatenate([geom.vt[mt], geom.vt[ct],
+                             np.full(len(tc), KIND_TERRAIN, np.uint8)])
+    C, Y, N, Kd = cast_columns(grid, hits_col, hits_y, hits_n, hits_k, ty, solid, log=log)
+    blocked = capsule_blocked(grid, C, Y, geom.tris, bottoms, hf, log=log)
+    out = _samples_of(grid, (C, Y, N, Kd), blocked, bottoms)
+    log(f'  sampled {grid.nx} x {grid.nz} columns at {grid.pitch:g} m: {len(Y):,} surfaces, '
+        + ', '.join(f'blocked {int(blocked[b].sum()):,} (capsule from {b})' for b in bottoms)
+        + f' ({time.time() - t0:.0f} s)')
+    return out
+
+
+def _convex_solid(geom: Geometry, hits: Hits, tri_n: np.ndarray) -> tuple[Hits, Touch]:
+    """sample_grid's convex hits (column, y, triangle, edge normal): solid intervals per (column, piece), and the hits
+    kept - only those on the upward faces (or edge contacts). Returns (kept hits, solid (column, lo, hi))."""
+    cc, cy, ct, cen = hits
     # A cast that starts touching a triangle hits at once only when it moves onto it (navsample.cpp's 0.07 m rule,
     # in cast_columns): the sphere sliding down beside a wall it touches does not stop (taking every touch interval
     # as 'at once' lost real floors beside walls: sp_004_b's object surfaces found 94.3 -> 89.6 %). Inside a convex
     # piece it does (the in-game files have nothing inside one).
     sc, slo, shi = [np.zeros(0, np.int64)], [np.zeros(0)], [np.zeros(0)]
-    del mtouch, ctouch
     if len(cc):
         # inside a convex piece (between its faces in the column, by the faces the line passes through): solid
         face = np.isnan(cen[:, 0])
@@ -956,8 +1052,12 @@ def sample_grid(grid, geom, hf, log=print, bottoms=(mohsoldier.STEP, mohsoldier.
             shi.append(hi + RAY_RADIUS)
         up = (tri_n[ct, 1] > 0) | ~face
         cc, cy, ct, cen = cc[up], cy[up], ct[up], cen[up]
-    solid = (np.concatenate(sc), np.concatenate(slo), np.concatenate(shi))
-    log(f'  hits: {len(mc):,} mesh, {len(cc):,} convex ({time.time() - t0:.0f} s)')
+    return (cc, cy, ct, cen), (np.concatenate(sc), np.concatenate(slo), np.concatenate(shi))
+
+
+def _terrain_hits(grid: Grid, hf: 'Heightfield | None') -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """sample_grid's terrain: its height per column (NaN outside it), the columns it is hit in (between the cast's
+    ends), their normals and the hit heights. Returns (per-column height, columns, normals, hit heights)."""
     if grid.mask is not None:
         all_cols = np.nonzero(grid.mask.ravel())[0]
     else:
@@ -969,23 +1069,19 @@ def sample_grid(grid, geom, hf, log=print, bottoms=(mohsoldier.STEP, mohsoldier.
             x, z = grid.xz(c)
             ty[c] = terrain_at(hf, x, z, normals=False)[0]
     tc = all_cols[~np.isnan(ty[all_cols]) & (ty[all_cols] < grid.y_top) & (ty[all_cols] > grid.y_bottom)]
-    tn = terrain_at(hf, *grid.xz(tc))[1] if len(tc) else np.zeros((0, 3))
+    # (terrain hits only with a height field: without one every height is NaN and tc is empty)
+    tn = cast(np.ndarray, terrain_at(hf, *grid.xz(tc))[1]) if len(tc) and hf is not None else np.zeros((0, 3))
     # the cast reports terrain hits a little above the height field on slopes: RAY_RADIUS * (1 - ny) (sp_004_b, every
     # 0.1 of ny: 2.1 mm at 0.9 ... 41.7 mm at 0.1 - a fit within 1 mm)
     tyh = ty[tc] + RAY_RADIUS * (1 - tn[:, 1]) if TERRAIN_LIFT else ty[tc]
-    hits_col = np.concatenate([mc, cc, tc])
-    hits_y = np.concatenate([my, cy, tyh])
-    mn = tri_n[mt]
-    if MESH_TWO_SIDED:
-        flip = (mn[:, 1] < 0) & (geom.kind[mt] == KIND_MESH)   # convex pieces keep their outward normal
-        mn = np.where(flip[:, None], -mn, mn)            # the hit normal faces the ray
-    mn = np.where(np.isnan(men[:, :1]), mn, men)        # edge contacts
-    cn = np.where(np.isnan(cen[:, :1]), tri_n[ct], cen)
-    hits_n = np.concatenate([mn, cn, tn])
-    hits_k = np.concatenate([geom.vt[mt], geom.vt[ct],
-                             np.full(len(tc), KIND_TERRAIN, np.uint8)])
-    C, Y, N, Kd = cast_columns(grid, hits_col, hits_y, hits_n, hits_k, ty, solid, log=log)
-    blocked = capsule_blocked(grid, C, Y, geom.tris, bottoms, hf, log=log)
+    return ty, tc, tn, tyh
+
+
+def _samples_of(grid: Grid, surfaces: Hits, blocked: Mapping[float, np.ndarray],
+                bottoms: Sequence[float]) -> dict[float, navsample.Samples]:
+    """sample_grid's result: the recorded surfaces (column, y, normal, kind) as a navsample.Samples per capsule
+    bottom, with that bottom's blocked flags."""
+    C, Y, N, Kd = surfaces
     out = {}
     counts = np.bincount(C, minlength=grid.ncols).astype(np.int64)
     start = np.zeros(grid.ncols + 1, np.int64)
@@ -994,17 +1090,16 @@ def sample_grid(grid, geom, hf, log=print, bottoms=(mohsoldier.STEP, mohsoldier.
     hit[:, 0] = VTABLE_OF_KIND[Kd]
     hit[:, 1] = RAY_SHAPE_VTABLE
     nq = (np.clip(np.rint(N * 127), -127, 127) / 127.0).astype(np.float32)
+    # the pitch and corner stay float32, as the in-game sampler's (Samples annotates them as float)
+    pitch, min_x, min_z = (cast(float, np.float32(v)) for v in (grid.pitch, grid.min_x, grid.min_z))
     for b in bottoms:
-        out[b] = navsample.Samples(np.float32(grid.pitch), np.float32(grid.min_x), np.float32(grid.min_z), grid.nx,
+        out[b] = navsample.Samples(pitch, min_x, min_z, grid.nx,
                                    grid.nz, grid.y_top, grid.y_bottom, RADIUS, b, HEIGHT, RAY_RADIUS, start,
                                    Y.astype(np.float32), nq, blocked[b].astype(np.uint8), hit)
-    log(f'  sampled {grid.nx} x {grid.nz} columns at {grid.pitch:g} m: {len(Y):,} surfaces, '
-        + ', '.join(f'blocked {int(blocked[b].sum()):,} (capsule from {b})' for b in bottoms)
-        + f' ({time.time() - t0:.0f} s)')
     return out
 
 
-def write(path, s):
+def write(path: str, s: navsample.Samples) -> None:
     """navsample.cpp's version-3 file."""
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
     counts = np.diff(s.start)
@@ -1030,14 +1125,15 @@ def write(path, s):
 
 
 # --- comparison with an in-game file ---------------------------------------------------------------------------------
-def compare(a, b, tol=0.1, slope=mohsoldier.SLOPE, log=print, both_only=True):
+def compare(a: navsample.Samples, b: navsample.Samples, tol: float = 0.1, slope: float = mohsoldier.SLOPE,
+            log: Log = print, both_only: bool = True) -> dict[str, float | int]:
     """Per column agreement of two sample files on the same grid (a: in game, b: offline). Columns empty in a (outside
     the in-game run's rectangles) are left out when both_only. Returns a dict of measures."""
     if (a.nx, a.nz) != (b.nx, b.nz) or abs(a.min_x - b.min_x) > 1e-3 or abs(a.min_z - b.min_z) > 1e-3:
         raise ValueError('not the same grid')
     na, nb = np.diff(a.start), np.diff(b.start)
     cols = np.nonzero(na > 0)[0] if both_only else np.arange(a.nx * a.nz)
-    r = {'columns': int(len(cols)), 'surfaces_a': int(na[cols].sum()), 'surfaces_b': int(nb[cols].sum())}
+    r: dict[str, float | int] = {'columns': int(len(cols)), 'surfaces_a': int(na[cols].sum()), 'surfaces_b': int(nb[cols].sum())}
     r['layers_equal'] = float(np.mean(na[cols] == nb[cols]) * 100)
     # top surface height
     both = cols[(na[cols] > 0) & (nb[cols] > 0)]
@@ -1046,7 +1142,8 @@ def compare(a, b, tol=0.1, slope=mohsoldier.SLOPE, log=print, both_only=True):
     r['top_median_mm'] = float(np.median(dy) * 1000) if len(dy) else float('nan')
     r['top_missing_b'] = float(np.mean(nb[cols] == 0) * 100)
     # every surface of a: is there one in b's column within tol? (and vice versa)
-    def matched(x, y_, cols_):
+    def matched(x: navsample.Samples, y_: navsample.Samples,
+                cols_: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         ca = np.repeat(np.arange(x.nx * x.nz), np.diff(x.start))
         m = np.zeros(len(x.y), bool)
         sel = np.isin(ca, cols_)
@@ -1094,23 +1191,23 @@ def compare(a, b, tol=0.1, slope=mohsoldier.SLOPE, log=print, both_only=True):
 
 
 # --- level driver ----------------------------------------------------------------------------------------------------
-def out_dir(root):
+def out_dir(root: str) -> str:
     """The folder the offline samples are written to: work\\navsample_offline."""
     return os.path.join(root, 'work', 'navsample_offline')
 
 
-def sample_path(root, lv, suffix=''):
+def sample_path(root: str, lv: str, suffix: str = '') -> str:
     """The path of a level's offline sample file (suffix tells variants apart)."""
     return os.path.join(out_dir(root), f'{lv}_navkit{suffix}.bin')
 
 
-def common_bases(root, lv=None):
+def common_bases(root: str, lv: str | None = None) -> list[str]:
     """The shared asset folders the level's objects are read from (navkit.common_dirs)."""
     import navkit
     return navkit.common_dirs(root, lv)
 
 
-def load_level(root, lv, box=None, log=print, bodies=None):
+def load_level(root: str, lv: str, box: Box | None = None, log: Log = print, bodies: str | None = None) -> Loaded:
     """The level's collision geometry (bodies filtered, intact parts only when INTACT_ONLY) and its height field, as
     (geometry, heightfield)."""
     from mohcore import level as levelmod
@@ -1123,7 +1220,9 @@ def load_level(root, lv, box=None, log=print, bodies=None):
     return geom, hf
 
 
-def run_level(root, lv, pitch=0.8, box=None, y=None, log=print, bodies=None, rects=None, names=None, loaded=None):
+def run_level(root: str, lv: str, pitch: float = 0.8, box: Box | None = None, y: Sequence[float] | None = None,
+              log: Log = print, bodies: str | None = None, rects: Sequence[Box] | None = None,
+              names: Mapping[str, str] | None = None, loaded: Loaded | None = None) -> list[str]:
     """Both capsule runs of one pitch for a prepared level, written as the in-game sampler names them (in the offline
     folder). loaded: (geometry, height field) already read. Returns the paths."""
     import navkit
@@ -1133,7 +1232,7 @@ def run_level(root, lv, pitch=0.8, box=None, y=None, log=print, bodies=None, rec
     y = y or s['y']
     grid = Grid.from_box(pitch, box, y, rects)
     log(f'== offline sample {lv}: box {box}, y {y}, pitch {pitch} -> {grid.nx} x {grid.nz} columns'
-        + (f', {int(grid.mask.sum()):,} in {len(rects)} rectangles' if grid.mask is not None else ''))
+        + (f', {int(grid.mask.sum()):,} in {len(rects or ())} rectangles' if grid.mask is not None else ''))
     geom, hf = loaded or load_level(root, lv, box=box, log=log, bodies=bodies)
     res = sample_grid(grid, geom, hf, log=log, bottoms=tuple(CAP_BOTTOMS.values()))
     ps = '' if abs(pitch - 0.8) < 1e-6 else f'_p{int(round(pitch * 10)):02d}'
@@ -1146,7 +1245,8 @@ def run_level(root, lv, pitch=0.8, box=None, y=None, log=print, bodies=None, rec
     return paths
 
 
-def detailed_rects(root, lv, ids, margin=1.0):
+def detailed_rects(root: str, lv: str, ids: Iterable[Sequence[int]],
+                   margin: float = 1.0) -> tuple[list[list[float]], list[float]]:
     """The detailed sectors' squares plus the sampling margin (navkit.detailed_rects) and their box."""
     import navkit
     st = navkit.ensure_settings(navkit.Project(root), lv)
@@ -1156,13 +1256,13 @@ def detailed_rects(root, lv, ids, margin=1.0):
     return rects, box
 
 
-def box_covers(outer, inner):
+def box_covers(outer: Box, inner: Box) -> bool:
     """(minX, minZ, maxX, maxZ) inner lies inside outer: geometry read for outer (level_geometry's cut) holds all
     of inner's."""
     return outer[0] <= inner[0] and outer[1] <= inner[1] and inner[2] <= outer[2] and inner[3] <= outer[3]
 
 
-def sample_level(root, lv, log=print, bodies=None):
+def sample_level(root: str, lv: str, log: Log = print, bodies: str | None = None) -> dict[str, Any]:
     """What navkit.py sample does in game, offline: the 0.8 m pair over the level's box, then - when the level has
     detailed sectors (chosen from those samples, detailed.py) - the 0.2 m pair over their squares. The geometry is
     read once, cut to the level's box (level_geometry), and read again for the 0.2 m pair when the detailed squares
@@ -1174,7 +1274,7 @@ def sample_level(root, lv, log=print, bodies=None):
     loaded = load_level(root, lv, box=s['box'], log=log, bodies=bodies)
     p08 = run_level(root, lv, 0.8, log=log, loaded=loaded)
     ids, _why = detailed_choice(root, lv, p08[0])
-    out = {'p08': p08, 'p02': None, 'detailed': [list(i) for i in ids]}
+    out: dict[str, Any] = {'p08': p08, 'p02': None, 'detailed': [list(i) for i in ids]}
     for suf in ('', '_hi'):                      # a stale 0.2 m pair would be built in by build_level
         old = sample_path(root, lv, suf + '_p02')
         if os.path.isfile(old):
@@ -1204,7 +1304,7 @@ COMBAT_MARGIN = 20.0     # sampling box: the level's combat areas' extent plus t
                          # its placed objects reach 1.5 km past them (MP_01: -1410..1680) - backdrop. (BFBC2: 50)
 
 
-def combat_box(root, lv, margin=COMBAT_MARGIN):
+def combat_box(root: str, lv: str, margin: float = COMBAT_MARGIN) -> list[int] | None:
     """(minX, minZ, maxX, maxZ) of the level's combat areas (CombatAreaTriggerEntityData outlines, every team and
     stage) plus margin, on 10 m; None without combat areas. On a stock MP map the objects' extent (the box navkit.py
     prepare takes without path data) holds backdrop scenery kilometres away (MP_005: 4.7 x 4.0 km); the soldiers'
@@ -1220,14 +1320,14 @@ def combat_box(root, lv, margin=COMBAT_MARGIN):
             math.ceil((P[:, 0].max() + margin) / 10) * 10, math.ceil((P[:, 2].max() + margin) / 10) * 10]
 
 
-def package_overlay(pr, lv, log=print):
+def package_overlay(pr: 'navkit.Project', lv: str, log: Log = print) -> list[str]:
     """The level as the game loads it, the patch's files over the base copy (navkit.unpack_level, which prepare runs
     too). Returns the files laid over the base copy (work\\levels\\<lv>\\pkg_overlay.txt)."""
     import navkit
     return navkit.unpack_level(pr, lv, pr.level_work(lv), log, navkit.common_dirs(pr.root, lv))
 
 
-def prepare_mp(root, lv, log=print):
+def prepare_mp(root: str, lv: str, log: Log = print) -> dict[str, Any]:
     """navkit.py prepare (offline: unpack, convert, objects), then - on a level without path data - the box set to
     its combat areas (combat_box) and the sector offsets by navkit's rule for such a level (one sector below the
     box)."""
@@ -1252,7 +1352,8 @@ def prepare_mp(root, lv, log=print):
 ALL_STEPS = ('prepare', 'sample', 'build', 'check')
 
 
-def stock_mp(root, levels=None, log=print, steps=ALL_STEPS):
+def stock_mp(root: str, levels: Sequence[str] | None = None, log: Log = print,
+             steps: Sequence[str] = ALL_STEPS) -> dict[str, Any]:
     """The whole offline pipeline on the stock MP maps, one after another; progress and timings in
     work\\navkit_offline\\stockmp.json (kept between runs; a level's entry is replaced when all its steps run again,
     updated when some do)."""
@@ -1261,7 +1362,7 @@ def stock_mp(root, levels=None, log=print, steps=ALL_STEPS):
     os.makedirs(os.path.dirname(rep_path), exist_ok=True)
     report = json.load(open(rep_path)) if os.path.isfile(rep_path) else {}
     for lv in levels:
-        r = {} if tuple(steps) == ALL_STEPS else report.get(lv, {})
+        r: dict[str, Any] = {} if tuple(steps) == ALL_STEPS else report.get(lv, {})
         r.setdefault('steps', {})
         r.pop('error', None)
         log(f'##### {lv} ({time.strftime("%H:%M:%S")})')
@@ -1295,11 +1396,11 @@ def stock_mp(root, levels=None, log=print, steps=ALL_STEPS):
     return report
 
 
-def ingame_files(root, lv):
+def ingame_files(root: str, lv: str) -> dict[str, str]:
     """The level's in-game sample files as navkit.py build takes them: {suffix: path} for '', '_hi', '_p02',
     '_hi_p02' ('' and '_hi': <lv>_navkit.bin or the older <lv>_full.bin)."""
     d = os.path.join(root, 'work', 'navsample')
-    out = {}
+    out: dict[str, str] = {}
     for base in (f'{lv}_navkit', f'{lv}_full'):
         if os.path.isfile(os.path.join(d, base + '.bin')) and os.path.isfile(os.path.join(d, base + '_hi.bin')):
             out[''], out['_hi'] = os.path.join(d, base + '.bin'), os.path.join(d, base + '_hi.bin')
@@ -1311,7 +1412,7 @@ def ingame_files(root, lv):
     return out
 
 
-def parity(root, levels, name='offline', log=print):
+def parity(root: str, levels: Iterable[str], name: str = 'offline', log: Log = print) -> dict[str, Any]:
     """For levels with in-game samples (and DICE path data): offline samples on the in-game files' grids, NavKit
     built from each, and the measures: navdiff of the offline build against the in-game build (same code, only the
     samples differ), and navparity of both against DICE's file. Saved as work\\navkit_offline\\parity_<name>.json."""
@@ -1329,7 +1430,8 @@ def parity(root, levels, name='offline', log=print):
             continue
         like = os.path.join(out_dir(root), 'like', lv)
         os.makedirs(like, exist_ok=True)
-        geom = hf = None
+        geom: Geometry | None = None
+        hf: 'Heightfield | None' = None
         val = {}
         for suf, f in files.items():
             s, _ = navsample.load(f)
@@ -1355,7 +1457,7 @@ def parity(root, levels, name='offline', log=print):
         navregress.build_level(root, lv, ing_hpd)
         t_ing = time.time() - t1
         d, _, _, _ = navdiff.diff(ing_hpd, off_hpd, log=lambda *a: None)
-        row = {'validation': val, 'seconds': {'offline_samples': round(t_sample), 'build_offline': round(t_off),
+        row: dict[str, Any] = {'validation': val, 'seconds': {'offline_samples': round(t_sample), 'build_offline': round(t_off),
                                              'build_ingame': round(t_ing)},
                'offline_vs_ingame': {'ground': d['cells']['parity'],
                                      'extra': round(100.0 * d['cells']['only_candidate'] / max(d['cells']['reference'], 1), 2),
@@ -1376,7 +1478,7 @@ def parity(root, levels, name='offline', log=print):
     return report
 
 
-def detailed_choice(root, lv, s08):
+def detailed_choice(root: str, lv: str, s08: str) -> tuple[list[tuple[int, ...]], Any]:
     """navkit.detailed_sectors with the offline 0.8 m samples (tools\\detailed.py)."""
     import detailed
     import navkit
@@ -1386,7 +1488,8 @@ def detailed_choice(root, lv, s08):
     return [tuple(c) for c in chosen], why
 
 
-def build_level(root, lv, out=None, log=print, samples_dir=None):
+def build_level(root: str, lv: str, out: str | None = None, log: Log = print,
+                samples_dir: str | None = None) -> str:
     """navkit.py build with the offline samples: the same inputs (level objects, spawns, water, orders, ladders), the
     0.8 m pair and, when present, the 0.2 m pair over the detailed sectors chosen from the offline 0.8 m samples."""
     import navbuild
@@ -1401,12 +1504,13 @@ def build_level(root, lv, out=None, log=print, samples_dir=None):
         raise RuntimeError(f'{lv}: offline samples missing ({s08} and its _hi run)')
     out = out or os.path.join(root, 'work', 'navkit_offline', lv, 'pathdata.hpd')
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    detailed = None
+    detailed: 'navbuild.DetailedPass | None' = None
     p02 = os.path.join(d, f'{lv}_navkit_p02.bin')
     if os.path.isfile(p02):
         ids, _ = detailed_choice(root, lv, s08)
         hi02 = os.path.join(d, f'{lv}_navkit_hi_p02.bin')
-        detailed = dict(samples=p02, high=hi02 if os.path.isfile(hi02) else None, sectors=set(ids))
+        detailed = navbuild.DetailedPass(samples=p02, high=hi02 if os.path.isfile(hi02) else None,
+                                         sectors=cast('set[tuple[int, int]]', set(ids)))
         log(f'  detailed zones: {len(ids)} sectors at pitch 0.2')
     t0 = time.time()
     lad = os.path.join(L, 'ladders.json')
@@ -1422,13 +1526,13 @@ def build_level(root, lv, out=None, log=print, samples_dir=None):
     return out
 
 
-def check_level(root, lv, path, log=print):
+def check_level(root: str, lv: str, path: str, log: Log = print) -> dict[str, tuple[int, Any]]:
     """hpdcheck, byte-exact roundtrip / meshtrip, and ordercheck (self-check without DICE data) of a build."""
     import subprocess
     import navkit
     pr = navkit.Project(root)
     s = navkit.ensure_settings(pr, lv)
-    res = {}
+    res: dict[str, tuple[int, Any]] = {}
     for name, args in (('hpdcheck', [os.path.join(HERE, 'hpdcheck.py'), path]),
                        ('roundtrip', [os.path.join(HERE, 'hpdtool.py'), 'roundtrip', path]),
                        ('meshtrip', [os.path.join(HERE, 'hpdtool.py'), 'meshtrip', path])):
@@ -1448,7 +1552,11 @@ def check_level(root, lv, path, log=print):
     return res
 
 
-def _opt(args, name, conv=str):
+@overload
+def _opt(args: list[str], name: str) -> str | None: ...
+@overload
+def _opt(args: list[str], name: str, conv: Callable[[str], V]) -> V | None: ...
+def _opt(args: list[str], name: str, conv: Callable[[str], Any] = str) -> Any:
     if name in args:
         i = args.index(name)
         v = args[i + 1]
@@ -1457,7 +1565,7 @@ def _opt(args, name, conv=str):
     return None
 
 
-def main(argv):
+def main(argv: Sequence[str]) -> int:
     """The command line: compare, parity, stockmp, sample, validate, build, check or all; returns the exit code."""
     args = list(argv[1:])
     if not args or args[0] in ('-h', '--help'):
@@ -1500,7 +1608,8 @@ def main(argv):
     elif cmd in ('like', 'validate'):
         # validate: several in-game files of one level, the geometry read once; a JSON summary next to the outputs
         files = args[2:]
-        geom = hf = None
+        geom: Geometry | None = None
+        hf: 'Heightfield | None' = None
         summary = {}
         for f in files:
             s, _ = navsample.load(f)

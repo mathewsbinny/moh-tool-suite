@@ -170,7 +170,6 @@ def load(level: str, opfor: str | None = None, terrain_stride: int = 2, log: Cal
     """geometry=False: the level partition's entities, teams and shapes only - no static-group members, collision,
     terrain or water (a second or two; the test harness's reachability and level checks)."""
     import navkit
-    import levelobjects
     root = navkit.find_opfor(opfor)
     lv = level.replace('\\', '/').split('/')[-1].lower()
     base = os.path.join(root, 'work', 'levels', lv)
@@ -180,7 +179,31 @@ def load(level: str, opfor: str | None = None, terrain_stride: int = 2, log: Cal
         navkit.prepare(pr, pr.level(lv), log=log)
     bases = [os.path.join(base, 'pkg'), os.path.join(base, 'dist')]
     bases += navkit.common_dirs(root, lv)
-    # the level partition (the patch's copy wins over the base one; mp_03_elimination's is in common_mp_03)
+    part = _partition_file(bases, lv, base)
+    LV = os.path.splitext(os.path.basename(part))[0]
+    lvl = Level(LV, lv, root)
+    log(f'{LV}: reading {os.path.relpath(part, root)}')
+    part_dbx = dbx.read(part)
+    _add_partition_entities(lvl, part_dbx, 'levels/' + LV)
+    if geometry:
+        _add_group_members(lvl, bases, lv)
+    resolve_blueprints(lvl, bases)
+    assign_teams(lvl)
+    lvl.shapes = shapes_of(lvl)
+    if not geometry:
+        log(f'{LV}: {len(lvl.entities)} entities (no geometry)')
+        return lvl
+    missing = _add_collision(lvl, bases)
+    source = _add_terrain_and_water(lvl, root, lv, part_dbx, terrain_stride, log)
+    n_tris = sum(len(m.triangles) for m in lvl.meshes)
+    log(f'{LV}: {len(lvl.entities)} entities, {len(lvl.meshes)} with collision ({n_tris} triangles), '
+        f'{len(missing)} blueprints without collision, terrain from {source}')
+    return lvl
+
+
+def _partition_file(bases: list[str], lv: str, base: str) -> str:
+    """The level partition's file; FileNotFoundError when there is none."""
+    # the patch's copy wins over the base one; mp_03_elimination's is in common_mp_03
     part = None
     for b in bases:
         for f in glob.glob(os.path.join(b, 'levels', '*.dbx')):
@@ -188,20 +211,24 @@ def load(level: str, opfor: str | None = None, terrain_stride: int = 2, log: Cal
                 part = part or f
     if part is None:
         raise FileNotFoundError(f'{lv}: level partition not found under {base}')
-    LV = os.path.splitext(os.path.basename(part))[0]
-    lvl = Level(LV, lv, root)
-    log(f'{LV}: reading {os.path.relpath(part, root)}')
-    part_dbx = dbx.read(part)
-    pname = 'levels/' + LV
+    return part
+
+
+def _add_partition_entities(lvl: Level, part_dbx: dbx.DbxFile, pname: str) -> None:
+    """One entity per instance of the level partition."""
     for el in part_dbx.instances:
         t = el.attr('type') or ''
         lvl.entities.append(Entity(len(lvl.entities), el.attr('guid') or '', t, t.rsplit('.', 1)[-1], category_of(t), el.attr('id'),
                                    (nm.text if (nm := el.child('Name')) is not None and nm.kind == dbx.TEXT else None),
                                    pname, transform_of(el), blueprint_of(el), el))
-    # static model groups: one entity per member placement. Each group file once: the patch's copy wins over
-    # the base one, as in the game (and levels\ / Levels\ are the same folder on Windows)
+
+
+def _add_group_members(lvl: Level, bases: list[str], lv: str) -> None:
+    """Static model groups: one entity per member placement."""
+    # each group file once: the patch's copy wins over the base one, as in the game (and levels\ / Levels\ are the
+    # same folder on Windows)
     group_files: dict[str, str] = {}
-    for b in (bases[:2] if geometry else ()):
+    for b in bases[:2]:
         for gf in glob.glob(os.path.join(b, 'levels', lv, '*_HavokAsset.dbx')):
             group_files.setdefault(os.path.basename(gf).lower(), gf)
     for gf in group_files.values():
@@ -218,13 +245,11 @@ def load(level: str, opfor: str | None = None, terrain_stride: int = 2, log: Cal
                     lvl.entities.append(Entity(len(lvl.entities), f'{el.attr("guid")}#{k}', 'StaticGroupMember', 'StaticGroupMember',
                                                'group member', None, bp.rsplit('/', 1)[-1], os.path.basename(gf)[:-4],
                                                vals[16 * k:16 * (k + 1)].reshape(4, 4), bp, item, group=os.path.basename(gf)))
-    resolve_blueprints(lvl, bases)
-    assign_teams(lvl)
-    lvl.shapes = shapes_of(lvl)
-    if not geometry:
-        log(f'{LV}: {len(lvl.entities)} entities (no geometry)')
-        return lvl
-    # collision
+
+
+def _add_collision(lvl: Level, bases: list[str]) -> set[str]:
+    """Each placed entity's collision mesh, in world space; returns the blueprints that have none."""
+    import levelobjects
     havok = levelobjects.havok_index(bases)
     try:
         for bp, target in levelobjects.mesh_aliases(bases).items():
@@ -246,6 +271,13 @@ def load(level: str, opfor: str | None = None, terrain_stride: int = 2, log: Cal
         m = ent.matrix
         lvl.meshes.append(Mesh(ent.index, (tris @ m[:3, :3] + m[3, :3]).astype(np.float32)))
     lvl.missing_collision = sorted(missing)
+    return missing
+
+
+def _add_terrain_and_water(lvl: Level, root: str, lv: str, part_dbx: dbx.DbxFile, terrain_stride: int,
+                           log: Callable[[str], object]) -> str:
+    """The terrain (height field, else the samples) and water; returns where the terrain came from."""
+    import navkit
     source = 'none'
     try:
         lvl.heightfield = heightfield_of(root, lv, log, terrain_name(part_dbx.instances))
@@ -261,10 +293,7 @@ def load(level: str, opfor: str | None = None, terrain_stride: int = 2, log: Cal
     else:
         lvl.terrain = terrain_from_samples(root, lv, terrain_stride)
         source = 'samples' if lvl.terrain else 'none'
-    n_tris = sum(len(m.triangles) for m in lvl.meshes)
-    log(f'{LV}: {len(lvl.entities)} entities, {len(lvl.meshes)} with collision ({n_tris} triangles), '
-        f'{len(missing)} blueprints without collision, terrain from {source}')
-    return lvl
+    return source
 
 
 def resolve_blueprints(lvl: Level, bases: list[str]) -> None:

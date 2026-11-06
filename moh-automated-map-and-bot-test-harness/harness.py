@@ -40,7 +40,7 @@ import os
 import sys
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from typing import Any, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Any, TypeVar, cast, overload
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SUITE = os.path.abspath(os.path.join(HERE, '..'))
@@ -50,6 +50,10 @@ for _p in (HERE, os.path.join(SUITE, 'core'), NAVKIT, os.path.join(NAVKIT, 'tool
         sys.path.insert(0, _p)
 
 from testharness import checks, classify, ingame, levelchecks, runs  # noqa: E402
+
+if TYPE_CHECKING:
+    from mohcore import navdata
+    from testharness import levelinfo
 
 print = functools.partial(print, flush=True)      # progress shows at once when the output goes to a file
 TESTS = ['structure', 'reachability', 'battery', 'orders', 'offsets', 'parity', 'level']
@@ -148,10 +152,6 @@ def run_level(root: str, lv: str, opts: Mapping[str, Any], cache: str,
               log: Callable[[str], object] = print) -> dict[str, Any]:
     """One level's results: its points and their classes, every test asked for on each of its path-data files, and
     the level checks; a level that cannot be read gets an 'error' result."""
-    import hpdcheck
-    import hpdtool
-    import ordercheck
-    from mohcore import navdata
     from testharness import levelinfo
     L: dict[str, Any] = {'name': lv, 'notes': [], 'points': {}, 'files': {}, 'level': {}, 'ingame': {}}
     t0 = time.time()
@@ -166,6 +166,20 @@ def run_level(root: str, lv: str, opts: Mapping[str, Any], cache: str,
     L['name'] = info.name or lv
     L['notes'] += info.notes
     log(f'  level read ({time.time() - t0:.0f} s): {len(info.sources)} spawns, {len(info.targets)} targets, {len(info.orders)} orders')
+    files, ref_key = _level_files(L, root, lv, opts)
+    ref: dict[str, Any] = {}
+    ref_nav, (sources, targets, orders) = _infantry_points(L, info, files, cache, log)
+    for key, path in files:
+        _test_file(L, key, path, root, lv, opts, cache, log, info, ref, ref_key, ref_nav, (sources, targets, orders))
+    if 'level' in opts['tests']:
+        _level_checks(L, info, log)
+    return L
+
+
+def _level_files(L: dict[str, Any], root: str, lv: str, opts: Mapping[str, Any]) -> tuple[list[tuple[str, str]], str | None]:
+    """The level's path-data files (key, path), the reference file first, and the reference's key; the missing ones
+    noted in L."""
+    from testharness import levelinfo
     files = levelinfo.pathdata_files(root, lv, opts['files'], opts['navkit'])
     for key in opts['files']:
         if not any(k == key for k, _ in files):
@@ -174,8 +188,14 @@ def run_level(root: str, lv: str, opts: Mapping[str, Any], cache: str,
                 'error', f'{key} path data not found for this level').as_dict()}}
     ref_key = 'dice' if any(k == 'dice' for k, _ in files) else (files[0][0] if files else None)
     files.sort(key=lambda kp: kp[0] != ref_key)               # the reference file first
-    ref: dict[str, Any] = {}
-    tests = opts['tests']
+    return files, ref_key
+
+
+def _infantry_points(L: dict[str, Any], info: levelinfo.LevelInfo, files: Sequence[tuple[str, str]], cache: str,
+                     log: Callable[[str], object]
+                     ) -> tuple[navdata.NavData | None, tuple[list[classify.Point], list[classify.Point], list[classify.Point]]]:
+    """The reference file's navigation data and the infantry spawns, targets and orders; the counts in L."""
+    from mohcore import navdata
     # infantry points only for the infantry tests: classes from the entities (levelinfo) and from what lies under each
     # point - terrain, water and the reference file's walkable cells (the same classes for every file of the level)
     ref_nav = navdata.load(files[0][1], cache_dir=os.path.join(cache, 'navdata')) if files else None
@@ -191,59 +211,77 @@ def run_level(root: str, lv: str, opts: Mapping[str, Any], cache: str,
                      'examples': [p.label() for p in info.sources + info.targets + info.orders if p.cls != classify.INFANTRY][:12]}
     log(f'  infantry points: {len(sources)} spawns, {len(targets)} targets, {len(orders)} orders; not infantry: '
         + '; '.join(f'{k} {classify.excluded_text(v)}' for k, v in (('spawns', ex_s), ('targets', ex_t), ('orders', ex_o)) if v))
-    for key, path in files:
-        tf = time.time()
-        F: dict[str, Any] = {'path': path, 'sha1': levelinfo.sha1(path), 'size': os.path.getsize(path), 'tests': {}}
-        L['files'][key] = F
-        res = F['tests']
-        # the reference file is files[0], so ref_nav is loaded whenever this loop runs
-        nav = cast(navdata.NavData, ref_nav) if key == ref_key else navdata.load(path, cache_dir=os.path.join(cache, 'navdata'))
-        if 'structure' in tests:
-            res['structure'] = timed(lambda: checks.structure(hpdcheck.check(path)))
-        if 'reachability' in tests:
-            r = timed(checks.reachability, nav, sources, targets, None if key == ref_key else ref.get('reach'),
-                      baseline=key == 'dice')
-            res['reachability'] = r
+    return ref_nav, (sources, targets, orders)
+
+
+def _test_file(L: dict[str, Any], key: str, path: str, root: str, lv: str, opts: Mapping[str, Any], cache: str,
+               log: Callable[[str], object], info: levelinfo.LevelInfo, ref: dict[str, Any], ref_key: str | None,
+               ref_nav: navdata.NavData | None,
+               points: tuple[list[classify.Point], list[classify.Point], list[classify.Point]]) -> None:
+    """Every test asked for on one path-data file of the level, into L['files'][key]; the reference file's results
+    kept in ref for the files after it."""
+    import hpdcheck
+    import hpdtool
+    import ordercheck
+    from mohcore import navdata
+    from testharness import levelinfo
+    sources, targets, orders = points
+    tests = opts['tests']
+    tf = time.time()
+    F: dict[str, Any] = {'path': path, 'sha1': levelinfo.sha1(path), 'size': os.path.getsize(path), 'tests': {}}
+    L['files'][key] = F
+    res = F['tests']
+    # the reference file is files[0], so ref_nav is loaded whenever this loop runs
+    nav = cast(navdata.NavData, ref_nav) if key == ref_key else navdata.load(path, cache_dir=os.path.join(cache, 'navdata'))
+    if 'structure' in tests:
+        res['structure'] = timed(lambda: checks.structure(hpdcheck.check(path)))
+    if 'reachability' in tests:
+        r = timed(checks.reachability, nav, sources, targets, None if key == ref_key else ref.get('reach'),
+                  baseline=key == 'dice')
+        res['reachability'] = r
+        if key == ref_key:
+            ref['reach'] = r.data
+    if 'battery' in tests:
+        def bat() -> checks.Result:
             if key == ref_key:
-                ref['reach'] = r.data
-        if 'battery' in tests:
-            def bat() -> checks.Result:
+                ref['pairs'] = {'random': list(zip(*[iter(checks.random_points(nav, 2 * opts['pairs'], opts['seed'], lv))] * 2)),
+                                'level': checks.level_pairs(sources, targets, opts['level_pairs'], opts['seed'], lv)}
+                ref['routes'] = {}
+            out: list[checks.Result] = []
+            names: list[str] = []
+            for name, pairs in ref['pairs'].items():
+                routes = checks.route_pairs(nav, pairs)
                 if key == ref_key:
-                    ref['pairs'] = {'random': list(zip(*[iter(checks.random_points(nav, 2 * opts['pairs'], opts['seed'], lv))] * 2)),
-                                    'level': checks.level_pairs(sources, targets, opts['level_pairs'], opts['seed'], lv)}
-                    ref['routes'] = {}
-                out: list[checks.Result] = []
-                names: list[str] = []
-                for name, pairs in ref['pairs'].items():
-                    routes = checks.route_pairs(nav, pairs)
-                    if key == ref_key:
-                        ref['routes'][name] = routes
-                    out.append(checks.battery(name, pairs, routes, None if key == ref_key else ref['routes'].get(name)))
-                    names.append(name)
-                return checks.merge(out, names)
-            res['battery'] = timed(bat)
-        if 'orders' in tests:
-            r = timed(lambda: checks.orders(nav, orders, ordercheck.PathData(path).on_area,
-                                            None if key == ref_key else ref.get('orders'), baseline=key == 'dice'))
-            res['orders'] = r
-            if key == ref_key:
-                ref['orders'] = r.data
-        if 'offsets' in tests:
-            res['offsets'] = timed(lambda: checks.offsets(checks.sector_offsets(hpdtool.parse(open(path, 'rb').read()).sectors),
-                                                          info.assets.get('Infantry')))
-        if 'parity' in tests and key != 'dice' and ref_key == 'dice':
-            res['parity'] = timed(parity, root, lv, path, cache)
-        for t in list(res):
-            res[t] = res[t].as_dict()
-        log(f'  {key:9s} {os.path.relpath(path, root)}: ' + ', '.join(f'{t} {runs.LABEL[r["status"]].strip()}' for t, r in res.items())
-            + f' ({time.time() - tf:.0f} s)')
-    if 'level' in tests:
-        for name, r in levelchecks.all_checks(info, levelinfo.PLACEHOLDER).items():
-            (L['ingame'] if r.status == 'hold' else L['level'])[name] = r.as_dict()
-        for name, r in ingame.telemetry_tests().items():
-            L['ingame'][name] = r.as_dict()
-        log('  level checks: ' + ', '.join(f'{t} {runs.LABEL[r["status"]].strip()}' for t, r in L['level'].items()))
-    return L
+                    ref['routes'][name] = routes
+                out.append(checks.battery(name, pairs, routes, None if key == ref_key else ref['routes'].get(name)))
+                names.append(name)
+            return checks.merge(out, names)
+        res['battery'] = timed(bat)
+    if 'orders' in tests:
+        r = timed(lambda: checks.orders(nav, orders, ordercheck.PathData(path).on_area,
+                                        None if key == ref_key else ref.get('orders'), baseline=key == 'dice'))
+        res['orders'] = r
+        if key == ref_key:
+            ref['orders'] = r.data
+    if 'offsets' in tests:
+        res['offsets'] = timed(lambda: checks.offsets(checks.sector_offsets(hpdtool.parse(open(path, 'rb').read()).sectors),
+                                                      info.assets.get('Infantry')))
+    if 'parity' in tests and key != 'dice' and ref_key == 'dice':
+        res['parity'] = timed(parity, root, lv, path, cache)
+    for t in list(res):
+        res[t] = res[t].as_dict()
+    log(f'  {key:9s} {os.path.relpath(path, root)}: ' + ', '.join(f'{t} {runs.LABEL[r["status"]].strip()}' for t, r in res.items())
+        + f' ({time.time() - tf:.0f} s)')
+
+
+def _level_checks(L: dict[str, Any], info: levelinfo.LevelInfo, log: Callable[[str], object]) -> None:
+    """The level checks, into L['level'] (those on hold, and the in-game telemetry tests, into L['ingame'])."""
+    from testharness import levelinfo
+    for name, r in levelchecks.all_checks(info, levelinfo.PLACEHOLDER).items():
+        (L['ingame'] if r.status == 'hold' else L['level'])[name] = r.as_dict()
+    for name, r in ingame.telemetry_tests().items():
+        L['ingame'][name] = r.as_dict()
+    log('  level checks: ' + ', '.join(f'{t} {runs.LABEL[r["status"]].strip()}' for t, r in L['level'].items()))
 
 
 # ------------------------------------------------------------------------------------------------ commands

@@ -194,6 +194,17 @@ def dbxedit(*args):
 # ------------------------------------------------------------------------------------------ quick tests
 
 def quick(tmp):
+    lvl, donor = _quick_writer()
+    m, c = _quick_conquest(tmp, lvl, donor)
+    _quick_minimal_and_rush(m, lvl, donor)
+    _quick_config_and_assets(tmp, c)
+    paths = _quick_layout(tmp)
+    _quick_install(paths)
+    _quick_validate(paths, c)
+
+
+def _quick_writer():
+    """quick(): the DBX writer and the number kinds, on the synthetic level and donor (returned)."""
     lvl = synthetic_level('conquest')
     check(dbxbin.write(dbxbin.parse(lvl)) == lvl, 'DBX writer: a synthetic level comes back byte for byte')
     check(coredbx.parse(lvl).instances[0].attr('type') == 'GameSharedResources.LevelData',
@@ -210,7 +221,12 @@ def quick(tmp):
     check(k.kind('HumanTargetPreference') == 'f' and k.kind('AnimationIndex') == 'i' and k.kind('Amount') == 'i'
           and k.kind('SpawnDelay') == 'f' and k.kind('OnCompleteTimeOut') is None,
           'number kinds: -1.0 is a decimal, -1 an integer (negative integers count as evidence), 0 tells nothing')
+    return lvl, donor
 
+
+def _quick_conquest(tmp, lvl, donor):
+    """quick(): the conquest layer - level model, generator, authoring, determinism, DbxEdit's checks; returns the
+    model and the configuration."""
     # conquest layer
     m = levelmodel.Model(dbxbin.parse(lvl))
     check(m.mode == 'conquest' and [cp.label for cp in m.flags()] == ['A'] and len(m.bases('Team1')) == 1
@@ -267,7 +283,11 @@ def quick(tmp):
               'DbxEdit xml -> import gives the authored file back')
     else:
         check(False, 'DbxEdit.exe not built (run moh-dbx-tools\\build.bat)')
+    return m, c
 
+
+def _quick_minimal_and_rush(m, lvl, donor):
+    """quick(): the minimal layer, and the Rush stages, generator and stage switches."""
     # minimal layer
     cm = cfgmod.generate(m, 'test_01', KITS, {}, layer='minimal', stock_spawners='keep')
     d4 = dbxbin.parse(lvl)
@@ -307,6 +327,9 @@ def quick(tmp):
     check(n['KillSoldier'] == n0 and n['Disable'] == n0 + o0 and n['Enable'] == n1 + o1 and n['IssueOrder'] == o1,
           f'Rush: the stage trigger disables / kills stage 0 and enables stage 1 ({dict(n)})')
 
+
+def _quick_config_and_assets(tmp, c):
+    """quick(): the configuration checks and the SectorOffsets asset."""
     # configuration checks
     bad = json.loads(json.dumps(c))
     bad['orders'][0]['soldiers'] = ['t2_00']
@@ -329,6 +352,9 @@ def quick(tmp):
           and struct.unpack('>i', coredbx.numbers(e.child('ZOffset'))[1][0])[0] == -4 and e.attr('guid') == ig,
           'SectorOffsets asset: name, offsets as 4-byte integers, OPFOR\'s guids')
 
+
+def _quick_layout(tmp):
+    """quick(): MOH's game layout on a fake game folder, and levels without a bundle of their own; returns the paths."""
     # MOH's game layout (mohcore.gamecopy): MP\dist\win32 and its patch layer, MP\Output\win32
     import stockmp
     root = os.path.join(tmp, 'opfor')
@@ -363,7 +389,12 @@ def quick(tmp):
     except SystemExit as e:
         check('no test_03\\level-00.fbrb' in str(e.code) and 'common_mp_03' in str(e.code),
               'summary of a level without a bundle: a clear error, no IndexError')
+    return paths
 
+
+def _quick_install(paths):
+    """quick(): install --plan, --apply and --revert on the fake game folder."""
+    import stockmp
     # install / revert on the fake game folder
     outs = [paths.out_bundle('dist'), paths.out_bundle('patch')]
     tgts = [paths.bundle('dist'), paths.bundle('patch')]
@@ -392,6 +423,9 @@ def quick(tmp):
           and not any(os.path.exists(t + x) for t in tgts for x in (stockmp.BACKUP, stockmp.APPLIED)),
           'install --revert restores the originals')
 
+
+def _quick_validate(paths, c):
+    """quick(): validate judges the configuration the build was made from."""
     # validate judges the configuration the build was made from
     import validate
     c = json.loads(json.dumps(c))

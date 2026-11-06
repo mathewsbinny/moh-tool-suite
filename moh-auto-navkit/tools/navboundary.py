@@ -26,6 +26,8 @@ import os
 import sys
 import time
 from collections import Counter
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -33,15 +35,21 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, '..', '..', 'core'))
 
+if TYPE_CHECKING:
+    from mohcore.navdata import NavData
+    from mohcore.terrain import Heightfield
+
+Region = Sequence[float]                # (minX, minZ, maxX, maxZ) of the xz plane
+
 TOLERANCES = (0, 1, 2)
 OFF = 2 ** 20
 
 
-def _keys(ij):
+def _keys(ij: np.ndarray) -> np.ndarray:
     return (ij[:, 0] + OFF) * 2 ** 21 + (ij[:, 1] + OFF)
 
 
-def cells_of(nav):
+def cells_of(nav: 'NavData') -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Single-layer normal cells of a NavData: (ij (n, 2), area (n,), key (n,) sorted), and the multi-layer keys."""
     from mohcore import navdata
     normal = np.array([not a.detailed for a in nav.areas], bool)
@@ -57,20 +65,20 @@ def cells_of(nav):
     return ij[one][order], area[one][order], key[one][order], u[cnt > 1]
 
 
-def _index(keys, wanted):
+def _index(keys: np.ndarray, wanted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     pos = np.minimum(np.searchsorted(keys, wanted), max(len(keys) - 1, 0))
     ok = (keys[pos] == wanted) if len(keys) else np.zeros(len(wanted), bool)
     return pos, ok
 
 
-def _near(points, targets, r):
+def _near(points: np.ndarray, targets: np.ndarray, r: int) -> np.ndarray:
     """For each point (half-cell integer coordinates), whether a target lies within r half cells (Chebyshev)."""
     tset = {tuple(t) for t in targets.tolist()}
     offs = [(a, b) for a in range(-r, r + 1) for b in range(-r, r + 1)]
     return np.array([any((p[0] + a, p[1] + b) in tset for a, b in offs) for p in points.tolist()], bool)
 
 
-def _portal_mids(nav):
+def _portal_mids(nav: 'NavData') -> np.ndarray:
     out = []
     for a in nav.areas:
         if a.detailed:
@@ -80,14 +88,14 @@ def _portal_mids(nav):
     return np.array(out, float).reshape(-1, 3)
 
 
-def _nearest(a, b):
+def _nearest(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Distance from each 2-D point of a to the nearest of b (grid buckets of 10 m, then exact)."""
     if not len(a):
         return np.zeros(0)
     if not len(b):
         return np.full(len(a), np.inf)
     cell = 10.0
-    buckets = {}
+    buckets: dict[tuple[int, int], list[int]] = {}
     for k, (x, z) in enumerate(b.tolist()):
         buckets.setdefault((int(x // cell), int(z // cell)), []).append(k)
     out = np.full(len(a), np.inf)
@@ -104,7 +112,8 @@ def _nearest(a, b):
     return out
 
 
-def diagnose(ref, cand, heightfield=None):
+def diagnose(ref: 'NavData', cand: 'NavData', heightfield: 'Heightfield | None' = None
+             ) -> tuple[dict[str, Any], dict[str, Any], dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray]]:
     """The cell and edge classification and the measures. ref / cand: NavData (DICE / NavKit)."""
     from mohcore import navdata
     G = navdata.GRID
@@ -121,23 +130,7 @@ def diagnose(ref, cand, heightfield=None):
     a_c = carea[pos[both]]
     key = rkey[both]
     n = len(key)
-    size_r = Counter(rarea.tolist())
-    # DICE areas NavKit merges: the NavKit area holding most of a DICE area's shared cells also holds other DICE areas
-    pairs = Counter(zip(a_r.tolist(), a_c.tolist()))
-    best = {}
-    for (r, c), k in pairs.items():
-        if k > best.get(r, (None, -1))[1]:
-            best[r] = (c, k)
-    c_to_r = {}
-    for (r, c) in pairs:
-        c_to_r.setdefault(c, set()).add(r)
-    merged_r = {r for r, (c, _) in best.items() if len(c_to_r[c]) > 1}
-    r_to_c = {}
-    for (r, c) in pairs:
-        r_to_c.setdefault(r, set()).add(c)
-    exact = sum(1 for r, cs in r_to_c.items() if len(cs) == 1 and c_to_r[next(iter(cs))] == {r}
-                and size_r[r] == sum(k for (rr, _), k in pairs.items() if rr == r))
-    split_r = sum(1 for r, cs in r_to_c.items() if len(cs) > 1)
+    size_r, merged_r, exact, split_r = _area_overlap(rarea, a_r, a_c)
 
     h = slope = None
     if heightfield is not None:
@@ -148,30 +141,15 @@ def diagnose(ref, cand, heightfield=None):
         gz = (heightfield.height(x, z + e) - heightfield.height(x, z - e)) / (2 * e)
         slope = np.degrees(np.arctan(np.hypot(gx, gz)))
 
-    # straight neighbour edges between shared cells
-    edges = []
-    for di, dj in ((1, 0), (0, 1)):
-        q, ok = _index(key, _keys(ij + np.array([di, dj])))
-        p = np.nonzero(ok)[0]
-        q = q[ok]
-        bd = a_r[p] != a_r[q]
-        bc = a_c[p] != a_c[q]
-        mid = 2 * ij[p] + np.array([di, dj])                 # half-cell coordinates of the edge midpoint
-        edges.append((p, q, mid, bd, bc))
-    P = np.concatenate([e[0] for e in edges]); Q = np.concatenate([e[1] for e in edges])
-    M = np.concatenate([e[2] for e in edges]).reshape(-1, 2)
-    BD = np.concatenate([e[3] for e in edges]); BC = np.concatenate([e[4] for e in edges])
-    kind = np.full(len(P), '', dtype=object)
-    kind[BD & BC] = 'match'
-    kind[BD & ~BC] = 'missing'
-    kind[~BD & BC] = 'extra'
-    summary = {'shared_cells': int(n), 'dice_only_cells': int((~both).sum()), 'navkit_only_cells': int(len(ckey) - both.sum()),
-               'multi_layer_columns_left_out': int(len(multi)),
-               'edges': int(len(P)), 'match': int((BD & BC).sum()), 'missing': int((BD & ~BC).sum()),
-               'extra': int((~BD & BC).sum()),
-               'dice_areas': len(size_r), 'dice_single_cell_areas': sum(1 for v in size_r.values() if v == 1),
-               'dice_areas_merged_by_navkit': len(merged_r), 'dice_areas_split_by_navkit': split_r,
-               'exact_areas': exact, 'exact_areas_pct': round(100.0 * exact / max(len(size_r), 1), 2)}
+    P, Q, M, BD, BC, kind = _edge_kinds(key, ij, a_r, a_c)
+    summary: dict[str, Any] = {
+        'shared_cells': int(n), 'dice_only_cells': int((~both).sum()), 'navkit_only_cells': int(len(ckey) - both.sum()),
+        'multi_layer_columns_left_out': int(len(multi)),
+        'edges': int(len(P)), 'match': int((BD & BC).sum()), 'missing': int((BD & ~BC).sum()),
+        'extra': int((~BD & BC).sum()),
+        'dice_areas': len(size_r), 'dice_single_cell_areas': sum(1 for v in size_r.values() if v == 1),
+        'dice_areas_merged_by_navkit': len(merged_r), 'dice_areas_split_by_navkit': split_r,
+        'exact_areas': exact, 'exact_areas_pct': round(100.0 * exact / max(len(size_r), 1), 2)}
     for t in TOLERANCES:
         pb, db = M[BC], M[BD]
         summary[f'boundary_precision_{t}'] = round(100.0 * _near(pb, db, 2 * t).mean(), 2) if len(pb) else None
@@ -190,7 +168,53 @@ def diagnose(ref, cand, heightfield=None):
     return summary, cells, {'p': P, 'q': Q, 'mid': M, 'kind': kind}, {'dice': pr, 'navkit': pc}, only
 
 
-def render(path, cells, edges, portals, only, region, title):
+def _area_overlap(rarea: np.ndarray, a_r: np.ndarray, a_c: np.ndarray) -> tuple[Counter[int], set[int], int, int]:
+    """diagnose's areas: the DICE areas' sizes, the DICE areas NavKit merges, the exact matches and the DICE areas
+    NavKit splits, from the (DICE area, NavKit area) of the shared cells."""
+    size_r = Counter(rarea.tolist())
+    # DICE areas NavKit merges: the NavKit area holding most of a DICE area's shared cells also holds other DICE areas
+    pairs = Counter(zip(a_r.tolist(), a_c.tolist()))
+    best: dict[int, tuple[int, int]] = {}
+    for (r, c), k in pairs.items():
+        if k > best.get(r, (-1, -1))[1]:      # (area, count): only the count is read
+            best[r] = (c, k)
+    c_to_r: dict[int, set[int]] = {}
+    for (r, c) in pairs:
+        c_to_r.setdefault(c, set()).add(r)
+    merged_r = {r for r, (c, _) in best.items() if len(c_to_r[c]) > 1}
+    r_to_c: dict[int, set[int]] = {}
+    for (r, c) in pairs:
+        r_to_c.setdefault(r, set()).add(c)
+    exact = sum(1 for r, cs in r_to_c.items() if len(cs) == 1 and c_to_r[next(iter(cs))] == {r}
+                and size_r[r] == sum(k for (rr, _), k in pairs.items() if rr == r))
+    split_r = sum(1 for r, cs in r_to_c.items() if len(cs) > 1)
+    return size_r, merged_r, exact, split_r
+
+
+def _edge_kinds(key: np.ndarray, ij: np.ndarray, a_r: np.ndarray, a_c: np.ndarray) -> tuple[np.ndarray, ...]:
+    """diagnose's straight neighbour edges between shared cells: (p, q, midpoint in half cells, a DICE boundary,
+    a NavKit boundary, kind)."""
+    edges = []
+    for di, dj in ((1, 0), (0, 1)):
+        q, ok = _index(key, _keys(ij + np.array([di, dj])))
+        p = np.nonzero(ok)[0]
+        q = q[ok]
+        bd = a_r[p] != a_r[q]
+        bc = a_c[p] != a_c[q]
+        mid = 2 * ij[p] + np.array([di, dj])                 # half-cell coordinates of the edge midpoint
+        edges.append((p, q, mid, bd, bc))
+    P = np.concatenate([e[0] for e in edges]); Q = np.concatenate([e[1] for e in edges])
+    M = np.concatenate([e[2] for e in edges]).reshape(-1, 2)
+    BD = np.concatenate([e[3] for e in edges]); BC = np.concatenate([e[4] for e in edges])
+    kind = np.full(len(P), '', dtype=object)
+    kind[BD & BC] = 'match'
+    kind[BD & ~BC] = 'missing'
+    kind[~BD & BC] = 'extra'
+    return P, Q, M, BD, BC, kind
+
+
+def render(path: str, cells: Mapping[str, Any], edges: Mapping[str, np.ndarray], portals: Mapping[str, np.ndarray],
+           only: Mapping[str, np.ndarray], region: Region, title: str) -> None:
     """Writes a PNG at path of the cells, boundary edges and portals inside region (minX, minZ, maxX, maxZ) of the xz
     plane."""
     import matplotlib
@@ -252,7 +276,8 @@ def render(path, cells, edges, portals, only, region, title):
     plt.close(fig)
 
 
-def export(out, cells, edges, portals):
+def export(out: str, cells: Mapping[str, Any], edges: Mapping[str, np.ndarray],
+           portals: Mapping[str, np.ndarray]) -> None:
     """Writes the cells, boundary edges and portals as CSV files in the folder out."""
     from mohcore import navdata
     G = navdata.GRID
@@ -281,7 +306,7 @@ def export(out, cells, edges, portals):
                 w.writerow([name, round(x, 2), round(z, 2), round(ln, 2)])
 
 
-def worst_square(edges, size=100.0):
+def worst_square(edges: Mapping[str, np.ndarray], size: float = 100.0) -> tuple[float, float, float, float] | None:
     """The size-metre square (minX, minZ, maxX, maxZ) with the most missing or extra boundary edges, or None when
     there are none."""
     from mohcore import navdata
@@ -294,11 +319,13 @@ def worst_square(edges, size=100.0):
     return (i * size, j * size, (i + 1) * size, (j + 1) * size)
 
 
-def main(argv):
+def main(argv: Sequence[str]) -> int:
     """The command line: one level's boundary diagnostic against DICE's data, written as PNGs, CSVs and summary.json;
     returns the exit code."""
     args = argv[1:]
-    opt = lambda k, d=None: args[args.index(k) + 1] if k in args else d
+    def opt(k: str, d: str | None = None) -> str | None:
+        """The value after option k, else d."""
+        return args[args.index(k) + 1] if k in args else d
     pos = [a for k, a in enumerate(args) if not a.startswith('--') and (k == 0 or not args[k - 1].startswith('--'))]
     if not pos:
         print(__doc__)
@@ -325,8 +352,9 @@ def main(argv):
     export(out, cells, edges, portals)
     G = navdata.GRID
     X, Z = cells['ij'][:, 0] * G, cells['ij'][:, 1] * G
-    if opt('--region'):
-        region = tuple(float(v) for v in opt('--region').split(','))
+    region_opt = opt('--region')
+    if region_opt:
+        region = tuple(float(v) for v in region_opt.split(','))
         render(os.path.join(out, 'region.png'), cells, edges, portals, only, region, f'{lv}: area boundaries, region')
     else:
         whole = (X.min() - 5, Z.min() - 5, X.max() + 5, Z.max() + 5) if len(X) else (0, 0, 100, 100)

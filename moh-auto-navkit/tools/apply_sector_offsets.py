@@ -20,6 +20,7 @@ import struct
 import subprocess
 import sys
 import uuid
+from collections.abc import Callable
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SUITE = os.path.abspath(os.path.join(HERE, '..', '..'))
@@ -34,7 +35,7 @@ CONTAINER, TEXT, NUMBERS = 0xA, 2, 7
 NS = 'opfor:sectoroffsets'
 
 
-def run(*args):
+def run(*args: object) -> str:
     """Runs a command and returns its stdout; exits with its output when it fails."""
     r = subprocess.run([str(a) for a in args], capture_output=True, text=True)
     if r.returncode != 0:
@@ -42,13 +43,13 @@ def run(*args):
     return r.stdout
 
 
-def sha(path):
+def sha(path: str) -> str:
     """The SHA-256 of the file at path as hex."""
     import hashlib
     return hashlib.sha256(open(path, 'rb').read()).hexdigest()
 
 
-def _varint(n):
+def _varint(n: int) -> bytes:
     out = bytearray()
     while True:
         b = n & 0x7F
@@ -61,19 +62,19 @@ def _varint(n):
 class Dbx:
     """A minimal binary .dbx writer (FORMAT.md sections 1-2)."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.strings = ['']            # string 0 is the empty string
-        self._idx = {'': 0}
+        self._idx: dict[str, int] = {'': 0}
         self.tree = bytearray()
 
-    def intern(self, s):
+    def intern(self, s: str) -> int:
         """The index of s in the string table, appending it when it is new."""
         if s not in self._idx:
             self._idx[s] = len(self.strings)
             self.strings.append(s)
         return self._idx[s]
 
-    def open(self, tag, attrs):
+    def open(self, tag: str, attrs: list[tuple[str, str]]) -> None:
         """Starts a container element with these (name, value) attributes; close() ends it."""
         self.tree += _varint(self.intern(tag))
         self.tree += bytes([(CONTAINER << 4) | len(attrs)])
@@ -81,25 +82,27 @@ class Dbx:
             self.tree += _varint(self.intern(k)) + _varint(self.intern(v))
         self.tree += b'\x00'          # container byte (kept as-is)
 
-    def field(self, name, kind, value, raw=b''):
+    def field(self, name: str, kind: int, value: str | None, raw: bytes = b'') -> None:
         """Appends a field element called name holding a TEXT value or raw NUMBERS / value bytes."""
         self.tree += _varint(self.intern('field'))
         self.tree += bytes([(kind << 4) | 1])
         self.tree += _varint(self.intern('name')) + _varint(self.intern(name))
         if kind == TEXT:
+            assert value is not None          # a TEXT field has its value
             self.tree += _varint(self.intern(value))
         elif kind == NUMBERS:
             self.tree += _varint(1) + _varint(len(raw)) + raw
         else:
             self.tree += raw
 
-    def close(self):
+    def close(self) -> None:
         """Ends the innermost open container."""
         self.tree += _varint(0)
 
-    def build(self):
+    def build(self) -> bytes:
         """The bytes of the binary .dbx: header, string table and element tree."""
-        offsets, sdata = [], bytearray()
+        offsets: list[int] = []
+        sdata = bytearray()
         for s in self.strings:
             offsets.append(len(sdata))
             sdata += s.encode('utf-8') + b'\0'
@@ -118,7 +121,7 @@ class Dbx:
 
 # --- level / offset / guid -----------------------------------------------------
 
-def prepared_levels(pr):
+def prepared_levels(pr: navkit.Project) -> list[str]:
     """Every level with a navkit.json (prepare has run), sorted."""
     d = os.path.join(pr.work, 'navkit')
     if not os.path.isdir(d):
@@ -126,7 +129,7 @@ def prepared_levels(pr):
     return sorted(lv for lv in os.listdir(d) if os.path.isfile(os.path.join(d, lv, 'navkit.json')))
 
 
-def offsets(pr, lv):
+def offsets(pr: navkit.Project, lv: str) -> tuple[int, int]:
     """The level's (XOffset, ZOffset) from its navkit.json; exits when prepare has not stored them."""
     s = json.load(open(pr.settings_path(lv)))
     if 'xoff' not in s or 'zoff' not in s:
@@ -134,18 +137,18 @@ def offsets(pr, lv):
     return s['xoff'], s['zoff']
 
 
-def guids(lv):
+def guids(lv: str) -> tuple[str, str]:
     """The level's deterministic (partition, instance) GUIDs for its SectorOffsets asset."""
     g = [str(uuid.uuid5(uuid.NAMESPACE_URL, f'{NS}:{lv}:infantry:{part}')).upper() for part in ('partition', 'instance')]
     return g[0], g[1]
 
 
-def entry_name(lv):
+def entry_name(lv: str) -> str:
     """The level's SectorOffsets asset name inside its bundle."""
     return f'Levels/{lv.upper()}/Precomputed/Infantry/SectorOffsets'
 
 
-def build_asset(lv, xoff, zoff):
+def build_asset(lv: str, xoff: int, zoff: int) -> bytes:
     """The binary .dbx of the level's PathdataSectorOffsets asset with these offsets."""
     part, inst = guids(lv)
     name = entry_name(lv)
@@ -161,14 +164,14 @@ def build_asset(lv, xoff, zoff):
     return d.build()
 
 
-def bundle(pr, lv):
+def bundle(pr: navkit.Project, lv: str) -> str:
     """The path of the level's level-00.fbrb in the game copy."""
     return os.path.join(pr.game, 'dist', 'win32', 'levels', lv, 'level-00.fbrb')
 
 
 # --- commands ------------------------------------------------------------------
 
-def plan(pr, lv):
+def plan(pr: navkit.Project, lv: str) -> None:
     """Prints what --apply would add to the level's bundle, without changing it."""
     xoff, zoff = offsets(pr, lv)
     part, inst = guids(lv)
@@ -177,7 +180,7 @@ def plan(pr, lv):
           f'{os.path.relpath(bundle(pr, lv), pr.root)}')
 
 
-def apply(pr, lv, log=print):
+def apply(pr: navkit.Project, lv: str, log: Callable[..., object] = print) -> None:
     """Adds the SectorOffsets asset to the level's bundle (backing up the original and recording the result's hash); a
     no-op when already applied."""
     b = bundle(pr, lv)
@@ -211,7 +214,7 @@ def apply(pr, lv, log=print):
     print(f'  {os.path.relpath(b, pr.root)}: {sha(b + BACKUP)[:8]} -> {sha(b)[:8]}')
 
 
-def revert(pr, lv):
+def revert(pr: navkit.Project, lv: str) -> None:
     """Restores the level's original bundle from its backup, refusing when the bundle changed after apply."""
     b = bundle(pr, lv)
     if not os.path.isfile(b + BACKUP):
@@ -224,7 +227,7 @@ def revert(pr, lv):
     print(f'restored {os.path.relpath(b, pr.root)} ({sha(b)[:8]})')
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
     """Applies, reverts or plans the SectorOffsets asset for one level (--level) or every prepared level; returns the
     exit code."""
     pr = navkit.Project()

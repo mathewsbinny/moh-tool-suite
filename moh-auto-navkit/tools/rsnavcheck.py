@@ -19,6 +19,9 @@ import os
 import random
 import sys
 import time
+from collections.abc import Callable, Sequence
+from types import ModuleType
+from typing import Any
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SUITE = os.path.dirname(os.path.dirname(HERE))
@@ -29,7 +32,7 @@ LOCATE = 1.5          # m: a point is placed on a walkable cell this close (rsn_
 START = 6.0           # m: its start node in sight this close (rsn_start_node)
 
 
-def find_rsnav(given=None):
+def find_rsnav(given: str | None = None) -> str | None:
     """The rsnav folder (the one with bindings\\rsnav.py): given, RSNAV_ROOT, or project-opfor-moh\\src\\rsnav beside
     the suite; None when none has it."""
     for c in (given, os.environ.get('RSNAV_ROOT'),
@@ -39,16 +42,16 @@ def find_rsnav(given=None):
     return None
 
 
-def bindings(rsnav_dir):
+def bindings(rsnav_dir: str) -> ModuleType:
     """Imports rsnav's ctypes bindings from rsnav_dir; raises FileNotFoundError when the library is not built."""
     sys.path.insert(0, os.path.join(rsnav_dir, 'bindings'))
-    import rsnav as rb
+    import rsnav as rb  # type: ignore[import-not-found]  # rsnav's bindings: project-opfor-moh's folder, put on sys.path above
     if not os.path.isfile(rb.LIB):
         raise FileNotFoundError(f'{rb.LIB}: build rsnav first (python -B build.py host in {rsnav_dir})')
     return rb
 
 
-def check_level(root, lv, rb, reference=20, log=print):
+def check_level(root: str, lv: str, rb: Any, reference: int = 20, log: Callable[..., object] = print) -> dict[str, Any]:
     """Loads the level's RSNV file in rsnav, routes between its order positions and checks costs against the Python
     reference; returns the figures and logs a summary line."""
     import navkit
@@ -61,7 +64,7 @@ def check_level(root, lv, rb, reference=20, log=print):
     load_ms = (time.perf_counter() - t0) * 1000
     xml = os.path.join(pr.level_work(lv), 'dist', 'levels', pr.settings(lv)['level'] + '.xml')
     pts = ordercheck.order_points(xml)
-    placed = []
+    placed: list[tuple[str, tuple[float, float, float], int]] = []
     for kind, name, p in pts:
         loc = w.locate(p[0], p[1], p[2], LOCATE)
         if loc is None:
@@ -75,9 +78,9 @@ def check_level(root, lv, rb, reference=20, log=print):
     done = partial = 0
     t_search = 0.0
     smooth_fail = 0
-    fails = []
+    fails: list[tuple[str, list[float], str, list[float]]] = []
     pairs = [(a, b) for a in range(len(placed)) for b in range(len(placed)) if a != b]
-    costs = {}
+    costs: dict[tuple[int, int], int] = {}
     for a, b in pairs:
         t1 = time.perf_counter()
         st, cost, nodes, _exp, _steps = w.search(placed[a][2], placed[b][2], filt=filt)
@@ -115,7 +118,7 @@ def check_level(root, lv, rb, reference=20, log=print):
     return res
 
 
-def main(argv):
+def main(argv: Sequence[str]) -> int:
     """The command line: checks the RSNV file of each level in rsnav, optionally saving the results as JSON; returns
     the exit code."""
     ap = argparse.ArgumentParser(prog='rsnavcheck.py', description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)

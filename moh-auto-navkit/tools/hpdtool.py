@@ -251,73 +251,89 @@ def main(argv: list[str]) -> int:
         print(f'  mesh {len(s.mesh)} bytes: {s.mesh[:48].hex(" ")}')
         return 0
     if cmd == 'coverage':
-        total = clean = 0
-        gap_kinds: dict[tuple, int] = {}
-        for p in _files(argv[2:]):
-            f = parse(open(p, 'rb').read())
-            for s in f.sectors:
-                total += 1
-                try:
-                    gaps, overlaps = mesh_coverage(s.mesh)
-                except (ValueError, struct.error) as ex:
-                    print(f'ERROR {p} sector {s.id:#x}: {ex}')
-                    continue
-                if not gaps and not overlaps:
-                    clean += 1
-                else:
-                    key = (tuple((e - b) for b, e in gaps[:3]), len(overlaps))
-                    gap_kinds[key] = gap_kinds.get(key, 0) + 1
-                    if gap_kinds[key] <= 2:
-                        desc = [f'{b:#x}:{s.mesh[b:e].hex(" ")}' for b, e in gaps[:4]]
-                        print(f'{os.path.basename(os.path.dirname(os.path.dirname(p)))}/{os.path.basename(os.path.dirname(p))} '
-                              f'sector {s.id:#x} len {len(s.mesh):#x} last-tile-entry '
-                              f'{struct.unpack_from("<I", s.mesh, 0x50 + struct.unpack_from("<I", s.mesh, 0x38)[0] * struct.unpack_from("<I", s.mesh, 0x3C)[0] * 4)[0]:#x}: '
-                              f'gaps {desc} overlaps {overlaps[:2]}')
-        print(f'coverage: {clean}/{total} meshes fully explained; gap patterns {len(gap_kinds)}')
-        return 0
+        return _coverage(argv[2:])
     if cmd == 'meshtrip':
-        import kymesh
-        total = same = 0
-        reasons: dict[str, int] = {}
-        for p in _files(argv[2:]):
-            for s in parse(open(p, 'rb').read()).sectors:
-                total += 1
-                try:
-                    out = kymesh.write_mesh(kymesh.parse_mesh(s.mesh))
-                except Exception as ex:     # noqa: BLE001 - a survey: every failure is tallied by its type
-                    reasons[type(ex).__name__ + ': ' + str(ex)[:60]] = reasons.get(type(ex).__name__ + ': ' + str(ex)[:60], 0) + 1
-                    continue
-                if out == s.mesh:
-                    same += 1
-                else:
-                    common = min(len(out), len(s.mesh))
-                    diff_at = next((i for i in range(common) if out[i] != s.mesh[i]), common)
-                    reason = f'len {len(out) - len(s.mesh):+d}, first diff at word {diff_at // 4 * 4:#x}'
-                    if not reasons:
-                        print(f'first mismatch: {p} sector {s.id:#x}: {reason}; '
-                              f'orig {s.mesh[diff_at // 4 * 4:diff_at // 4 * 4 + 16].hex(" ")} new {out[diff_at // 4 * 4:diff_at // 4 * 4 + 16].hex(" ")}')
-                    reasons[reason] = reasons.get(reason, 0) + 1
-        print(f'mesh round trip: {same}/{total} identical')
-        for k, v in sorted(reasons.items(), key=lambda kv: -kv[1])[:8]:
-            print(f'  {v:6} x {k}')
-        return 0 if same == total else 2
+        return _meshtrip(argv[2:])
     if cmd == 'roundtrip':
-        ok = bad = 0
-        for p in _files(argv[2:]):
-            data = open(p, 'rb').read()
-            try:
-                same = write(parse(data)) == data
-            except ValueError as ex:
-                same = False
-                print(f'ERROR {p}: {ex}')
-            ok += same
-            bad += not same
-            if not same:
-                print(f'MISMATCH {p}')
-        print(f'round trip: {ok} identical, {bad} different')
-        return 0 if bad == 0 else 2
+        return _roundtrip(argv[2:])
     print(__doc__)
     return 1
+
+
+def _coverage(args: list[str]) -> int:
+    """hpdtool coverage: how many sector meshes mesh_coverage explains fully, with samples of the gap patterns."""
+    total = clean = 0
+    gap_kinds: dict[tuple, int] = {}
+    for p in _files(args):
+        f = parse(open(p, 'rb').read())
+        for s in f.sectors:
+            total += 1
+            try:
+                gaps, overlaps = mesh_coverage(s.mesh)
+            except (ValueError, struct.error) as ex:
+                print(f'ERROR {p} sector {s.id:#x}: {ex}')
+                continue
+            if not gaps and not overlaps:
+                clean += 1
+            else:
+                key = (tuple((e - b) for b, e in gaps[:3]), len(overlaps))
+                gap_kinds[key] = gap_kinds.get(key, 0) + 1
+                if gap_kinds[key] <= 2:
+                    desc = [f'{b:#x}:{s.mesh[b:e].hex(" ")}' for b, e in gaps[:4]]
+                    print(f'{os.path.basename(os.path.dirname(os.path.dirname(p)))}/{os.path.basename(os.path.dirname(p))} '
+                          f'sector {s.id:#x} len {len(s.mesh):#x} last-tile-entry '
+                          f'{struct.unpack_from("<I", s.mesh, 0x50 + struct.unpack_from("<I", s.mesh, 0x38)[0] * struct.unpack_from("<I", s.mesh, 0x3C)[0] * 4)[0]:#x}: '
+                          f'gaps {desc} overlaps {overlaps[:2]}')
+    print(f'coverage: {clean}/{total} meshes fully explained; gap patterns {len(gap_kinds)}')
+    return 0
+
+
+def _meshtrip(args: list[str]) -> int:
+    """hpdtool meshtrip: every sector mesh through kymesh.parse_mesh and write_mesh; 0 when all come back identical,
+    else 2."""
+    import kymesh
+    total = same = 0
+    reasons: dict[str, int] = {}
+    for p in _files(args):
+        for s in parse(open(p, 'rb').read()).sectors:
+            total += 1
+            try:
+                out = kymesh.write_mesh(kymesh.parse_mesh(s.mesh))
+            except Exception as ex:     # noqa: BLE001 - a survey: every failure is tallied by its type
+                reasons[type(ex).__name__ + ': ' + str(ex)[:60]] = reasons.get(type(ex).__name__ + ': ' + str(ex)[:60], 0) + 1
+                continue
+            if out == s.mesh:
+                same += 1
+            else:
+                common = min(len(out), len(s.mesh))
+                diff_at = next((i for i in range(common) if out[i] != s.mesh[i]), common)
+                reason = f'len {len(out) - len(s.mesh):+d}, first diff at word {diff_at // 4 * 4:#x}'
+                if not reasons:
+                    print(f'first mismatch: {p} sector {s.id:#x}: {reason}; '
+                          f'orig {s.mesh[diff_at // 4 * 4:diff_at // 4 * 4 + 16].hex(" ")} new {out[diff_at // 4 * 4:diff_at // 4 * 4 + 16].hex(" ")}')
+                reasons[reason] = reasons.get(reason, 0) + 1
+    print(f'mesh round trip: {same}/{total} identical')
+    for k, v in sorted(reasons.items(), key=lambda kv: -kv[1])[:8]:
+        print(f'  {v:6} x {k}')
+    return 0 if same == total else 2
+
+
+def _roundtrip(args: list[str]) -> int:
+    """hpdtool roundtrip: every file through parse and write; 0 when all come back identical, else 2."""
+    ok = bad = 0
+    for p in _files(args):
+        data = open(p, 'rb').read()
+        try:
+            same = write(parse(data)) == data
+        except ValueError as ex:
+            same = False
+            print(f'ERROR {p}: {ex}')
+        ok += same
+        bad += not same
+        if not same:
+            print(f'MISMATCH {p}')
+    print(f'round trip: {ok} identical, {bad} different')
+    return 0 if bad == 0 else 2
 
 
 if __name__ == '__main__':

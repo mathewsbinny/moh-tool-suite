@@ -31,6 +31,7 @@ find fills the DropFindStats its caller passes (no module state).
 """
 import math
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -133,8 +134,6 @@ def find(s: navsample.Samples, keep: np.ndarray, link_step: float, pitch: float,
     y = s.y.astype(np.float64)
     col = np.repeat(np.arange(s.nx * s.nz), np.diff(s.start[:s.nx * s.nz + 1]))
     reach = max(1, int(math.ceil(DROP_REACH / pitch)) + 1)
-    head = mohsoldier.HEIGHT
-    blocked = navsample.BLOCKED | navsample.FAULT
     cands: defaultdict[tuple[int, int], list[tuple[float, int, int]]] = defaultdict(list)
                                                     # (upper region, lower region) -> [(horizontal distance, k, n)]
     small = max(1, int(math.ceil(DROP_MIN_AREA / (pitch * pitch))))
@@ -143,55 +142,84 @@ def find(s: navsample.Samples, keep: np.ndarray, link_step: float, pitch: float,
             continue
         c = int(col[k])
         i, j = c % s.nx, c // s.nx
-        yk = y[k]
-
-        def cramped(rng: range) -> bool:
-            # floor at the ledge's height (within a step) only where the capsule does not fit, under something above
-            # the head: inside a wall whose surfaces in the body range the sampler never recorded (a mesh wall: only
-            # its top - mp_09_overrun's facades). Without anything overhead it is the cramped edge of open ground,
-            # which a soldier crosses (mp_10's 0.5 m curbs, 2026-10-31)
-            near = [m for m in rng if abs(y[m] - yk) <= mohsoldier.STEP]
-            return (bool(near) and all(s.flags[m] & blocked for m in near) and
-                    any(y[m] >= yk + head for m in rng))
-
-        def wall(a: int, b: int) -> bool:
-            cc = b * s.nx + a
-            rng = range(s.start[cc], s.start[cc + 1])
-            return any(yk + mohsoldier.STEP < y[m] < yk + head for m in rng) or cramped(rng)
         for di, dj in DIRS:
-            land: tuple[float, float] | None = None         # how far out the first floor at drop height lies
-            for r in range(1, reach + 1):
-                a, b = i + di * r, j + dj * r
-                dist = r * pitch * math.hypot(di, dj)
-                if dist > DROP_REACH + pitch * math.hypot(di, dj) + 1e-6 or not (0 <= a < s.nx and 0 <= b < s.nz):
-                    break                                   # DROP_REACH in metres to the first floor, the walkable
-                                                            # landing a cell past it at most (a curb's cramped foot)
-                cc = b * s.nx + a
-                rng = range(s.start[cc], s.start[cc + 1])
-                if not any(y[m] <= yk + mohsoldier.STEP for m in rng):
-                    break                                   # no floor under the way: inside solid geometry
-                if cramped(rng):
-                    break                                   # in a wall too tall for the sampled body range
-                if land is None and any(DROP_MIN <= yk - y[m] <= DROP_MAX for m in rng):
-                    land = (dist, max(y[m] for m in rng if DROP_MIN <= yk - y[m] <= DROP_MAX))
-                hit: int | None = None
-                for n in rng:
-                    if (keep[n] and lab[n] != lab[k] and size[int(lab[n])] > size[int(lab[k])] and
-                            DROP_MIN <= yk - y[n] <= DROP_MAX and land is not None and
-                            land[0] <= DROP_REACH + 1e-6 and land[0] <= run_reach(yk - land[1], pitch)):
-                        if not any(y[n] + 0.1 < y[m] < yk + head for m in rng):   # the landing is open
-                            hit = n
-                            break
-                # a diagonal step passes the corner between two straight neighbours: a wall in either side column
-                # blocks it (the soldier's 0.35 m radius does not pass a corner between 0.2 m columns)
-                if di and dj and (wall(a - di, b) or wall(a, b - dj)):
+            found = _drop_along(s, keep, lab, size, y, k, (i, j), (di, dj), reach, pitch)
+            if found is not None:
+                dist, hit = found
+                cands[(int(lab[k]), int(lab[hit]))].append((dist, k, hit))
+    out = _spaced(s, cands, col, pitch)
+    st.regions, st.candidates, st.pairs, st.links = len(size), sum(len(v) for v in cands.values()), len(cands), len(out)
+    return out
+
+
+def _cramped(s: navsample.Samples, y: np.ndarray, yk: float, rng: range) -> bool:
+    """find's floor at the ledge's height (within a step) only where the capsule does not fit, under something above
+    the head: inside a wall whose surfaces in the body range the sampler never recorded (a mesh wall: only its top -
+    mp_09_overrun's facades). Without anything overhead it is the cramped edge of open ground, which a soldier crosses
+    (mp_10's 0.5 m curbs, 2026-10-31)."""
+    blocked = navsample.BLOCKED | navsample.FAULT
+    head = mohsoldier.HEIGHT
+    near = [m for m in rng if abs(y[m] - yk) <= mohsoldier.STEP]
+    return (bool(near) and all(s.flags[m] & blocked for m in near) and
+            any(y[m] >= yk + head for m in rng))
+
+
+def _wall(s: navsample.Samples, y: np.ndarray, yk: float, a: int, b: int) -> bool:
+    """find's wall in column (a, b) for a ledge at height yk: a surface between its step and the soldier's height, or
+    a cramped floor."""
+    head = mohsoldier.HEIGHT
+    cc = b * s.nx + a
+    rng = range(s.start[cc], s.start[cc + 1])
+    return any(yk + mohsoldier.STEP < y[m] < yk + head for m in rng) or _cramped(s, y, yk, rng)
+
+
+def _drop_along(s: navsample.Samples, keep: np.ndarray, lab: np.ndarray, size: Mapping[int, int], y: np.ndarray,
+                k: int, ij: tuple[int, int], step: tuple[int, int], reach: int,
+                pitch: float) -> tuple[float, int] | None:
+    """find's walk out from ledge surface k in column ij along step (di, dj): (horizontal distance, landing surface)
+    of the first open landing in a larger region, or None."""
+    i, j = ij
+    di, dj = step
+    yk = y[k]
+    head = mohsoldier.HEIGHT
+    land: tuple[float, float] | None = None         # how far out the first floor at drop height lies
+    for r in range(1, reach + 1):
+        a, b = i + di * r, j + dj * r
+        dist = r * pitch * math.hypot(di, dj)
+        if dist > DROP_REACH + pitch * math.hypot(di, dj) + 1e-6 or not (0 <= a < s.nx and 0 <= b < s.nz):
+            break                                   # DROP_REACH in metres to the first floor, the walkable
+                                                    # landing a cell past it at most (a curb's cramped foot)
+        cc = b * s.nx + a
+        rng = range(s.start[cc], s.start[cc + 1])
+        if not any(y[m] <= yk + mohsoldier.STEP for m in rng):
+            break                                   # no floor under the way: inside solid geometry
+        if _cramped(s, y, yk, rng):
+            break                                   # in a wall too tall for the sampled body range
+        if land is None and any(DROP_MIN <= yk - y[m] <= DROP_MAX for m in rng):
+            land = (dist, max(y[m] for m in rng if DROP_MIN <= yk - y[m] <= DROP_MAX))
+        hit: int | None = None
+        for n in rng:
+            if (keep[n] and lab[n] != lab[k] and size[int(lab[n])] > size[int(lab[k])] and
+                    DROP_MIN <= yk - y[n] <= DROP_MAX and land is not None and
+                    land[0] <= DROP_REACH + 1e-6 and land[0] <= run_reach(yk - land[1], pitch)):
+                if not any(y[n] + 0.1 < y[m] < yk + head for m in rng):   # the landing is open
+                    hit = n
                     break
-                if hit is not None:
-                    cands[(int(lab[k]), int(lab[hit]))].append((dist, k, hit))
-                    break
-                # the path out over this column: nothing from the ledge's step up to the soldier's height
-                if any(yk + mohsoldier.STEP < y[m] < yk + head for m in rng):
-                    break
+        # a diagonal step passes the corner between two straight neighbours: a wall in either side column
+        # blocks it (the soldier's 0.35 m radius does not pass a corner between 0.2 m columns)
+        if di and dj and (_wall(s, y, yk, a - di, b) or _wall(s, y, yk, a, b - dj)):
+            break
+        if hit is not None:
+            return dist, hit
+        # the path out over this column: nothing from the ledge's step up to the soldier's height
+        if any(yk + mohsoldier.STEP < y[m] < yk + head for m in rng):
+            break
+    return None
+
+
+def _spaced(s: navsample.Samples, cands: Mapping[tuple[int, int], list[tuple[float, int, int]]], col: np.ndarray,
+            pitch: float) -> list[tuple[int, int]]:
+    """find's links: per region pair the nearest candidates, DROP_SPACING apart, at most DROP_PER_PAIR."""
     out: list[tuple[int, int]] = []
     for key, lst in cands.items():
         lst.sort()
@@ -204,5 +232,4 @@ def find(s: navsample.Samples, keep: np.ndarray, link_step: float, pitch: float,
                 out.append((k, n))
                 if len(chosen) >= DROP_PER_PAIR:
                     break
-    st.regions, st.candidates, st.pairs, st.links = len(size), sum(len(v) for v in cands.values()), len(cands), len(out)
     return out

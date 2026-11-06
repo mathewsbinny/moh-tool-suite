@@ -17,6 +17,7 @@ import os
 import re
 import sys
 from collections import Counter
+from collections.abc import Callable, Sequence, Set
 
 import numpy as np
 
@@ -35,34 +36,40 @@ Y_OFFSET = mohsoldier.Y_OFFSET
 MOH_POINT_TYPES = ('ObjectiveTriggerEntityData', 'CapturePointEntityData', 'AlternateSpawnEntityData',
                    'SoldierSpawnEntityData')
 
+Vec3 = tuple[float, float, float]
+OrderPoint = tuple[str, str, Vec3]          # (kind, name, position)
+Seg = tuple[kymesh.Vec3, kymesh.Vec3]
+AreaBox = tuple[float, float, float, float, float, float, list[Seg]]   # (minx, maxx, minz, maxz, miny, maxy, segs)
 
-def order_points(xml_path):
+
+def order_points(xml_path: str) -> list[OrderPoint]:
     """The level partition's AI order and waypoint positions as unique (kind, name, (x, y, z)) triples; spawner
     markers are left out."""
     x = open(xml_path, encoding='utf-8', errors='replace').read()
-    inst = {}
+    inst: dict[str, tuple[str, str]] = {}
     for typ, guid, body in xmlinst.instances(x):
         inst[guid.lower()] = (typ, body)
 
-    def pos(body):
+    def pos(body: str) -> Vec3 | None:
         t = re.search(r'<complex name="Transform">([^<]*)</complex>', body)
         if not t:
             return None
         v = [float(a) for a in t.group(1).split('/')]
         return (v[12], v[13], v[14]) if any(abs(c) > 1e-3 for c in v[12:15]) else None
 
-    pts = []
+    pts: list[OrderPoint] = []
     for guid, (typ, body) in inst.items():
         short = typ.split('.')[-1]
         if short in ('AreaOrderEntityData', 'PatrolOrderEntityData', 'InterludeOrderEntityData',
                      'FireAtAreaOrderEntityData'):
-            name = (re.search(r'<field name="Name">([^<]*)</field>', body) or [None, ''])[1] if re.search(r'<field name="Name">([^<]*)</field>', body) else ''
+            nm = re.search(r'<field name="Name">([^<]*)</field>', body)
+            name = nm.group(1) if nm else ''
             p = pos(body)
             if p:
                 pts.append((short.replace('EntityData', ''), name, p))
             if short == 'PatrolOrderEntityData':
                 for ref in re.findall(r'ref="([0-9a-f-]{36})"', body):
-                    seen = set()
+                    seen: set[str] = set()
                     g = ref.lower()
                     while g in inst and g not in seen and inst[g][0].endswith('AreaGeometryEntityData'):
                         seen.add(g)
@@ -82,33 +89,36 @@ def order_points(xml_path):
                     name = re.search(r'<field name="Name">([^<]*)</field>', body)
                     pts.append((short.replace('EntityData', ''), name.group(1) if name else '', p))
     # unique
-    out, seen = [], set()
+    out: list[OrderPoint] = []
+    seen_keys: set[tuple[str, float, float]] = set()
     for k, n, p in pts:
         key = (k, round(p[0], 1), round(p[2], 1))
-        if key not in seen:
-            seen.add(key)
+        if key not in seen_keys:
+            seen_keys.add(key)
             out.append((k, n, p))
     return out
 
 
-def drop_cracks(segs):
+def drop_cracks(segs: Sequence[Seg]) -> list[Seg]:
     """Coincident segment pairs (in plan) are a zero-width crack inside an area - two adjacent cells of it that
     are not connected to each other (a step) - not its boundary; both are removed for the inside test."""
     from collections import Counter
-    key = lambda sg: tuple(sorted(((round(sg[0][0], 2), round(sg[0][2], 2)), (round(sg[1][0], 2), round(sg[1][2], 2)))))
+    def key(sg: Seg) -> tuple[tuple[float, float], ...]:
+        return tuple(sorted(((round(sg[0][0], 2), round(sg[0][2], 2)), (round(sg[1][0], 2), round(sg[1][2], 2)))))
+
     n = Counter(key(sg) for sg in segs)
     return [sg for sg in segs if n[key(sg)] % 2 == 1]
 
 
 class PathData:
-    def __init__(self, path, clip=None, drop=None):
+    def __init__(self, path: str, clip: Sequence[float] | None = None, drop: Set[int] | None = None) -> None:
         """clip: (minX, minZ, maxX, maxZ) - route nodes outside it, and the edges touching them, are left out (a
         reference's ground beyond the level's terrain, which the game on PC does not have; navparity). drop: node ids
         left out the same way (a reference's nodes on ground PC does not have; navparity.stale_nodes)."""
         f = hpdtool.parse(open(path, 'rb').read())
         drop = drop or set()
-        in_box = (lambda p: clip[0] <= p[0] <= clip[2] and clip[1] <= p[2] <= clip[3]) if clip else (lambda p: True)
-        self.areas = []      # (minx, maxx, minz, maxz, miny, maxy, segs)
+        in_box: Callable[[Sequence[float]], bool] = (lambda p: clip[0] <= p[0] <= clip[2] and clip[1] <= p[2] <= clip[3]) if clip else (lambda p: True)
+        self.areas: list[AreaBox] = []      # (minx, maxx, minz, maxz, miny, maxy, segs)
         for s in f.sectors:
             m = kymesh.parse_mesh(s.mesh)
             for a in m.areas:
@@ -122,15 +132,16 @@ class PathData:
                 ys = [p[1] for sg in segs for p in sg]
                 self.areas.append((min(xs), max(xs), min(zs), max(zs), min(ys) - Y_OFFSET, max(ys) - Y_OFFSET, segs))
         # graph groups (shared border node ids join sectors)
-        parent = {}
+        parent: dict[int, int] = {}
 
-        def find(a):
+        def find(a: int) -> int:
             while parent.setdefault(a, a) != a:
                 parent[a] = parent[parent[a]]
                 a = parent[a]
             return a
-        self.nodes = []
-        def inside(n):
+        self.nodes: list[tuple[int, tuple[float, float, float]]] = []
+
+        def inside(n: hpdtool.Node) -> bool:
             return n.id not in drop and in_box(n.pos)
         for s in f.sectors:
             for e in s.edges:
@@ -145,7 +156,7 @@ class PathData:
         self.pos = np.array([p for _, p in self.nodes])
         self.ids = [nid for nid, _ in self.nodes]
 
-    def on_area(self, p, ytol=2.5):
+    def on_area(self, p: Sequence[float], ytol: float = 2.5) -> bool:
         """True when p is inside an area's outline on the xz plane (even-odd rule) and within ytol metres of its
         height range."""
         x, y, z = p
@@ -162,7 +173,7 @@ class PathData:
                 return True
         return False
 
-    def nearest_group(self, p, radius=15.0):
+    def nearest_group(self, p: Sequence[float], radius: float = 15.0) -> tuple[int, int] | tuple[None, None]:
         """The (route network, its node count) of the nearest route node within radius metres in plan and 4 m in
         height of p, or (None, None)."""
         d = np.hypot(self.pos[:, 0] - p[0], self.pos[:, 2] - p[2])
@@ -174,7 +185,7 @@ class PathData:
         return g, self.group_size[g]
 
 
-def main(argv):
+def main(argv: Sequence[str]) -> int:
     """The command line: how a level's order positions sit on the areas and route networks of one or more pathdata.hpd
     files; returns the exit code."""
     if len(argv) < 3:
@@ -182,22 +193,22 @@ def main(argv):
         return 1
     pts = order_points(argv[1])
     print(f'{len(pts)} order / waypoint positions: {dict(Counter(k for k, _, _ in pts))}')
-    results = {}
+    results: dict[str, list[tuple[bool, int | None]]] = {}
     for path in argv[2:]:
         pdata = PathData(path)
         biggest = max(pdata.group_size.values())
-        res = []
+        res: list[tuple[bool, int | None]] = []
         for k, n, p in pts:
-            on = pdata.on_area(p)
-            g, size = pdata.nearest_group(p)
-            res.append((on, size))
+            on_p = pdata.on_area(p)
+            _g, size = pdata.nearest_group(p)
+            res.append((on_p, size))
         results[path] = res
         on = sum(1 for o, _ in res if o)
         near = sum(1 for _, s in res if s)
         big = sum(1 for _, s in res if s and s >= 0.25 * biggest)
         print(f'{os.path.basename(os.path.dirname(os.path.dirname(path))) or path}: {os.path.basename(path)}  on an area: {on}/{len(pts)}  '
               f'node within 15 m: {near}  in a large route group (>= 25% of largest): {big}')
-    groups = {}
+    groups: dict[str, list[int | None]] = {}
     for path in argv[2:]:
         pdata = PathData(path)
         groups[path] = [pdata.nearest_group(p)[0] if pdata.on_area(p) else None for _, _, p in pts]
@@ -231,8 +242,8 @@ def main(argv):
         (pa, ra), (pb, rb) = list(results.items())
         diff = [(pts[i], ra[i], rb[i]) for i in range(len(pts)) if ra[i][0] != rb[i][0] or bool(ra[i][1]) != bool(rb[i][1])]
         print(f'\npoints that differ ({len(diff)}): first = {os.path.basename(pa)}, second = {os.path.basename(pb)}')
-        for (k, n, p), a, b in diff[:60]:
-            print(f'  {k:22s} {n[:34]:34s} ({p[0]:8.1f} {p[1]:6.1f} {p[2]:8.1f})  on-area {a[0]!s:5} / {b[0]!s:5}   group size {a[1]} / {b[1]}')
+        for (k, n, p), ea, eb in diff[:60]:
+            print(f'  {k:22s} {n[:34]:34s} ({p[0]:8.1f} {p[1]:6.1f} {p[2]:8.1f})  on-area {ea[0]!s:5} / {eb[0]!s:5}   group size {ea[1]} / {eb[1]}')
     return 0
 
 

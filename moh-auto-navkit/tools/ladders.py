@@ -14,6 +14,8 @@ Usage: ladders.py <level dir> [<more blueprint folders>...]   writes <level dir>
 import json
 import os
 import sys
+from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 
@@ -21,12 +23,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import levelobjects  # noqa: E402
 
 
-def extract(level_dir, extra_bases=()):
+def extract(level_dir: str, extra_bases: Sequence[str] = ()) -> list[dict[str, Any]]:
     """[{'bp', 'lo': [x, y, z], 'hi': [x, y, z]}] - world boxes of the level's placed ladders."""
     bases = [b for b in [os.path.join(level_dir, 'pkg'), os.path.join(level_dir, 'dist')] + list(extra_bases)
              if os.path.isdir(b)]
     hv = levelobjects.havok_index(bases)
-    out = []
+    out: list[dict[str, Any]] = []
     for o in json.load(open(os.path.join(level_dir, 'objects.json'))):
         bp = o['bp'].lower()
         if 'ladder' not in bp.rsplit('/', 1)[-1] or bp not in hv:
@@ -44,7 +46,7 @@ def extract(level_dir, extra_bases=()):
     return out
 
 
-def main(argv):
+def main(argv: Sequence[str]) -> int:
     """The command line: writes the level's ladders to ladders.json in its extracted folder; returns the exit code."""
     if len(argv) < 2:
         print(__doc__)

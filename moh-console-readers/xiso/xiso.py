@@ -10,13 +10,15 @@ u16 left, u16 right (offsets in dwords), u32 sector, u32 size, u8 attributes, u8
 entries are 4-byte aligned and never cross a sector (0xFF padding). All little-endian.
 """
 import os, struct, sys
+from collections.abc import Iterator
+from typing import BinaryIO
 
 SECTOR = 2048
 MAGIC = b'MICROSOFT*XBOX*MEDIA'
 PARTITIONS = (0x0, 0xFD90000, 0x2080000, 0x18300000)  # plain/xiso, XGD2, XGD3, XGD1
 
 
-def find_partition(f):
+def find_partition(f: BinaryIO) -> int:
     """The byte offset of the disc's XDVDFS volume; exits when there is none."""
     for base in PARTITIONS:
         f.seek(base + 32 * SECTOR)
@@ -25,7 +27,7 @@ def find_partition(f):
     raise SystemExit('no XDVDFS volume found')
 
 
-def safe_dest(outdir, path):
+def safe_dest(outdir: str, path: str) -> str:
     """The file an entry extracts to: under outdir, or SystemExit for a name that would leave it
     (a '..' folder, a rooted or drive name, backslashes that climb out)."""
     rel = path.replace('\\', '/')
@@ -39,7 +41,8 @@ def safe_dest(outdir, path):
     return dst
 
 
-def walk(f, base, sector, size, prefix='', dirs=None):
+def walk(f: BinaryIO, base: int, sector: int, size: int, prefix: str = '',
+         dirs: set[int] | None = None) -> Iterator[tuple[str, int, int]]:
     """Yields (path, sector, size) of every file under the directory table at sector, recursing into folders; a folder
     already walked is skipped."""
     dirs = set() if dirs is None else dirs     # directory tables already walked: a folder that contains itself
@@ -48,9 +51,9 @@ def walk(f, base, sector, size, prefix='', dirs=None):
     dirs.add(sector)
     f.seek(base + sector * SECTOR)
     table = f.read(size)
-    seen = set()
+    seen: set[int] = set()
 
-    def node(off):
+    def node(off: int) -> Iterator[tuple[str, int, int]]:
         if off in seen or off + 14 > len(table): return
         seen.add(off)
         left, right, sec, sz, attr, nlen = struct.unpack_from('<HHIIBB', table, off)
@@ -67,7 +70,7 @@ def walk(f, base, sector, size, prefix='', dirs=None):
     yield from node(0)
 
 
-def main():
+def main() -> int:
     """The command line: list or extract the files of a disc image, optionally only paths containing the filter
     text."""
     cmd, iso = sys.argv[1], sys.argv[2]
@@ -101,6 +104,7 @@ def main():
                     raise SystemExit(f'{path}: the image ends {left} bytes short of this file (truncated or malformed image)')
                 n += 1
             print(f'extracted {n} files to {out}')
+    return 0
 
 
 if __name__ == '__main__':

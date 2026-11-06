@@ -16,11 +16,12 @@ length, 0x40 = blocks consecutive, 0x80 = directory), block count u24 LE at 0x29
 import os
 import struct
 import sys
+from typing import Any
 
 BLOCK = 0x1000
 
 
-def safe_dest(outdir, path):
+def safe_dest(outdir: str, path: str) -> str:
     """The file an entry extracts to: under outdir, or SystemExit for a name that would leave it
     (a '..' folder, a rooted or drive name, backslashes that climb out)."""
     rel = path.replace('\\', '/')
@@ -35,7 +36,7 @@ def safe_dest(outdir, path):
 
 
 class Package:
-    def __init__(self, path):
+    def __init__(self, path: str) -> None:
         self.f = open(path, 'rb')
         h = self.f.read(0x1000)
         self.magic = h[:4]
@@ -49,7 +50,7 @@ class Package:
         self.shift = 0 if (self.separation & 1) else 1
         self.entries = self._file_table()
 
-    def _fix(self, block):
+    def _fix(self, block: int) -> int:
         """Data block number -> raw block number: a level-0 hash table precedes every 0xAA data blocks
         (the first one included), a level-1 table every 0x70E4, a level-2 table after that."""
         n = (((block + 0xAA) // 0xAA) << self.shift) + block
@@ -59,10 +60,10 @@ class Package:
             return n + (((block + 0x70E4) // 0x70E4) << self.shift)
         return (1 << self.shift) + n + (((block + 0x70E4) // 0x70E4) << self.shift)
 
-    def _addr(self, block):
+    def _addr(self, block: int) -> int:
         return self.base + self._fix(block) * BLOCK
 
-    def _hash_entry(self, block):
+    def _hash_entry(self, block: int) -> bytes:
         """Level-0 hash entry of a data block (first copy of the table)."""
         if block < 0xAA:
             raw = 0
@@ -73,34 +74,36 @@ class Package:
         self.f.seek(self.base + raw * BLOCK + (block % 0xAA) * 0x18)
         return self.f.read(0x18)
 
-    def _next(self, block):
+    def _next(self, block: int) -> int:
         e = self._hash_entry(block)
         return int.from_bytes(e[0x15:0x18], 'big')
 
-    def _blocks(self, start, count, consecutive):
+    def _blocks(self, start: int, count: int, consecutive: bool) -> list[int]:
         if consecutive:
             return list(range(start, start + count))
-        out, b = [], start
+        out: list[int] = []
+        b = start
         for _ in range(count):
             out.append(b)
             b = self._next(b)
         return out
 
-    def _file_table(self):
+    def _file_table(self) -> list[dict[str, Any]]:
         raw = b''
         for b in self._blocks(self.ft_start, self.ft_blocks, False):
             self.f.seek(self._addr(b))
             raw += self.f.read(BLOCK)
-        entries = []
+        entries: list[dict[str, Any]] = []
         for i in range(0, len(raw), 0x40):
-            e = raw[i:i + 0x40]
-            flags = e[0x28]
+            rec = raw[i:i + 0x40]
+            flags = rec[0x28]
             if not flags & 0x3F:
                 break
-            entries.append({'name': e[:flags & 0x3F].decode('latin-1'), 'dir': bool(flags & 0x80),
-                            'consecutive': bool(flags & 0x40), 'count': int.from_bytes(e[0x29:0x2C], 'little'),
-                            'start': int.from_bytes(e[0x2F:0x32], 'little'), 'parent': struct.unpack_from('>H', e, 0x32)[0],
-                            'size': struct.unpack_from('>I', e, 0x34)[0]})
+            entries.append({'name': rec[:flags & 0x3F].decode('latin-1'), 'dir': bool(flags & 0x80),
+                            'consecutive': bool(flags & 0x40), 'count': int.from_bytes(rec[0x29:0x2C], 'little'),
+                            'start': int.from_bytes(rec[0x2F:0x32], 'little'),
+                            'parent': struct.unpack_from('>H', rec, 0x32)[0],
+                            'size': struct.unpack_from('>I', rec, 0x34)[0]})
         for i, e in enumerate(entries):
             parts, p, seen = [e['name']], e['parent'], {i}
             while p != 0xFFFF and p < len(entries):
@@ -112,7 +115,7 @@ class Package:
             e['path'] = '/'.join(reversed(parts))
         return entries
 
-    def read(self, e):
+    def read(self, e: dict[str, Any]) -> bytes:
         """The bytes of a file entry, read block by block."""
         out = bytearray()
         for b in self._blocks(e['start'], e['count'], e['consecutive']):
@@ -121,7 +124,7 @@ class Package:
         return bytes(out[:e['size']])
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
     """The command line: info, list or extract on a content package, optionally only paths containing the filter text;
     returns the exit code."""
     if len(argv) < 3:

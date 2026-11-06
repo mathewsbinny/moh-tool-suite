@@ -20,14 +20,23 @@ import matplotlib.pyplot as plt
 
 import hpdtool
 
-u32 = lambda m, o: struct.unpack_from('<I', m, o)[0]
-f32 = lambda m, o: struct.unpack_from('<f', m, o)[0]
+Vec3 = tuple[float, float, float]
 
 
-def segs_from_lists(m, o, count_off, table_off):
+def u32(m: bytes, o: int) -> int:
+    """The little-endian u32 at offset o of m."""
+    return struct.unpack_from('<I', m, o)[0]
+
+
+def f32(m: bytes, o: int) -> float:
+    """The little-endian f32 at offset o of m."""
+    return struct.unpack_from('<f', m, o)[0]
+
+
+def segs_from_lists(m: bytes, o: int, count_off: int, table_off: int) -> list[list[Vec3]]:
     """D/E lists: index table of count+1 offsets (relative to the object), data = 3-D points."""
     cnt = u32(m, o + count_off)
-    out = []
+    out: list[list[Vec3]] = []
     if not cnt:
         return out
     tab = o + u32(m, o + table_off)
@@ -39,7 +48,7 @@ def segs_from_lists(m, o, count_off, table_off):
     return out
 
 
-def main():
+def main() -> int:
     """The command line: draws one sector (by index or 0x id) of a pathdata.hpd top-down to a PNG, optionally zoomed
     to an x/z range."""
     path, which, out = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -89,8 +98,8 @@ def main():
                 mx, mz = (f32(m, r) + f32(m, r + 12)) / 2, (f32(m, r + 8) + f32(m, r + 20)) / 2
                 ax.arrow(mx, mz, f32(m, r + 0x20) * 0.8, f32(m, r + 0x28) * 0.8, head_width=0.25, color='tab:red', lw=0.5)
     for e in s.edges:
-        a, b = s.nodes[e.src].pos, s.nodes[e.dst].pos
-        ax.plot([a[0], b[0]], [a[2], b[2]], color='moccasin', lw=0.8, zorder=1)
+        pa, pb = s.nodes[e.src].pos, s.nodes[e.dst].pos
+        ax.plot([pa[0], pb[0]], [pa[2], pb[2]], color='moccasin', lw=0.8, zorder=1)
     ax.scatter([n.pos[0] for n in s.nodes], [n.pos[2] for n in s.nodes], s=6, color='tab:orange', zorder=3)
     if len(sys.argv) >= 8:
         ax.set_xlim(float(sys.argv[4]), float(sys.argv[5]))
@@ -99,6 +108,7 @@ def main():
     ax.set_title(f'sector {s.id:#06x}: {len(objects)} areas, {len(s.nodes)} nodes, {len(s.edges)} edges')
     fig.savefig(out, dpi=110, bbox_inches='tight')
     print(f'wrote {out}')
+    return 0
 
 
 if __name__ == '__main__':

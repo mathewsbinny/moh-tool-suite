@@ -16,6 +16,8 @@ import json
 import os
 import sys
 from collections import defaultdict
+from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -26,16 +28,22 @@ sys.path.insert(0, os.path.join(SUITE, 'core'))
 import navdiff  # noqa: E402
 import navparity  # noqa: E402
 
+if TYPE_CHECKING:
+    from mohcore.terrain import Heightfield
+    from mohcore.water import Water
+
 BANDS = [(-1e9, -0.5, 'dry (water more than 0.5 m below)'), (-0.5, 0.0, 'at the shore (0-0.5 m below)'),
          (0.0, 0.5, 'under 0-0.5 m'), (0.5, 1.0, 'under 0.5-1 m'), (1.0, 1.5, 'under 1-1.5 m'), (1.5, 2.0, 'under 1.5-2 m'),
          (2.0, 3.0, 'under 2-3 m'), (3.0, 1e9, 'under more than 3 m')]
 TILE = 16.0
 NO_WATER = -1e9
+CellIJ = tuple[int, int]
+Floor = tuple[CellIJ, float]                    # ((i, j), height estimate)
 
 
-def cells(path):
+def cells(path: str) -> defaultdict[CellIJ, list[float]]:
     """(i, j) -> list of ground height estimates, every area of every sector."""
-    out = defaultdict(list)
+    out: defaultdict[CellIJ, list[float]] = defaultdict(list)
     for s in navdiff.load(path).values():
         for area in s.cells():
             for ij, y in area.items():
@@ -43,24 +51,24 @@ def cells(path):
     return out
 
 
-def water_heights(points, water):
+def water_heights(points: np.ndarray, water: 'Water | None') -> np.ndarray:
     """Water surface height over each (x, z) point (the highest where pieces overlap), NO_WATER where none."""
     top = np.full(len(points), NO_WATER)
     if water is None or not len(water):
         return top
-    tiles = defaultdict(list)
+    tile_lists: defaultdict[tuple[int, int], list[int]] = defaultdict(list)
     keys = np.floor(points / TILE).astype(np.int64)
     for n, (a, b) in enumerate(keys):
-        tiles[(a, b)].append(n)
-    tiles = {k: np.array(v) for k, v in tiles.items()}
+        tile_lists[(a, b)].append(n)
+    tiles = {k: np.array(v) for k, v in tile_lists.items()}
     tri = water.vertices[water.triangles].astype(np.float64)
     lo = np.floor(tri[:, :, [0, 2]].min(axis=1) / TILE).astype(np.int64)
     hi = np.floor(tri[:, :, [0, 2]].max(axis=1) / TILE).astype(np.int64)
     for t in range(len(tri)):
-        idx = [tiles[(a, b)] for a in range(lo[t, 0], hi[t, 0] + 1) for b in range(lo[t, 1], hi[t, 1] + 1) if (a, b) in tiles]
-        if not idx:
+        parts = [tiles[(a, b)] for a in range(lo[t, 0], hi[t, 0] + 1) for b in range(lo[t, 1], hi[t, 1] + 1) if (a, b) in tiles]
+        if not parts:
             continue
-        idx = np.concatenate(idx)
+        idx = np.concatenate(parts)
         p = points[idx]
         (ax, ay, az), (bx, by, bz), (cx, cy, cz) = tri[t]
         d = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz)
@@ -77,9 +85,9 @@ def water_heights(points, water):
     return top
 
 
-def floors(cellmap):
+def floors(cellmap: Mapping[CellIJ, Sequence[float]]) -> list[Floor]:
     """Every floor of every cell: ((i, j), height estimate), stacked floors (a bridge over a river) apart."""
-    out = []
+    out: list[Floor] = []
     for ij, ys in cellmap.items():
         for y in sorted(set(round(v, 1) for v in ys)):
             if not out or out[-1][0] != ij or abs(out[-1][1] - y) > 1.0:
@@ -87,7 +95,7 @@ def floors(cellmap):
     return out
 
 
-def depths(entries, heightfield, water):
+def depths(entries: Sequence[Floor], heightfield: 'Heightfield | None', water: 'Water | None') -> np.ndarray:
     """Per floor: water depth above its ground (NaN where there is no water above). The ground is the terrain
     height field's where the floor lies on terrain, else navdiff's estimate."""
     pts = np.array([(i * navdiff.GRID, j * navdiff.GRID) for (i, j), _ in entries], dtype=np.float64)
@@ -100,7 +108,7 @@ def depths(entries, heightfield, water):
     return np.where(w > NO_WATER / 2, w - ground, np.nan)
 
 
-def band_of(d):
+def band_of(d: float) -> int:
     """The index of the depth band d (metres) falls in; 0 for NaN (no water), the last band past the others."""
     if np.isnan(d):
         return 0
@@ -110,7 +118,7 @@ def band_of(d):
     return len(BANDS) - 1
 
 
-def level_report(root, lv, candidate, log=print):
+def level_report(root: str, lv: str, candidate: str, log: Callable[..., object] = print) -> dict[str, Any] | None:
     """One level's water report: how deep the ground of NavKit's build and of DICE's path data lies under water; None
     when the level has no water."""
     from mohcore import level as levelmod, water as watermod
@@ -135,14 +143,15 @@ def level_report(root, lv, candidate, log=print):
     return compare(lv, fn, fd, depths(fn, hf, w), depths(fd, hf, w), len(w))
 
 
-def compare(lv, fn, fd, dn, dd, water_triangles):
+def compare(lv: str, fn: Sequence[Floor], fd: Sequence[Floor], dn: np.ndarray, dd: np.ndarray,
+            water_triangles: int) -> dict[str, Any]:
     """The report of level_report from NavKit's and DICE's floors (floors) and their water depths (depths)."""
     # the same ground, as navdiff pairs cells: one floor on each side is the same; stacked floors pair by
     # height, up to navdiff's STACK_TOL apart (the height estimates are rough on sloped areas)
-    floors_d = defaultdict(list)
+    floors_d: defaultdict[CellIJ, list[float]] = defaultdict(list)
     for ij, y in fd:
         floors_d[ij].append(y)
-    count_n = defaultdict(int)
+    count_n: defaultdict[CellIJ, int] = defaultdict(int)
     for ij, _ in fn:
         count_n[ij] += 1
     has = np.array([bool(floors_d.get(ij)) and ((count_n[ij] == 1 and len(floors_d[ij]) == 1)
@@ -168,17 +177,18 @@ def compare(lv, fn, fd, dn, dd, water_triangles):
             'water_triangles': water_triangles}
 
 
-def main(argv):
+def main(argv: Sequence[str]) -> int:
     """The command line: the water reports of the given levels (default: every MP level), with totals per depth band
     and an optional JSON file."""
     args = argv[1:]
-    opt = lambda k, d=None: args[args.index(k) + 1] if k in args else d
+    def opt(k: str, d: str | None = None) -> str | None:
+        return args[args.index(k) + 1] if k in args else d
     root = navparity.opfor_root(opt('--opfor'))
-    pattern = opt('--candidate', os.path.join(root, 'work', 'navbuild', '{lv}_W.hpd'))
+    pattern = cast(str, opt('--candidate', os.path.join(root, 'work', 'navbuild', '{lv}_W.hpd')))   # str: a default is given
     skip = {opt('--candidate'), opt('--json'), opt('--opfor')}
     levels = [a for a in args if not a.startswith('--') and a not in skip] or [lv for lv in navparity.LEVELS if lv not in ('sp_006', 'sp_009')]
-    reports = []
-    totals = defaultdict(lambda: [0, 0, 0])
+    reports: list[dict[str, Any]] = []
+    totals: defaultdict[str, list[int]] = defaultdict(lambda: [0, 0, 0])
     for lv in levels:
         r = level_report(root, lv, pattern.replace('{lv}', lv))
         if r is None:
@@ -208,8 +218,9 @@ def main(argv):
     if lims:
         print(f'  DICE\'s depth limit per level (99.9 % of its ground under water is within): '
               f'{min(lims):.2f} - {max(lims):.2f} m, median {float(np.median(lims)):.2f} m')
-    if opt('--json'):
-        json.dump(reports, open(opt('--json'), 'w'), indent=1)
+    json_path = opt('--json')
+    if json_path:
+        json.dump(reports, open(json_path, 'w'), indent=1)
     return 0
 
 

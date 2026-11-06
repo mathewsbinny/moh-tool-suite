@@ -195,6 +195,26 @@ def log_before_crash(path: str, lines: int = 18) -> list[str]:
 
 def main(argv: list[str]) -> int:
     """The command line: reads the crash report (the newest one without a path) and prints what it shows."""
+    parsed = _options(argv)
+    if parsed is None:
+        print(__doc__); return 0
+    args, opts = parsed
+    report_path = args[0] if args else next(iter(find_reports()), None)
+    if not report_path:
+        print('No crashreport.xml found (looked in ' + ' and '.join(_gamecopy().documents_dirs()[:2]) + '). Give its path.')
+        return 1
+    r = read_report(report_path)
+    syms = read_symbols([SYMBOLS] + opts['--symbols'])
+    exe = opts.get('--exe') or find_exe()
+    image = _image(exe) if exe and not opts.get('--no-code') else None
+    eip = _print_crash(report_path, r, syms, image)
+    _print_stack(r, syms, image, eip)
+    _print_log(opts.get('--log'), exe)
+    return 0
+
+
+def _options(argv: list[str]) -> tuple[list[str], dict[str, Any]] | None:
+    """main(): (the arguments, the options) of the command line; None when it asks for the help."""
     args: list[str] = []
     opts: dict[str, Any] = {'--symbols': []}
     i = 1
@@ -205,28 +225,29 @@ def main(argv: list[str]) -> int:
         if a == '--symbols' and i + 1 < len(argv):
             opts['--symbols'].append(argv[i + 1]); i += 2; continue
         if a in ('-h', '--help'):
-            print(__doc__); return 0
+            return None
         if a == '--no-code':
             opts[a] = True
         else:
             args.append(a)
         i += 1
-    report_path = args[0] if args else next(iter(find_reports()), None)
-    if not report_path:
-        print('No crashreport.xml found (looked in ' + ' and '.join(_gamecopy().documents_dirs()[:2]) + '). Give its path.')
-        return 1
-    r = read_report(report_path)
-    syms = read_symbols([SYMBOLS] + opts['--symbols'])
-    exe = opts.get('--exe') or find_exe()
-    image: Image | None = None
-    if exe and not opts.get('--no-code'):
-        try:
-            image = Image(exe)
-        except ImportError:
-            print('(code view off: pip install pefile capstone)')
-        except Exception as e:  # noqa: BLE001 - optional code view (pefile/capstone errors): the report prints without it
-            print(f'(code view off: cannot read {exe}: {e})')
+    return args, opts
 
+
+def _image(exe: str) -> Image | None:
+    """main(): the exe for the code view, or None (said why) when it cannot be read."""
+    try:
+        return Image(exe)
+    except ImportError:
+        print('(code view off: pip install pefile capstone)')
+    except Exception as e:  # noqa: BLE001 - optional code view (pefile/capstone errors): the report prints without it
+        print(f'(code view off: cannot read {exe}: {e})')
+    return None
+
+
+def _print_crash(report_path: str, r: dict[str, Any], syms: Symbols, image: Image | None) -> int | None:
+    """main(): the report's header, the crash address with its registers and code, and the hint; returns the
+    address (None when the report has none)."""
     when = datetime.datetime.fromtimestamp(os.path.getmtime(report_path)).strftime('%Y-%m-%d %H:%M:%S')
     print(f'Crash report {report_path}')
     print(f'  written {when} local ({r["time"]} UTC); type {r["type"]}; build {r["build"]}; {r["sku"]}')
@@ -243,21 +264,30 @@ def main(argv: list[str]) -> int:
     print('  registers: ' + '  '.join(f'{k} {regs[k]:08X}' + (' (null)' if regs[k] == 0 else '') for k in REGISTERS if k in regs))
 
     if image and eip is not None and image.is_code(eip):
-        start = image.function_start(eip) or eip - 0x40
-        ins = [x for x in image.disasm(max(start, eip - 0x60), eip + 0x10) if x.address <= eip + 0x10]
-        at = next((k for k, x in enumerate(ins) if x.address == eip), None)
-        print(f'\nCode (function starts near 0x{start:08X}):')
-        window = ins[max(0, (at or 0) - 10):(at or 0) + 4] if at is not None else ins[-14:]
-        for x in window:
-            mark = '>' if x.address == eip else ' '
-            print(f'  {mark} {x.address:08X}  {x.mnemonic} {x.op_str}')
-        if at is not None:
-            for reg, v, disp in null_operands(ins[at], regs):
-                print(f'\n  The faulting instruction reads memory through {reg} = 0x{v:X} (+0x{disp:X}): a null pointer.')
-                print('  The value it expected was never set - typically data the game looked up and did not find.')
+        _print_code(image, eip, regs)
     if hint:
         print(f'\nHint: {hint}')
+    return eip
 
+
+def _print_code(image: Image, eip: int, regs: Mapping[str, int]) -> None:
+    """main(): the code around the crash address, and the null pointer the faulting instruction reads through."""
+    start = image.function_start(eip) or eip - 0x40
+    ins = [x for x in image.disasm(max(start, eip - 0x60), eip + 0x10) if x.address <= eip + 0x10]
+    at = next((k for k, x in enumerate(ins) if x.address == eip), None)
+    print(f'\nCode (function starts near 0x{start:08X}):')
+    window = ins[max(0, (at or 0) - 10):(at or 0) + 4] if at is not None else ins[-14:]
+    for x in window:
+        mark = '>' if x.address == eip else ' '
+        print(f'  {mark} {x.address:08X}  {x.mnemonic} {x.op_str}')
+    if at is not None:
+        for reg, v, disp in null_operands(ins[at], regs):
+            print(f'\n  The faulting instruction reads memory through {reg} = 0x{v:X} (+0x{disp:X}): a null pointer.')
+            print('  The value it expected was never set - typically data the game looked up and did not find.')
+
+
+def _print_stack(r: dict[str, Any], syms: Symbols, image: Image | None, eip: int | None) -> None:
+    """main(): the call stack's return addresses, named, with the call before each."""
     print('\nCall stack (innermost first; return addresses):')
     shown = 0
     for a in r['stack']:
@@ -284,7 +314,9 @@ def main(argv: list[str]) -> int:
             print('  ...')
             break
 
-    log = opts.get('--log')
+
+def _print_log(log: str | None, exe: str | None) -> None:
+    """main(): the game log's lines before the crash (the given log, else the game copy's beside the exe)."""
     if not log and exe:
         candidate = os.path.join(os.path.dirname(os.path.dirname(exe)), 'logs', 'opfor_mp.log')   # game\\logs
         log = candidate if os.path.isfile(candidate) else None
@@ -294,7 +326,6 @@ def main(argv: list[str]) -> int:
             print(f'\nLast log lines before the crash ({log}):')
             for l in before:
                 print('  ' + l[:200])
-    return 0
 
 
 if __name__ == '__main__':

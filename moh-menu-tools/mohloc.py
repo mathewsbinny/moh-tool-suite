@@ -24,8 +24,10 @@ and HUD movies that hash to an entry. Nothing is written into the game folder.
 """
 import os
 import re
+import io
 import struct
 import sys
+from typing import cast
 
 import menucommon as mc
 
@@ -33,7 +35,7 @@ OVERLAYS = ('build_overlay-00.fbrb', 'overlay-00.fbrb')   # MOH's texts, then th
 PC_PREFIX = 'WIN32_'
 
 
-def khash(key, h=0xFFFFFFFF):
+def khash(key: str | bytes, h: int = 0xFFFFFFFF) -> int:
     """The game's 32-bit hash of a text key (h * 33 + byte, from 0xFFFFFFFF)."""
     for c in key.encode('latin1', 'replace') if isinstance(key, str) else key:
         h = (h * 33 + c) & 0xFFFFFFFF
@@ -43,29 +45,31 @@ def khash(key, h=0xFFFFFFFF):
 class LocFile:
     """One language_<lang>_<kind>.bin: {hash: raw bytes}; text(hash) decoded with the histogram."""
 
-    def __init__(self, data, histogram=None, name='localization file'):
+    def __init__(self, data: bytes, histogram: bytes | None = None, name: str = 'localization file') -> None:
         if len(data) < 36 or struct.unpack_from('<I', data, 0)[0] != 0x39000:
             raise mc.MenuToolError(f'{name} is not a localization text file (language_<lang>_normal.bin)')
         _, size, count, table, strings = struct.unpack_from('<5I', data, 0)
         if size != len(data) - 8 or 8 + table + 8 * count > len(data):
             raise mc.MenuToolError(f'{name}: the header does not match the file (size {size + 8}, {count} entries)')
         self.name = data[20:36].split(b'\0')[0].decode('latin1')
-        base, self.raw, self.order = 8 + strings, {}, []
+        base = 8 + strings
+        self.raw: dict[int, bytes] = {}
+        self.order: list[int] = []
         for i in range(count):
             h, o = struct.unpack_from('<II', data, 8 + table + 8 * i)
             e = data.find(b'\0', base + o)
             self.raw[h] = data[base + o:e if e >= 0 else len(data)]
             self.order.append(h)
-        self.table = None
+        self.table: tuple[int, ...] | None = None
         if histogram:
             if struct.unpack_from('<I', histogram, 0)[0] != 0x39001:
                 raise mc.MenuToolError(f'{name}: its histogram file is not one')
             self.table = struct.unpack_from(f'<{(len(histogram) - 12) // 2}H', histogram, 12)
 
-    def decode(self, raw):
+    def decode(self, raw: bytes) -> str:
         """Decodes an entry's raw bytes to text with the histogram table: ASCII as is, other bytes through one or two
         table lookups."""
-        t, out, i = self.table, [], 0
+        t, out, i = self.table, list[str](), 0
         while i < len(raw):
             c = raw[i]
             i += 1
@@ -81,11 +85,11 @@ class LocFile:
                 out.append(chr(t[k]) if k < len(t) and t[k] else '?')
         return ''.join(out)
 
-    def text(self, h):
+    def text(self, h: int) -> str | None:
         """The decoded text of the entry with hash h, or None when there is none."""
         return self.decode(self.raw[h]) if h in self.raw else None
 
-    def lookup(self, key):
+    def lookup(self, key: str) -> tuple[int, str, str | None] | None:
         """(hash, the name it was found under, text) - the PC text WIN32_<key> first, then the key; or None."""
         if re.fullmatch(r'0x[0-9A-Fa-f]{1,8}', key):
             h = int(key, 16)
@@ -97,12 +101,12 @@ class LocFile:
         return None
 
 
-def languages(root):
+def languages(root: str) -> dict[str, tuple[str, str, str | None]]:
     """{language: (bundle, text entry, histogram entry)}. MOH keeps its texts in build_overlay-00.fbrb as
     Output/Win32/Localization/bin/language_<lang>_global.bin (overlay-00.fbrb holds only histograms); the BFBC2
     layout, language_<lang>_normal.bin in overlay-00.fbrb, is still read where present."""
     from mohcore import fbrb
-    out = {}
+    out: dict[str, tuple[str, str, str | None]] = {}
     for name in OVERLAYS:
         for bundle in mc.bundle_layers(root, name):
             entries = [e for e in fbrb.entries(bundle) if not e.deleted]
@@ -115,7 +119,7 @@ def languages(root):
     return out
 
 
-def load(lang, root=None, path=None):
+def load(lang: str, root: str | None = None, path: str | None = None) -> LocFile:
     """The localized texts of a language from the game copy, or of the .bin file at path (with its histogram beside it
     when there is one)."""
     if path:
@@ -128,14 +132,14 @@ def load(lang, root=None, path=None):
     if lang.lower() not in langs:
         raise mc.MenuToolError(f'no language "{lang}" in the game copy (have: {", ".join(sorted(langs)) or "none"})')
     from mohcore import fbrb
-    bundle, text, hist = langs[lang.lower()]
-    got = fbrb.read(bundle, [n for n in (text, hist) if n])
-    return LocFile(got[text], got.get(hist) if hist else None, text)
+    bundle, text, histname = langs[lang.lower()]
+    got = fbrb.read(bundle, [n for n in (text, histname) if n])
+    return LocFile(got[text], got.get(histname) if histname else None, text)
 
 
-def key_names(loc, root=None, exe=None, movies=True):
+def key_names(loc: LocFile, root: str | None = None, exe: str | None = None, movies: bool = True) -> dict[int, str]:
     """{hash: key name} for the entries whose key is among the exe's strings or the menu / HUD movies' constants."""
-    cands = set()
+    cands: set[str] = set()
     try:
         img = mc.PEImage(mc.find_exe(root, exe))
         cands.update(s for s in img.strings(2) if len(s) < 120)
@@ -146,7 +150,7 @@ def key_names(loc, root=None, exe=None, movies=True):
             cands.update(movie_constants_all(root))
         except mc.MenuToolError:
             pass
-    out = {}
+    out: dict[int, str] = {}
     for s in cands:
         for name in (s, PC_PREFIX + s):
             h = khash(name)
@@ -155,17 +159,17 @@ def key_names(loc, root=None, exe=None, movies=True):
     return out
 
 
-def movie_constants_all(root):
+def movie_constants_all(root: str | None) -> set[str]:
     """Every string constant of the game's menu movies, the pristine menus included, as a set."""
     from mohcore import fbrb
     root = root or mc.find_opfor()
-    out = set()
+    out: set[str] = set()
     pristine = os.path.join(root, 'original', *('Package/' + mc.MENU_BUNDLE).split('/'))
     sets = [mc.bundle_layers(root, rel) for key, rel in mc.MOVIE_SETS] + ([[pristine]] if os.path.isfile(pristine) else [])
     for layers in sets:                  # the pristine menus too: OPFOR's patches retarget some key constants
         if not layers:
             continue
-        by_bundle = {}
+        by_bundle: dict[str, list[str]] = {}
         for name, (bundle, entry) in mc.bundle_movies(layers).items():
             by_bundle.setdefault(bundle, []).append(entry)
         for bundle, entries in by_bundle.items():
@@ -178,7 +182,7 @@ def movie_constants_all(root):
     return out
 
 
-def take(args, flag):
+def take(args: list[str], flag: str) -> str | None:
     """Removes flag and its value from args and returns the value (None when flag is absent); raises MenuToolError
     when the value is missing."""
     if flag in args:
@@ -191,13 +195,13 @@ def take(args, flag):
     return None
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
     """The command line: get, search, movie, dump or langs; returns the exit code."""
     args = list(argv[1:])
     if not args or args[0] not in ('get', 'search', 'movie', 'dump', 'langs'):
         print(__doc__)
         return 1 if args else 0
-    sys.stdout.reconfigure(errors='replace')
+    cast(io.TextIOWrapper, sys.stdout).reconfigure(errors='replace')
     cmd = args.pop(0)
     root = take(args, '--opfor')
     lang = take(args, '--lang') or 'english'
@@ -206,8 +210,8 @@ def main(argv):
     no_keys = '--no-keys' in args
     args = [a for a in args if a != '--no-keys']
     if cmd == 'langs':
-        for k, (bundle, text, _hist) in sorted(languages(root or mc.find_opfor()).items()):
-            print(f'{k:12s} {text}  ({os.path.basename(bundle)})')
+        for k, (bundle, entry, _hist) in sorted(languages(root or mc.find_opfor()).items()):
+            print(f'{k:12s} {entry}  ({os.path.basename(bundle)})')
         return 0
     loc = load(lang, root, path)
     if cmd == 'get':
@@ -226,8 +230,9 @@ def main(argv):
         if not args:
             raise mc.MenuToolError('search needs a text')
         want = ' '.join(args).lower()
-        names = {} if no_keys else key_names(loc, root)
-        hits = [(h, loc.text(h)) for h in loc.order if want in loc.text(h).lower()]
+        names: dict[int, str] = {} if no_keys else key_names(loc, root)
+        # every hash in order has its entry, so its text
+        hits = [(h, loc.text(h)) for h in loc.order if want in cast(str, loc.text(h)).lower()]
         for h, t in hits:
             print(f'{h:#010x}  {names.get(h, "?"):40s} {t!r}')
         print(f'{len(hits)} text(s) contain "{want}"')
@@ -238,7 +243,8 @@ def main(argv):
         for spec in args:
             label, members = mc.resolve(spec, root)
             m = mc.movie_from_members(members, label)
-            seen, rows = set(), []
+            seen: set[str] = set()
+            rows: list[tuple[str, tuple[int, str, str | None]]] = []
             for c in m.const:
                 if c.startswith('"') and c not in seen:
                     seen.add(c)

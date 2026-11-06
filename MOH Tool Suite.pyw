@@ -13,12 +13,17 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+from collections.abc import Callable, Sequence
 from tkinter import filedialog, messagebox, ttk
+from typing import TYPE_CHECKING, Any
 
 SUITE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(SUITE, 'moh-auto-navkit'))
 sys.path.insert(0, os.path.join(SUITE, 'core'))
 from mohcore import errors  # noqa: E402
+
+if TYPE_CHECKING:
+    import navkit
 
 # library -> what needs it (checked when the window opens)
 LIBRARIES = [('numpy', 'every tool'), ('matplotlib', 'NavKit, screenshots'), ('moderngl', 'the 3D tools'),
@@ -47,7 +52,7 @@ SCRIPTS = {
 }
 
 
-def kill_tree(proc):
+def kill_tree(proc: subprocess.Popen[Any]) -> None:
     """Ends a process and all its descendants (taskkill /T on Windows; the process alone elsewhere)."""
     if os.name == 'nt':
         r = subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)], capture_output=True, creationflags=NO_WINDOW)
@@ -56,7 +61,7 @@ def kill_tree(proc):
     proc.kill()
 
 
-def tool(name):
+def tool(name: str) -> str:
     """The tool's exe, built first (with the C# compiler Windows ships) if it is not there yet."""
     exe, bat = TOOLS[name]
     if not os.path.isfile(exe):
@@ -69,21 +74,22 @@ def tool(name):
 
 
 class Hub:
-    def __init__(self, root):
+    def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.lines = queue.Queue()
-        self.proc = None                       # the tab's running tool (one at a time)
+        # output lines, and ('done', label, exit code, main) when a tool ends
+        self.lines: queue.Queue[str | tuple[str, str, int, bool]] = queue.Queue()
+        self.proc: subprocess.Popen[str] | None = None      # the tab's running tool (one at a time)
         root.title('MOH Tool Suite')
         root.minsize(900, 640)
         try:
             ttk.Style().theme_use('vista')
         except tk.TclError:
             pass
-        self.pr = None
+        self.pr: navkit.Project | None = None
         try:
-            import navkit
-            self.pr = navkit.Project()
-        except Exception as e:                 # the suite still opens; the Levels tab explains
+            import navkit as navkit_mod        # after the sys.path set-up (navkit is imported for its types only)
+            self.pr = navkit_mod.Project()
+        except Exception as e:  # noqa: BLE001 - a GUI's top level: the suite still opens; the Levels tab explains
             self.pr_error = str(e)
 
         pane = ttk.PanedWindow(root, orient='vertical')
@@ -112,18 +118,18 @@ class Hub:
         self.tab_xbox()
         self.tab_tests()
         self.tab_more()
-        self.tails = {}                        # label -> the last lines of a tool's output (for error reports)
-        self.ok_codes = {}                     # label -> {exit code: what it means}: the codes that are not a failure
+        self.tails: dict[str, list[str]] = {}  # label -> the last lines of a tool's output (for error reports)
+        self.ok_codes: dict[str, dict[int, str]] = {}  # label -> {exit code: what it means}: the codes that are not a failure
         root.report_callback_exception = lambda t, v, tb: errors.report(v, tb=tb, where='a button')
         self.write(f'Log: {errors._state.get("path")}\n')
         self.check_libraries()
         root.after(100, self.pump)
 
-    def notify(self, kind, title, text):
+    def notify(self, kind: str, title: str, text: str) -> None:
         """A window for the user (tests replace it)."""
         (messagebox.showerror if kind == 'error' else messagebox.showwarning)(title, text, parent=self.root)
 
-    def check_libraries(self):
+    def check_libraries(self) -> None:
         """Warns in the log and in a dialog, with the pip command to fix it, when a library the tools use is not
         installed."""
         import importlib.util
@@ -138,7 +144,7 @@ class Hub:
                                                    f'Install them with:\npip install {pip}')
 
     # --- running tools ------------------------------------------------------------------------------
-    def run(self, args, label, cwd=None, ok=None):
+    def run(self, args: Sequence[str], label: str, cwd: str | None = None, ok: dict[int, str] | None = None) -> None:
         """One tool in the background (the tab's), its output streamed to the pane. ok: the exit codes that mean
         the tool did its job, with what each says ({0: ''} by default; LevelDiff's 1 = the files differ)."""
         if self.proc is not None and self.proc.poll() is None:
@@ -158,7 +164,7 @@ class Hub:
         self.stop_btn.configure(state='normal')
         threading.Thread(target=self.reader, args=(self.proc, label, True), daemon=True).start()
 
-    def launch(self, args, label):
+    def launch(self, args: Sequence[str], label: str) -> None:
         """A window of its own (3D tools, other GUIs): runs alongside, and on after this window closes. Its log goes
         to a file this window follows, so closing the suite never cuts the tool's output off."""
         import tempfile
@@ -176,7 +182,7 @@ class Hub:
         log.close()
         threading.Thread(target=self.follow, args=(p, log.name, label), daemon=True).start()
 
-    def follow(self, proc, path, label):
+    def follow(self, proc: subprocess.Popen[bytes], path: str, label: str) -> None:
         """Follows a detached tool's output file into the log until the process ends, then queues its exit code and
         removes the file."""
         import time
@@ -201,9 +207,10 @@ class Hub:
         except OSError:
             pass
 
-    def reader(self, proc, label, main):
+    def reader(self, proc: subprocess.Popen[str], label: str, main: bool) -> None:
         """Copies a tool's piped output into the log line by line, keeping its last 12 lines, then queues its exit
         code."""
+        assert proc.stdout is not None         # run() starts it with stdout=PIPE
         for line in proc.stdout:
             self.lines.put(line)
             tail = self.tails.setdefault(label, [])
@@ -212,7 +219,7 @@ class Hub:
         code = proc.wait()
         self.lines.put(('done', label, code, main))
 
-    def pump(self):
+    def pump(self) -> None:
         """Moves queued output and exit notices from the reader threads into the log on the Tk thread; runs itself
         again every 100 ms."""
         try:
@@ -242,7 +249,7 @@ class Hub:
 
     stopped = False
 
-    def failed(self, label, code, main):
+    def failed(self, label: str, code: int, main: bool) -> None:
         """A tool ended with an error: logged, and the user told what it said last. The 3D tools and other
         windows report their own errors in a window of their own, so for them the pane is enough."""
         tail = [l for l in self.tails.get(label, []) if l.strip()]
@@ -254,7 +261,7 @@ class Hub:
         self.notify('warning', 'MOH Tool Suite', f'{label} did not finish (exit code {code}).\n\nIt said last:\n{said}\n\n'
                                                    f'The whole output is in the pane below; the suite\'s log:\n{errors._state.get("path")}')
 
-    def stop(self):
+    def stop(self) -> None:
         """Ends the running tool and every process it started (run_tests -> navregress, prepare -> FbrbTool):
         terminating only the direct child would leave those running, and holding the output pipe open."""
         if self.proc is not None and self.proc.poll() is None:
@@ -263,12 +270,12 @@ class Hub:
             self.write('stopped.\n')
             errors.logger().info('stopped by the user')
 
-    def write(self, s):
+    def write(self, s: str) -> None:
         """Appends text to the log and scrolls to it."""
         self.text.insert('end', s)
         self.text.see('end')
 
-    def form(self, title, help_text):
+    def form(self, title: str, help_text: str) -> ttk.Frame:
         """A new tab with its help text on top; returns the tab's frame for the rows below."""
         f = ttk.Frame(self.tabs, padding=10)
         self.tabs.add(f, text=title)
@@ -276,13 +283,14 @@ class Hub:
         f.columnconfigure(1, weight=1)
         return f
 
-    def file_row(self, f, row, label, var, kind='open', types=(('All files', '*.*'),)):
+    def file_row(self, f: ttk.Frame, row: int, label: str, var: tk.StringVar, kind: str = 'open',
+                 types: tuple[tuple[str, str], ...] = (('All files', '*.*'),)) -> None:
         """A labelled path entry with a Browse button that picks a file to open, a file to save or a folder (kind
         'open', 'save' or 'dir')."""
         ttk.Label(f, text=label).grid(row=row, column=0, sticky='w', pady=2)
         ttk.Entry(f, textvariable=var).grid(row=row, column=1, sticky='we', padx=6)
 
-        def browse():
+        def browse() -> None:
             if kind == 'dir':
                 p = filedialog.askdirectory(title=label)
             elif kind == 'save':
@@ -294,7 +302,7 @@ class Hub:
         ttk.Button(f, text='Browse...', command=browse).grid(row=row, column=2, sticky='w')
 
     @staticmethod
-    def need(*values):
+    def need(*values: tuple[str, tk.StringVar]) -> bool:
         """True when every (name, variable) pair has a value; otherwise asks for the missing ones in a dialog and
         returns False."""
         missing = [name for name, v in values if not v.get().strip()]
@@ -304,7 +312,7 @@ class Hub:
         return True
 
     # --- Levels: the 3D tools -----------------------------------------------------------------------
-    def tab_levels(self):
+    def tab_levels(self) -> None:
         """The Levels tab: the level list with its preparation and navigation-data state, and the buttons that open a
         level."""
         f = self.form('Levels', 'Pick a level, then open it in the Map Inspector (the level in 3D: every object, its '
@@ -334,7 +342,7 @@ class Hub:
                       types=(('Path data', '*.hpd'), ('All files', '*.*')))
         self.fill_levels()
 
-    def fill_levels(self):
+    def fill_levels(self) -> None:
         """Refills the level list from the game copy: prepared or not, DICE path data, NavKit builds and the number of
         saved edits."""
         self.tree.delete(*self.tree.get_children())
@@ -359,7 +367,7 @@ class Hub:
                 'yes' if os.path.isdir(os.path.join(work, 'dist')) else '-',
                 'yes' if self.pr.dice_pathdata(lv) else '-', 'yes' if builds else '-', n_edits or '-'))
 
-    def chosen_level(self):
+    def chosen_level(self) -> str | None:
         """The level chosen in the list, or None (with a hint) when none is."""
         sel = self.tree.selection()
         if not sel or self.pr is None:
@@ -367,7 +375,7 @@ class Hub:
             return None
         return sel[0]
 
-    def open_3d(self, which):
+    def open_3d(self, which: str) -> None:
         """Opens the chosen level in the Map Inspector or the Navigation Studio ('inspector' or 'studio')."""
         lv = self.chosen_level()
         if not lv:
@@ -378,21 +386,21 @@ class Hub:
         name = 'Map Inspector' if which == 'inspector' else 'Navigation Studio'
         self.launch(args, f'{name}: {lv} (the window opens when the level is loaded)')
 
-    def prepare(self):
+    def prepare(self) -> None:
         """Prepares (unpacks) the chosen level with NavKit."""
         lv = self.chosen_level()
         if lv:
             self.run([PYTHON, SCRIPTS['navkit'], 'prepare', lv], f'Levels: prepare {lv}')
 
-    def open_level_folder(self):
+    def open_level_folder(self) -> None:
         """Opens the chosen level's work folder in Explorer, or the work folder when the level is not prepared yet."""
         lv = self.chosen_level()
-        if lv:
+        if lv and self.pr is not None:         # chosen_level is None without a game copy
             d = os.path.join(self.pr.work, 'levels', lv)
             os.startfile(d if os.path.isdir(d) else self.pr.work)
 
     # --- Bundles: FbrbTool --------------------------------------------------------------------------
-    def tab_bundles(self):
+    def tab_bundles(self) -> None:
         """The Bundles tab: list, unpack and pack .fbrb bundles with FbrbTool."""
         f = self.form('Bundles', 'Look inside the game\'s .fbrb bundles, unpack them to a folder, or pack an unpacked '
                                  'folder back into a bundle (FbrbTool). Packing needs the folder\'s fbrb.manifest, '
@@ -402,19 +410,23 @@ class Hub:
         self.file_row(f, 2, 'Folder to unpack into:', self.fb_dir, kind='dir')
         b = ttk.Frame(f)
         b.grid(row=3, column=1, sticky='w', pady=6)
-        ttk.Button(b, text='List entries', command=lambda: self.need(('a bundle', self.fb_file)) and
-                   self.run([tool('fbrb'), 'list', self.fb_file.get()], 'FbrbTool list')).pack(side='left')
-        ttk.Button(b, text='Unpack', command=lambda: self.need(('a bundle', self.fb_file), ('a folder', self.fb_dir)) and
-                   self.run([tool('fbrb'), 'unpack', self.fb_file.get(), self.fb_dir.get()], 'FbrbTool unpack')).pack(side='left', padx=6)
+        ttk.Button(b, text='List entries', command=lambda: self.fbrb('list', ('a bundle', self.fb_file))).pack(side='left')
+        ttk.Button(b, text='Unpack', command=lambda: self.fbrb('unpack', ('a bundle', self.fb_file),
+                                                               ('a folder', self.fb_dir))).pack(side='left', padx=6)
         ttk.Separator(f).grid(row=4, column=0, columnspan=3, sticky='we', pady=8)
         self.fb_src = tk.StringVar()
         self.file_row(f, 5, 'Unpacked folder to pack:', self.fb_src, kind='dir')
         self.file_row(f, 6, 'New bundle:', self.fb_out, kind='save', types=(('Bundles', '*.fbrb'),))
-        ttk.Button(f, text='Pack', command=lambda: self.need(('a folder', self.fb_src), ('a new bundle', self.fb_out)) and
-                   self.run([tool('fbrb'), 'pack', self.fb_src.get(), self.fb_out.get()], 'FbrbTool pack')).grid(row=7, column=1, sticky='w', pady=6)
+        ttk.Button(f, text='Pack', command=lambda: self.fbrb('pack', ('a folder', self.fb_src),
+                                                             ('a new bundle', self.fb_out))).grid(row=7, column=1, sticky='w', pady=6)
+
+    def fbrb(self, cmd: str, *paths: tuple[str, tk.StringVar]) -> None:
+        """Runs FbrbTool's command ('list', 'unpack' or 'pack') on the chosen paths, once every one is set."""
+        if self.need(*paths):
+            self.run([tool('fbrb'), cmd, *(v.get() for _, v in paths)], f'FbrbTool {cmd}')
 
     # --- Level diff ---------------------------------------------------------------------------------
-    def tab_diff(self):
+    def tab_diff(self) -> None:
         """The Level diff tab: two .dbx files and the LevelDiff options."""
         f = self.form('Level diff', 'Compare two binary .dbx files (two builds of a level, or any partition) instance by '
                                     'instance: what was added, removed or changed, field by field (LevelDiff).')
@@ -435,7 +447,7 @@ class Hub:
         self.file_row(f, 6, 'Also save as JSON (optional):', self.ld_json, kind='save', types=(('JSON', '*.json'),))
         ttk.Button(f, text='Compare', command=self.diff).grid(row=7, column=1, sticky='w', pady=6)
 
-    def diff(self):
+    def diff(self) -> None:
         """Runs LevelDiff on the two chosen files with the chosen options; exit code 1 (the files differ) counts as
         done."""
         if not self.need(('file A', self.ld_a), ('file B', self.ld_b)):
@@ -457,7 +469,7 @@ class Hub:
         self.run(args, 'LevelDiff', ok={0: '', 1: 'the files differ'})
 
     # --- Crash reader -------------------------------------------------------------------------------
-    def tab_crash(self):
+    def tab_crash(self) -> None:
         """The Crash reader tab: an optional crash report and game log."""
         f = self.form('Crash reader', 'After the game crashes, this turns its crashreport.xml into something you can act '
                                       'on: where it crashed (function names), the code there, null pointers, the call '
@@ -470,7 +482,7 @@ class Hub:
         ttk.Checkbutton(f, text='Without the code view (it needs: pip install pefile capstone)', variable=self.cr_nocode).grid(row=3, column=1, sticky='w')
         ttk.Button(f, text='Read the crash report', command=self.crash).grid(row=4, column=1, sticky='w', pady=6)
 
-    def crash(self):
+    def crash(self) -> None:
         """Runs the crash reader on the chosen report and log, or on the newest report when none is chosen."""
         args = [PYTHON, SCRIPTS['crash']]
         if self.cr_file.get().strip():
@@ -482,7 +494,7 @@ class Hub:
         self.run(args, 'Crash reader')
 
     # --- Xbox files ---------------------------------------------------------------------------------
-    def tab_xbox(self):
+    def tab_xbox(self) -> None:
         """The Xbox files tab: info, list and extract for STFS packages and disc images."""
         f = self.form('Xbox files', 'Read your own Xbox 360 files (read-only): content packages such as the game\'s '
                                     'DLC updates (STFS), and disc images (.iso). List what is inside, or extract it - all, '
@@ -503,7 +515,7 @@ class Hub:
         ttk.Button(b, text='List', command=lambda: self.xbox('list')).pack(side='left', padx=6)
         ttk.Button(b, text='Extract', command=lambda: self.xbox('extract')).pack(side='left')
 
-    def xbox(self, cmd):
+    def xbox(self, cmd: str) -> None:
         """Runs the STFS or ISO reader's command ('info', 'list' or 'extract') on the chosen file, with the filter
         when one is set."""
         if not self.need(('a file', self.xb_file)):
@@ -521,7 +533,7 @@ class Hub:
         self.run(args, f'{"Disc image" if iso else "Package"} {cmd}')
 
     # --- Tests --------------------------------------------------------------------------------------
-    def tab_tests(self):
+    def tab_tests(self) -> None:
         """The Tests tab: runs the suite's tests in the chosen tier, or lists what would run."""
         f = self.form('Tests', 'Check that the tools work on this PC: quick (about a minute, no game data), game (your '
                                'game copy, about 15 minutes) or full (everything, about 90 minutes). One line per test; '
@@ -539,10 +551,10 @@ class Hub:
                                                                       'Tests: list')).pack(side='left', padx=6)
 
     # --- More tools ---------------------------------------------------------------------------------
-    def tab_more(self):
+    def tab_more(self) -> None:
         """The More tools tab: buttons that open the tools with windows of their own and the suite folder."""
         f = self.form('More tools', 'Tools with windows of their own.')
-        rows = [('DbxEditGUI', 'View, edit, check and repair binary .dbx files; XML export and import.',
+        rows: list[tuple[str, str, Callable[[], None]]] = [('DbxEditGUI', 'View, edit, check and repair binary .dbx files; XML export and import.',
                  lambda: self.launch([tool('dbxgui')], 'DbxEditGUI')),
                 ('NavKit', 'Generate AI navigation data for a level: prepare, sample in game, build, check, install.',
                  lambda: self.launch([PYTHON, SCRIPTS['navkitgui']], 'NavKit')),
@@ -552,7 +564,7 @@ class Hub:
             ttk.Label(f, text=text).grid(row=k, column=1, sticky='w', padx=8)
 
 
-def dpi_aware():
+def dpi_aware() -> None:
     """Sharp text on scaled displays (125 %, 150 %): Windows otherwise draws a Tk window blurred and enlarged."""
     try:
         import ctypes
@@ -561,7 +573,7 @@ def dpi_aware():
         pass
 
 
-def main():
+def main() -> None:
     """Starts the suite's window, with logging and the error guard."""
     errors.setup('suite')
     dpi_aware()

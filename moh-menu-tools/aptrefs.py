@@ -30,20 +30,30 @@ import os
 import re
 import struct
 import sys
+from collections.abc import Collection, Sequence
+from typing import TYPE_CHECKING, Any, Literal, TextIO, cast, overload
 
 import menucommon as mc
+import apt  # noqa: E402  (menucommon put the reader on the path)
+
+if TYPE_CHECKING:
+    import aptcheck
 
 IDENT = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 STRING_PUSH = (0xA1, 0xA2, 0xA3)                 # EA_PushString, EA_PushConstant, EA_PushWordConstant
 CALLS = {0xB0: 'func', 0xB1: 'func', 0xB2: 'method', 0xB3: 'method'}
 COUNT_PUSH = {0x59: 0, 0x5A: 1}                  # EA_PushZero / EA_PushOne; EA_PushByte (0xB5) carries the count
+# one movie's references: {'extern': {name: [offsets]}, ..., 'events': {name: [(offset, params, how)]}}
+Refs = dict[str, dict[str, list[Any]]]
+Found = list[tuple[str, str, Refs]]             # (label, movie name, refs) of each movie read
+Table = list[tuple[str, int, int | None]]       # the exe's (name, id, entry va)
 
 # Build 592256 (PE time stamp 0x4CC17C02): the getters' switch tables (index table of bytes, jump table of
 # addresses; (None, 1, id, target): a single compare before the switch); ids outside a switch, or on its default
 # case, fall through to the next getter. The main menu getter's default calls the generic getter.
 BUILD = '592256'
 BUILD_STAMP = 0x4CC17C02
-GETTERS = [
+GETTERS: list[tuple[str, str, int, list[tuple[int | None, int, int, int]]]] = [
     ('menu', 'main menu getter 0x848DE0', 0x84A37D, [(0x84A474, 0xF2, 0x35, 0x84A3D8), (None, 1, 0x12E, 0x849B4F),
                                                      (0x84A5C8, 0x58, 0x12F, 0x84A568)]),
     ('generic', 'UI manager getter 0x7DA420', 0x7DD49F, [(0x7DD6F8, 0x187, 1, 0x7DD4F8)]),
@@ -52,16 +62,16 @@ GETTERS = [
 
 # ------------------------------------------------------------------------------------------------ the exe
 
-def extern_table(img):
+def extern_table(img: mc.PEImage) -> Table:
     """The exe's name -> id table: [(name, id, entry va)]. Found from the string "presenceRequestOnline" (an FSCommand
     every build has): the {char* name, u32 id} pair that points at it, then the run of such pairs around it."""
-    def pair(off):
+    def pair(off: int) -> tuple[str, int] | None:
         if off < 0 or off + 8 > len(img.b):
             return None
         p, i = struct.unpack_from('<II', img.b, off)
         s = img.cstr(p, 80)
         return (s, i) if s and IDENT.match(s) and i < 0x1000 else None
-    best = []
+    best: Table = []
     for va in img.find_cstring('presenceRequestOnline'):
         for j in img.find_dword(va):
             if not pair(j):
@@ -72,7 +82,7 @@ def extern_table(img):
             hi = j
             while pair(hi + 8):
                 hi += 8
-            run = [(*pair(o), img.va(o)) for o in range(lo, hi + 8, 8)]
+            run = [(*cast(tuple[str, int], pair(o)), img.va(o)) for o in range(lo, hi + 8, 8)]   # all pairs, lo..hi
             if len(run) > len(best):
                 best = run
     if len(best) < 50:
@@ -80,21 +90,21 @@ def extern_table(img):
     return best
 
 
-def getter_cases(img):
+def getter_cases(img: mc.PEImage) -> dict[str, dict[int, int]]:
     """{getter key: {id: case address}} for build 592256; {} for another build."""
     if img.timestamp != BUILD_STAMP:
         return {}
-    out = {}
+    out: dict[str, dict[int, int]] = {}
     for key, _, default, switches in GETTERS:
-        cases = {}
+        cases: dict[int, int] = {}
         for index, count, first, jumps in switches:
             if index is None:
                 cases[first] = jumps
                 continue
-            io = img.off(index)
+            io = cast(int, img.off(index))           # the build's tables: in its data sections
             for k in range(count):
                 t = img.b[io + k]
-                target = struct.unpack_from('<I', img.b, img.off(jumps + 4 * t))[0]
+                target = struct.unpack_from('<I', img.b, cast(int, img.off(jumps + 4 * t)))[0]
                 if target != default:
                     cases[first + k] = target
         out[key] = cases
@@ -103,7 +113,7 @@ def getter_cases(img):
 
 # ------------------------------------------------------------------------------------------------ the movies
 
-def string_arg(ins):
+def string_arg(ins: apt.Ins) -> str | None:
     """The string an instruction pushes, or None."""
     if ins.op in STRING_PUSH and ins.arg.startswith('"') and ins.arg.endswith('"'):
         return ins.arg[1:-1]
@@ -112,7 +122,7 @@ def string_arg(ins):
     return None
 
 
-def count_arg(ins):
+def count_arg(ins: apt.Ins) -> int | None:
     """The argument count an instruction pushes (a fixed count for the small push opcodes, the value for 0xB5), or
     None."""
     if ins.op in COUNT_PUSH:
@@ -122,20 +132,21 @@ def count_arg(ins):
     return None
 
 
-def movie_refs(code):
+def movie_refs(code: 'aptcheck.Code') -> Refs:
     """{'extern': {name: [offsets]}, 'extern_param': {...}, 'extern_write': {...}, 'fscommand': {...},
     'events': {name: [(offset, params or None, how)]}} of one movie (aptcheck.Code)."""
-    streams, funcs_by_name = {}, {}
+    streams: dict[int, list[apt.Ins]] = {}
+    funcs_by_name: dict[str, int] = {}
     for ins, start, limit, depth in code.recs:
         streams.setdefault(start, []).append(ins)
         if ins.func and ins.func.name:
             funcs_by_name.setdefault(ins.func.name, ins.func.nparams)
-    out = {'extern': {}, 'extern_param': {}, 'extern_write': {}, 'fscommand': {}, 'events': {}}
+    out: Refs = {'extern': {}, 'extern_param': {}, 'extern_write': {}, 'fscommand': {}, 'events': {}}
 
-    def add(kind, name, at, extra=None):
+    def add(kind: str, name: str, at: int, extra: tuple[int | None, str] | None = None) -> None:
         out[kind].setdefault(name, []).append(at if extra is None else (at, *extra))
 
-    def handler(ins):
+    def handler(ins: apt.Ins | None) -> tuple[int | None, str]:
         if ins is None:
             return None, 'handler unknown'
         if ins.func:
@@ -181,7 +192,8 @@ def movie_refs(code):
                 skip = 1 if CALLS[ins.op] == 'method' else 0
                 # find the argument count push, then the first argument before it
                 for j in range(len(back) - 1 - skip, -1, -1):
-                    if count_arg(back[j]) is not None and count_arg(back[j]) >= 1 and j >= 1:
+                    c = count_arg(back[j])
+                    if c is not None and c >= 1 and j >= 1:
                         name = string_arg(back[j - 1])
                         if name:
                             if callee == 'catchevent':
@@ -200,10 +212,10 @@ def movie_refs(code):
     return out
 
 
-def scan_movies(specs, sets, root):
+def scan_movies(specs: Sequence[str] | None, sets: Collection[str] | None, root: str | None) -> Found:
     """[(label, movie name, refs)] for the movie specs given, else the movie sets of the game copy."""
     import aptcheck
-    found = []
+    found: Found = []
     if specs:
         for spec in specs:
             label, members = mc.resolve(spec, root)
@@ -219,7 +231,7 @@ def scan_movies(specs, sets, root):
             continue
         movies = mc.bundle_movies(layers)
         from mohcore import fbrb
-        by_bundle = {}
+        by_bundle: dict[str, list[str]] = {}
         for name, (bundle, entry) in movies.items():
             by_bundle.setdefault(bundle, []).append(entry)
         for bundle, entries in by_bundle.items():
@@ -236,13 +248,14 @@ def scan_movies(specs, sets, root):
 
 # ------------------------------------------------------------------------------------------------ output
 
-def cross_reference(found, table, cases, exe_strings):
+def cross_reference(found: Found, table: Table, cases: dict[str, dict[int, int]],
+                    exe_strings: Collection[str] | None) -> list[dict[str, Any]]:
     """One row per extern, FSCommand and event the movies use: the movies and use counts, its id in the exe's table,
     its getter case and whether the exe has the name."""
-    ids = {}
-    for name, i, va in table:
-        ids.setdefault(name, i)
-    rows = {}
+    ids: dict[str, int] = {}
+    for name, ident, va in table:
+        ids.setdefault(name, ident)
+    rows: dict[tuple[str, str], dict[str, Any]] = {}
     for label, _, refs in found:
         for kind, key in (('extern', 'extern'), ('extern', 'extern_param'), ('extern-write', 'extern_write'),
                           ('fscommand', 'fscommand'), ('event', 'events')):
@@ -253,7 +266,7 @@ def cross_reference(found, table, cases, exe_strings):
                     r['param'] = True
                 if key == 'events':
                     r['params'].update(u[1] for u in uses if u[1] is not None)
-    out = []
+    out: list[dict[str, Any]] = []
     for (kind, name), r in sorted(rows.items(), key=lambda x: (x[0][0], x[0][1].lower())):
         i = ids.get(name)
         case = None
@@ -271,7 +284,7 @@ def cross_reference(found, table, cases, exe_strings):
     return out
 
 
-def print_rows(rows, f):
+def print_rows(rows: Sequence[dict[str, Any]], f: TextIO) -> None:
     """Writes the cross-reference rows to f, grouped by kind, one line per name."""
     for kind in ('extern', 'extern-write', 'fscommand', 'event'):
         sel = [r for r in rows if r['kind'] == kind]
@@ -292,7 +305,7 @@ def print_rows(rows, f):
             print(f'  {r["name"]:36s} {"  ".join(b for b in bits if b):48s} {movies}', file=f)
 
 
-def print_movie(label, refs, f):
+def print_movie(label: str, refs: Refs, f: TextIO) -> None:
     """Writes what one movie reads, writes, sends and handles to f."""
     print(f'\n{label}', file=f)
     for key, title in (('extern', 'extern read'), ('extern_param', 'extern read with a parameter (name$param)'),
@@ -308,10 +321,14 @@ def print_movie(label, refs, f):
 
 # ------------------------------------------------------------------------------------------------ commands
 
-def take(args, flag, many=False):
+@overload
+def take(args: list[str], flag: str, many: Literal[False] = False) -> str | None: ...
+@overload
+def take(args: list[str], flag: str, many: Literal[True]) -> list[str]: ...
+def take(args: list[str], flag: str, many: bool = False) -> str | list[str] | None:
     """Removes every flag and its value from args; returns all values (many) or the last one (None when flag is
     absent)."""
-    vals = []
+    vals: list[str] = []
     while flag in args:
         i = args.index(flag)
         if i + 1 >= len(args):
@@ -321,7 +338,7 @@ def take(args, flag, many=False):
     return vals if many else (vals[-1] if vals else None)
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
     """The command line: movie, table, xref or find; returns the exit code."""
     args = list(argv[1:])
     if not args or args[0] not in ('movie', 'table', 'xref', 'find'):
@@ -381,7 +398,7 @@ def main(argv):
     if js:
         json.dump({'movies': {label: refs for label, _, refs in found}, 'names': rows,
                    'table': [{'name': n, 'id': i} for n, i, _ in table]}, open(js, 'w', encoding='utf-8'), indent=1, default=list)
-    kinds = {}
+    kinds: dict[str, int] = {}
     for r in rows:
         kinds[r['kind']] = kinds.get(r['kind'], 0) + 1
     unanswered = [r['name'] for r in rows if r['kind'] == 'extern' and r['getter_case'] == 'none']

@@ -20,11 +20,13 @@ import os
 import struct
 import sys
 import zipfile
+from collections.abc import Callable, Sequence
+from typing import Any
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def find_game():
+def find_game() -> str | None:
     """Project OPFOR's game copy (its game\\ folder, found by core\\mohcore\\gamecopy.py), or None."""
     sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'core'))
     from mohcore import gamecopy
@@ -34,13 +36,13 @@ def find_game():
         return None
 
 
-def default_zz():
+def default_zz() -> str | None:
     """The game copy's MP config.zz, or None when there is no game copy."""
     g = find_game()
     return os.path.join(g, 'MP', 'dist', 'win32', 'config.zz') if g else None
 
 
-def default_exe():
+def default_exe() -> str | None:
     """The game copy's MoHMPGame.exe, or None when there is no game copy."""
     g = find_game()
     return os.path.join(g, 'MP', 'MoHMPGame.exe') if g else None
@@ -48,21 +50,21 @@ def default_exe():
 
 # --- config.zz ---------------------------------------------------------------
 
-def cmd_list(args):
+def cmd_list(args: argparse.Namespace) -> None:
     """Prints the size and name of each file in config.zz."""
     with zipfile.ZipFile(args.zz) as z:
         for info in z.infolist():
             print('%8d  %s' % (info.file_size, info.filename))
 
 
-def cmd_extract(args):
+def cmd_extract(args: argparse.Namespace) -> None:
     """Writes one file of config.zz to stdout as bytes."""
     with zipfile.ZipFile(args.zz) as z:
         data = z.read(args.name)
     sys.stdout.buffer.write(data)
 
 
-def parse_cfg(text):
+def parse_cfg(text: str) -> list[tuple[str, str]]:
     """Key/value lines (Key Value), skipping comments and Lua code."""
     out = []
     for line in text.splitlines():
@@ -79,7 +81,7 @@ def parse_cfg(text):
     return out
 
 
-def cmd_settings(args):
+def cmd_settings(args: argparse.Namespace) -> None:
     """Prints the key/value settings of every .cfg file in config.zz."""
     with zipfile.ZipFile(args.zz) as z:
         for info in z.infolist():
@@ -92,21 +94,22 @@ def cmd_settings(args):
 
 # --- reflection ---------------------------------------------------------------
 
-def _load_pe(exe):
+def _load_pe(exe: str) -> tuple[Any, int, dict[str, Any], bytes, Callable[[int], int | None],
+                                Callable[[int], str | None]]:
     import pefile
     pe = pefile.PE(exe, fast_load=True)
     ib = pe.OPTIONAL_HEADER.ImageBase
     sections = {s.Name.rstrip(b'\x00').decode(): s for s in pe.sections}
     data = open(exe, 'rb').read()
 
-    def v2f(va):
+    def v2f(va: int) -> int | None:
         rva = va - ib
         for s in sections.values():
             if s.VirtualAddress <= rva < s.VirtualAddress + s.SizeOfRawData:
                 return s.PointerToRawData + (rva - s.VirtualAddress)
         return None
 
-    def cstr(va):
+    def cstr(va: int) -> str | None:
         off = v2f(va)
         if off is None:
             return None
@@ -121,7 +124,7 @@ def _load_pe(exe):
     return pe, ib, sections, data, v2f, cstr
 
 
-def common_prefix(strings):
+def common_prefix(strings: Sequence[str]) -> str:
     """The longest prefix every string starts with ('' for none)."""
     if not strings:
         return ''
@@ -132,7 +135,7 @@ def common_prefix(strings):
     return p
 
 
-def cmd_reflect(args):
+def cmd_reflect(args: argparse.Namespace) -> None:
     """Prints the exe's reflection catalog from its fieldinf section: enums with their values, then the types'
     fields."""
     pe, ib, sections, data, v2f, cstr = _load_pe(args.exe)
@@ -140,16 +143,16 @@ def cmd_reflect(args):
     raw = data[fi.PointerToRawData:fi.PointerToRawData + fi.Misc_VirtualSize]
 
     # fieldinf records are 24 bytes: name_ptr, ?, type_ptr, ?, value, ?
-    records = []
+    records: list[tuple[int, int, int]] = []          # (name_ptr, type_ptr, value)
     for i in range(0, len(raw) - 23, 24):
         name_ptr, _, type_ptr, _, value, _ = struct.unpack_from('<6I', raw, i)
         records.append((name_ptr, type_ptr, value))
 
     # Enums: runs of records with type_ptr == 0, split where the value resets to 0.
     print('== ENUMS ==')
-    cur = []
+    cur: list[tuple[int, int, int]] = []
 
-    def flush():
+    def flush() -> None:
         if not cur:
             return
         names = [cstr(r[0]) or '' for r in cur]
@@ -172,7 +175,8 @@ def cmd_reflect(args):
 
     # Fields: grouped by their parent type pointer (type_ptr != 0).
     print('== FIELDS (grouped by parent type) ==')
-    groups, order = {}, []
+    groups: dict[int, list[tuple[str, int]]] = {}
+    order: list[int] = []
     for rec in records:
         if rec[1] == 0:
             continue
@@ -189,7 +193,7 @@ def cmd_reflect(args):
 
 # --- CLI ----------------------------------------------------------------------
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> None:
     """The command line: list, extract, settings or reflect."""
     ap = argparse.ArgumentParser(prog='moh-config', description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)

@@ -42,10 +42,13 @@ import glob
 import os
 import sys
 from collections import namedtuple
+from collections.abc import Collection, Mapping
 
 import menucommon as mc
+import apt  # noqa: E402  (menucommon put the reader on the path)
 
 Finding = namedtuple('Finding', 'kind key text')
+Rec = tuple[apt.Ins, int, int, int]             # an instruction, its stream's start and limit, its depth
 BRANCHES = (0x99, 0x9D, 0xB8)
 
 
@@ -54,14 +57,14 @@ BRANCHES = (0x99, 0x9D, 0xB8)
 class Code:
     """The decoded code of a movie: instructions by offset, their byte spans, function bodies and names."""
 
-    def __init__(self, movie):
+    def __init__(self, movie: apt.Movie) -> None:
         self.m = movie
         self.recs = movie.instructions()
-        self.by_at = {r[0].at: r for r in self.recs}
+        self.by_at: dict[int, Rec] = {r[0].at: r for r in self.recs}
         self.starts = sorted(self.by_at)
-        self.streams = {}
-        self.funcs = []                        # (body start, body end, definition offset, name)
-        last = {}
+        self.streams: dict[int, set[int]] = {}
+        self.funcs: list[tuple[int, int, int, str]] = []    # (body start, body end, definition offset, name)
+        last: dict[int, apt.Ins] = {}
         for ins, start, limit, depth in self.recs:
             self.streams.setdefault(start, set()).add(ins.at)
             if ins.func:
@@ -72,11 +75,11 @@ class Code:
             last[start] = ins
         self.funcs.sort()
 
-    def span(self, ins):
+    def span(self, ins: apt.Ins) -> tuple[int, int]:
         """The byte range [start, end) an instruction covers, at least one byte."""
         return ins.at, max(ins.end, ins.at + 1)
 
-    def containing(self, off):
+    def containing(self, off: int) -> apt.Ins | None:
         """The instruction whose bytes hold offset off, or None."""
         k = bisect.bisect_right(self.starts, off) - 1
         if k >= 0:
@@ -86,20 +89,20 @@ class Code:
                 return ins
         return None
 
-    def function_at(self, off):
+    def function_at(self, off: int) -> tuple[int, str] | None:
         """The innermost function whose body holds off: (definition offset, name), or None."""
-        best = None
+        best: tuple[int, int, str] | None = None
         for body, end, at, name in self.funcs:
             if body <= off < end and (best is None or body >= best[0]):
                 best = (body, at, name)
         return (best[1], best[2]) if best else None
 
-    def findings(self):
+    def findings(self) -> dict[tuple[str, int], Finding]:
         """The movie's code problems as {(kind, offset): Finding}: unknown opcodes, Ends in functions, bad branch
         targets, constant and pool indices out of range, and more."""
-        m, out = self.m, {}
+        m, out = self.m, dict[tuple[str, int], Finding]()
         nconst = len(m.const)
-        users = {}
+        users: dict[int, list[int]] = {}
         for ins, start, limit, depth in self.recs:
             if ins.plist is not None:
                 users.setdefault(ins.plist, []).append(ins.at)
@@ -124,7 +127,7 @@ class Code:
             if len(ats) > 1:
                 out[('shared-list', plist)] = Finding('shared-list', plist, f'PushData list {plist:#x} used by {len(ats)} '
                                                       f'PushData: {", ".join(f"{a:06X}" for a in sorted(ats))}')
-        ends = {}
+        ends: dict[tuple[int, int], int] = {}
         for ins, start, limit, depth in self.recs:
             if depth > 0:
                 e = ins.func.body + ins.func.size if ins.func else ins.end
@@ -136,21 +139,21 @@ class Code:
                                                 f'not its end {end:06X}')
         return out
 
-    def fname(self, off):
+    def fname(self, off: int) -> str:
         """Which function the offset is in, as 'function <name> (<offset>)', or 'a frame action'."""
         f = self.function_at(off)
         return f'function {f[1]} ({f[0]:06X})' if f else 'a frame action'
 
-    def text(self, ins):
+    def text(self, ins: apt.Ins) -> str:
         """An instruction as text: its name and argument, or a function's name, parameter count and size."""
         if ins.func:
             return f'{ins.name} {ins.func.name or "<anon>"}({ins.func.nparams} params) size={ins.func.size}'
         return f'{ins.name}' + (f' {ins.arg}' if ins.arg else '')
 
 
-def ranges(offsets, gap=4):
+def ranges(offsets: Collection[int], gap: int = 4) -> list[list[int]]:
     """Changed offsets as [start, end) ranges; ranges fewer than gap bytes apart are shown as one."""
-    out = []
+    out: list[list[int]] = []
     for o in sorted(offsets):
         if out and o - out[-1][1] < gap:
             out[-1][1] = o + 1
@@ -159,7 +162,7 @@ def ranges(offsets, gap=4):
     return out
 
 
-def const_layout(m):
+def const_layout(m: apt.Movie) -> tuple[int, int]:
     """The (start, end) offsets of the .const file's entry table."""
     count, entries = m.cu(24), m.cu(28)
     return entries, entries + 8 * count
@@ -168,11 +171,12 @@ def const_layout(m):
 # ------------------------------------------------------------------------------------------------ verify
 
 class Report:
-    def __init__(self, title, brief=False):
-        self.title, self.errors, self.warnings, self.notes, self.lines = title, 0, 0, 0, []
+    def __init__(self, title: str, brief: bool = False) -> None:
+        self.title, self.errors, self.warnings, self.notes = title, 0, 0, 0
+        self.lines: list[str] = []
         self.brief = brief                     # leave out the details (each changed range and its instructions)
 
-    def add(self, level, text, detail=False):
+    def add(self, level: str, text: str, detail: bool = False) -> None:
         """Adds a line at level ('error', 'warning', 'note' or 'info') and counts it; detail lines are left out of a
         brief report."""
         if detail and self.brief:
@@ -185,7 +189,7 @@ class Report:
             self.notes += 1
         self.lines.append(f'  {level + ":" if level != "info" else "     "} {text}' if level != 'info' else f'    {text}')
 
-    def show(self):
+    def show(self) -> None:
         """Prints the report's title, lines and the result line with its counts."""
         print(self.title)
         for line in self.lines:
@@ -194,7 +198,8 @@ class Report:
               + (f', {self.warnings} warning(s)' if self.warnings else '') + (f', {self.notes} note(s)' if self.notes else ''))
 
 
-def verify(orig_members, new_members, rep, named=None, label='movie'):
+def verify(orig_members: Mapping[str, bytes], new_members: Mapping[str, bytes], rep: Report,
+           named: Mapping[str, set[int]] | None = None, label: str = 'movie') -> None:
     """Compares a patched movie's members with the original's (module doc); adds to the report."""
     lower, changed = member_changes(orig_members, new_members, rep)
     om, nm = mc.movie_from_members(orig_members, 'the original'), mc.movie_from_members(new_members, 'the patched movie')
@@ -213,10 +218,11 @@ def verify(orig_members, new_members, rep, named=None, label='movie'):
         check_named(rep, changed, named)
 
 
-def member_changes(orig_members, new_members, rep):
+def member_changes(orig_members: Mapping[str, bytes], new_members: Mapping[str, bytes], rep: Report
+                   ) -> tuple[dict[str, str], dict[str, set[int]]]:
     """(patched member name by lower-case name, changed offsets by original member); member and size problems reported."""
     lower = {k.lower(): k for k in new_members}
-    changed = {}
+    changed: dict[str, set[int]] = {}
     for k, ob in orig_members.items():
         nk = lower.get(k.lower())
         if nk is None:
@@ -236,7 +242,9 @@ def member_changes(orig_members, new_members, rep):
     return lower, changed
 
 
-def describe_ranges(rep, changed, orig_members, new_members, lower, aptk, constk, movies, codes):
+def describe_ranges(rep: Report, changed: Mapping[str, set[int]], orig_members: Mapping[str, bytes],
+                    new_members: Mapping[str, bytes], lower: Mapping[str, str], aptk: str, constk: str,
+                    movies: tuple[apt.Movie, apt.Movie], codes: tuple[Code, Code]) -> None:
     """The changed ranges, named: code (the instructions before and after), constants, or data."""
     for k, diff in changed.items():
         for a, b in ranges(diff):
@@ -250,11 +258,12 @@ def describe_ranges(rep, changed, orig_members, new_members, lower, aptk, constk
                 rep.add('info', head, True)
 
 
-def describe_code_range(rep, head, diff, a, b, codes, aptk, new_apt):
+def describe_code_range(rep: Report, head: str, diff: Collection[int], a: int, b: int, codes: tuple[Code, Code],
+                        aptk: str, new_apt: bytes) -> None:
     """A changed range of the .apt: the instructions it held and holds; a changed byte now opcode 00 is an error."""
     oc, nc = codes
-    before = sorted({oc.containing(o).at for o in range(a, b) if oc.containing(o)})
-    after = sorted({nc.containing(o).at for o in range(a, b) if nc.containing(o)})
+    before = sorted({i.at for i in map(oc.containing, range(a, b)) if i})
+    after = sorted({i.at for i in map(nc.containing, range(a, b)) if i})
     if before or after:
         rep.add('info', f'{head}  in {nc.fname(a)}', True)
         for at in before:
@@ -269,11 +278,12 @@ def describe_code_range(rep, head, diff, a, b, codes, aptk, new_apt):
                              '(push 0 / pop) as filler')
 
 
-def describe_const_range(rep, head, diff, a, b, movies):
+def describe_const_range(rep: Report, head: str, diff: Collection[int], a: int, b: int,
+                         movies: tuple[apt.Movie, apt.Movie]) -> None:
     """A changed range of the .const: each constant entry's field it changes, old and new text."""
     om, nm = movies
     lo, hi = const_layout(om)
-    desc = []
+    desc: list[str] = []
     for idx, field in sorted({((o - lo) // 8, (o - lo) % 8 // 4) for o in diff if a <= o < b and lo <= o < hi}):
         old = om.const[idx] if idx < len(om.const) else '?'
         new = nm.const[idx] if idx < len(nm.const) else '?'
@@ -281,15 +291,15 @@ def describe_const_range(rep, head, diff, a, b, movies):
     rep.add('info', head + ('  ' + '; '.join(desc) if desc else '  (constant data)'), True)
 
 
-def decode_shifts(rep, oc, nc, cset):
+def decode_shifts(rep: Report, oc: Code, nc: Code, cset: Collection[int]) -> None:
     """Every instruction outside the changed bytes (cset, the .apt's) decodes as before; else a decode-shift error."""
     cs = sorted(cset)
 
-    def touched(ins, code):
+    def touched(ins: apt.Ins, code: Code) -> bool:
         a, b = code.span(ins)
         k = bisect.bisect_left(cs, a)
         return k < len(cs) and cs[k] < b
-    shifted = []
+    shifted: list[int] = []
     for at, (ins, *_r) in oc.by_at.items():
         if touched(ins, oc):
             continue
@@ -307,7 +317,7 @@ def decode_shifts(rep, oc, nc, cset):
         rep.add('info', f'{len(nc.by_at)} instructions decode; every one away from the changed bytes as before')
 
 
-def compare_findings(rep, oc, nc):
+def compare_findings(rep: Report, oc: Code, nc: Code) -> None:
     """The rules, on the patched movie, against the original's own: new findings are errors, old ones notes."""
     of, nf = oc.findings(), nc.findings()
     for key, f in sorted(nf.items(), key=lambda x: (x[0][0], x[0][1])):
@@ -321,7 +331,7 @@ def compare_findings(rep, oc, nc):
             rep.add('info', f'gone in the patched movie ({f.kind}): {f.text}')
 
 
-def check_named(rep, changed, named):
+def check_named(rep: Report, changed: Mapping[str, set[int]], named: Mapping[str, set[int]]) -> None:
     """Only the bytes the patch names (named: offsets by member) may differ; others are unexpected-change errors."""
     for k, diff in changed.items():
         want = named.get(k, set())
@@ -332,7 +342,7 @@ def check_named(rep, changed, named):
 
 # ------------------------------------------------------------------------------------------------ commands
 
-def cmd_verify(args, opfor):
+def cmd_verify(args: list[str], opfor: str | None) -> int:
     """The verify command: compares a patched movie with its original (and the patch, with --patch); returns the
     number of errors."""
     if len(args) < 2:
@@ -341,7 +351,7 @@ def cmd_verify(args, opfor):
     ol, om = mc.resolve(args[0], opfor)
     nl, nm = mc.resolve(args[1], opfor)
     rep = Report(f'verify {ol}\n    -> {nl}')
-    named = None
+    named: dict[str, set[int]] | None = None
     if patch:
         lines, problems = mc.parse_patch(patch)
         _, named, applied_problems = mc.apply_patch(om, lines)
@@ -352,13 +362,13 @@ def cmd_verify(args, opfor):
     return rep.errors
 
 
-def cmd_lint(args, opfor):
+def cmd_lint(args: list[str], opfor: str | None) -> int:
     """The lint command: checks .patch files (globs allowed) against their source movies; returns the number of
     errors."""
     source = take(args, '--source')
     installed = take_flag(args, '--installed')
     brief = take_flag(args, '--brief')
-    files = []
+    files: list[str] = []
     for a in args:
         files += sorted(glob.glob(a)) if any(ch in a for ch in '*?') else [a]
     if not files:
@@ -373,11 +383,12 @@ def cmd_lint(args, opfor):
         lines, problems = mc.parse_patch(path)
         for n, p in problems:
             rep.add('error', f'line {n}: {p}')
-        spans = {}
+        spans: dict[tuple[str, int], int] = {}
         for pl in lines:
             if not pl.comment:
                 rep.add('warning', f'line {pl.number}: no comment, on the line or just above it (OPFOR comments every patch)')
             if pl.kind == 'patch':
+                assert pl.offset is not None and pl.new is not None     # parse_patch sets both on a patch line
                 if bytes(t for t in pl.new if not isinstance(t, tuple)) == pl.expected and not any(isinstance(t, tuple) for t in pl.new):
                     rep.add('warning', f'line {pl.number}: changes nothing (new bytes = expected bytes)')
                 for o in range(pl.offset, pl.offset + len(pl.expected)):
@@ -407,7 +418,7 @@ def cmd_lint(args, opfor):
     return errors
 
 
-def cmd_check(args, opfor):
+def cmd_check(args: list[str], opfor: str | None) -> int:
     """The check command: lists each movie's code findings as notes; returns 0 (notes are not errors)."""
     if not args:
         raise mc.MenuToolError('check needs a movie')
@@ -424,7 +435,7 @@ def cmd_check(args, opfor):
     return errors
 
 
-def take(args, flag):
+def take(args: list[str], flag: str) -> str | None:
     """Removes flag and its value from args and returns the value (None when flag is absent); raises MenuToolError
     when the value is missing."""
     if flag in args:
@@ -437,7 +448,7 @@ def take(args, flag):
     return None
 
 
-def take_flag(args, flag):
+def take_flag(args: list[str], flag: str) -> bool:
     """Removes flag from args; True when it was there."""
     if flag in args:
         args.remove(flag)
@@ -445,7 +456,7 @@ def take_flag(args, flag):
     return False
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
     """The command line: verify, lint or check; returns 1 when any errors were found."""
     args = list(argv[1:])
     if not args or args[0] not in ('verify', 'lint', 'check'):

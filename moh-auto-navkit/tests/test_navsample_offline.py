@@ -13,6 +13,7 @@ import math
 import os
 import sys
 import tempfile
+from collections.abc import Callable
 
 import numpy as np
 
@@ -22,6 +23,8 @@ sys.path.insert(0, os.path.join(HERE, '..', '..', 'core'))
 import navsample  # noqa: E402
 import navsample_offline as no  # noqa: E402
 from mohcore import terrain  # noqa: E402
+
+Check = Callable[[bool, str], None]     # main's check(ok, what): prints the line, counts a failure
 
 
 def heightfield(fn, lo=-20.0, hi=20.0, size=64):
@@ -69,14 +72,8 @@ def column(s, x, z):
     return [(round(float(s.y[k]), 3), round(float(s.normal[k, 1]), 2), int(s.flags[k]), int(s.hit[k, 0])) for k in r]
 
 
-def main(argv):
-    failed = 0
-
-    def check(ok, what):
-        nonlocal failed
-        failed += not ok
-        print(f'{"ok  " if ok else "FAIL"} {what}')
-
+def deck_and_slabs(check: Check) -> None:
+    """The cast loop: layers top to bottom, the 0.1 m gap, thin slabs, nothing under the terrain."""
     B = no.CAP_BOTTOMS['']                           # the normal run's capsule bottom (MOH 0.3)
     flat = heightfield(lambda x, z: np.zeros_like(x))
     grid = no.Grid(0.8, -4.0, -4.0, 11, 11, -10.0, 50.0)
@@ -104,6 +101,13 @@ def main(argv):
     g = geometry([(slab(-2.1, -2.1, 2.1, 2.1, -3.0, -2.0), no.KIND_MESH)])
     s = no.sample_grid(grid, g, flat, log=lambda *a: None)[B]
     check([c[0] for c in column(s, 0.0, 0.0)] == [0.0], 'buried box: not recorded')
+
+
+def convex_pieces(check: Check) -> None:
+    """Convex pieces solid, the floor under one taller than the 10 m solid limit, edge contacts only."""
+    B = no.CAP_BOTTOMS['']                           # the normal run's capsule bottom (MOH 0.3)
+    flat = heightfield(lambda x, z: np.zeros_like(x))
+    grid = no.Grid(0.8, -4.0, -4.0, 11, 11, -10.0, 50.0)
 
     # 4. a convex block standing on the terrain is solid: its top (grown by nothing here), then the cast steps
     #    through it and stops in the terrain - the terrain under it is not recorded
@@ -139,6 +143,13 @@ def main(argv):
     except ValueError as e:
         check(False, f'convex edge contacts only: {e}')
 
+
+def edges_and_capsule(check: Check) -> None:
+    """The sphere touching an edge; the capsule against walls and ceilings."""
+    B = no.CAP_BOTTOMS['']                           # the normal run's capsule bottom (MOH 0.3)
+    flat = heightfield(lambda x, z: np.zeros_like(x))
+    grid = no.Grid(0.8, -4.0, -4.0, 11, 11, -10.0, 50.0)
+
     # 5. the sphere touching an edge: a thin vertical sheet (no thickness) 0.03 m beside a column gives a hit at its
     #    top edge with an upward normal; 0.2 m away it does not
     sheet = np.array([[[0.03, 0.0, -2.0], [0.03, 1.0, -2.0], [0.03, 1.0, 2.0]],
@@ -159,6 +170,11 @@ def main(argv):
         g = geometry([(slab(-4.0, -4.0, 4.0, 4.0, top, top + 0.3), no.KIND_MESH)])
         s = no.sample_grid(grid, g, flat, log=lambda *a: None)
         check(column(s[B], 0.0, 0.0)[-1][2] == want, f'ceiling (underside) {top} m over the floor: blocked {want}')
+
+
+def steep_terrain(check: Check) -> None:
+    """The capsule on steep terrain, the terrain lift, the rings out to the capsule radius."""
+    B = no.CAP_BOTTOMS['']                           # the normal run's capsule bottom (MOH 0.3)
 
     # 7. steep terrain: blocked from about 59 degrees in the normal run with MOH's capsule (BFBC2's fitted one: ~64), 30 and 55 clear
     for deg, want in ((30, 0), (55, 0), (72, 1)):
@@ -184,6 +200,9 @@ def main(argv):
         got = no.terrain_blocks(hf, np.array([0.0, 0.1]), np.array([0.0, 0.0]), np.array([0.0, 0.0]), b).tolist()
         check(got == [False, True], f'terrain cliff 0.39 m / 0.29 m away (capsule bottom {b}): blocked {got}')
 
+
+def capsule_interval(check: Check) -> None:
+    """The exact capsule-triangle interval against brute force."""
     # 8. the capsule-triangle interval against brute force (random triangles, random vertical lines)
     rng = np.random.default_rng(3)
     T = rng.uniform(-1, 1, (300, 3, 3))
@@ -203,6 +222,12 @@ def main(argv):
         else:
             bad += lo[k] <= hi[k] and (hi[k] - lo[k]) > 0.03
     check(bad == 0, f'capsule interval against brute force on 300 triangles: {bad} wrong')
+
+
+def file_and_grid(check: Check) -> None:
+    """The version-3 file read back by navsample.py; navsample.cpp's grid alignment and rectangles."""
+    flat = heightfield(lambda x, z: np.zeros_like(x))
+    grid = no.Grid(0.8, -4.0, -4.0, 11, 11, -10.0, 50.0)
 
     # 9. the file: navsample.cpp's version-3 layout, read back by navsample.py
     g = geometry([(slab(-2.1, -2.1, 2.1, 2.1, 2.7, 3.0), no.KIND_MESH)])
@@ -225,6 +250,9 @@ def main(argv):
     gr = no.Grid.from_box(0.2, [-1, -1, 201, 101], [0, 10], rects=[[-1, -1, 101, 101]])
     check(gr.mask[:, :10].all() and not gr.mask[:, -10:].any(), 'rectangles mask the columns outside them')
 
+
+def destroyed_state_parts(check: Check) -> None:
+    """A blueprint's destroyed-state parts and its Havok asset's part names."""
     # 11. destroyed-state parts: the parts named only by health states below a component's full health
     xml = '''<partition>
 	<instance guid="A" type="GameSharedResources.PartComponentData">
@@ -281,6 +309,9 @@ def main(argv):
         check(no.part_names(hx[:-4] + '.res') == ['base', 'part_01', 'ruin', 'ruin_downed'], 'part names in order')
         check(no.destroyed_parts(os.path.join(d, 'missing.xml')) == set(), 'no blueprint: no destroyed parts')
 
+
+def sample_level_geometry(check: Check) -> None:
+    """sample_level's geometry for detailed squares past the level's box."""
     # 12. sample_level: the 0.2 m pair's geometry holds the whole detailed squares - read again for their box when it
     #     reaches past the level's (mp_09_tdm: 4,166 triangles in its detailed squares were never loaded, 2026-10-31);
     #     reused when the box holds them
@@ -311,6 +342,9 @@ def main(argv):
         check(loads == want and runs[-1] == (0.2, want[-1]),
               f'sample_level, level box {level_box}: geometry read for {loads}, the 0.2 m pair on {runs[-1][1]}')
 
+
+def build_reading(check: Check) -> None:
+    """The build's reading of the runs (navbuild.stage, on_grid)."""
     # 13. the build's reading of the runs (navbuild.stage): a fine samples run is coarsened to the stage's pitch, and
     #     the high- and narrow-capsule runs with it (they were read at their own pitch and indexed by the coarse
     #     grid's columns, 2026-10-31); a run on another grid is refused; a level with no walkable ground is a clear
@@ -348,6 +382,19 @@ def main(argv):
         except ValueError as e:
             check('no walkable ground' in str(e), f'no walkable ground: a clear error ({e})')
 
+
+def main(argv: list[str]) -> int:
+    """Runs every part in order, printing each check; returns 1 when one failed."""
+    failed = 0
+
+    def check(ok: bool, what: str) -> None:
+        nonlocal failed
+        failed += not ok
+        print(f'{"ok  " if ok else "FAIL"} {what}')
+
+    for part in (deck_and_slabs, convex_pieces, edges_and_capsule, steep_terrain, capsule_interval, file_and_grid,
+                 destroyed_state_parts, sample_level_geometry, build_reading):
+        part(check)
     print('all passed' if not failed else f'{failed} check(s) failed')
     return 1 if failed else 0
 

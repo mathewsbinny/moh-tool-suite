@@ -27,6 +27,8 @@ import os
 import sys
 import time
 from collections import Counter, defaultdict
+from collections.abc import Callable, Mapping, Sequence, Set
+from typing import Any
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -37,6 +39,11 @@ import navdiff  # noqa: E402
 import ordercheck  # noqa: E402
 import mohsoldier  # noqa: E402
 
+Bounds = tuple[float, float, float, float]   # (minX, minZ, maxX, maxZ)
+Row = dict[str, Any]                          # a level's parity (or navregress self-check) row
+Run = dict[str, Any]                          # a saved run: name, date, levels (rows)
+Log = Callable[..., object]
+
 LEVELS = ['sp_01', 'sp_02', 'sp_03', 'sp_04', 'sp_003_b', 'sp_004_b', 'sp_005', 'sp_005_b', 'sp_006', 'sp_007',
           'sp_008', 'sp_008_b', 'sp_009']
 ONSLAUGHT = ['ons_mp_002', 'ons_mp_004']       # Napisal's ports with DICE's console path data (OPFOR's Onslaught import)
@@ -46,13 +53,13 @@ NEAR_DY = 1.0                   # height tolerance of a node match (both files' 
                                 # build showed 119 'missing' DICE links - 12 with 1 m (2026-10-21)
 
 
-def opfor_root(given=None):
+def opfor_root(given: str | None = None) -> str:
     """Project OPFOR's root folder (given, or found by navkit.find_opfor)."""
     import navkit
     return navkit.find_opfor(given)
 
 
-def reference_of(root, lv):
+def reference_of(root: str, lv: str) -> str:
     """The path of the level's DICE path data - callers test os.path.isfile: it exists only when the level has an
     original. NavKit's own install (an .opfor-new marker beside it, MOH) is not one: its backup's path, which does not
     exist, is returned (2026-10-31: navregress measured parity of a build against NavKit's earlier one)."""
@@ -61,7 +68,7 @@ def reference_of(root, lv):
     return navkit.original_pathdata(p) or p + navkit.BACKUP_SUFFIX
 
 
-def level_xml(root, lv):
+def level_xml(root: str, lv: str) -> str:
     """The path of the level's converted partition XML in work\\levels; raises FileNotFoundError before prepare has
     run."""
     d = os.path.join(root, 'work', 'levels', lv, 'dist', 'levels')
@@ -71,7 +78,7 @@ def level_xml(root, lv):
     raise FileNotFoundError(f'{lv}: converted level partition not found in {d} (navkit.py prepare {lv})')
 
 
-def terrain_bounds(root, lv):
+def terrain_bounds(root: str, lv: str) -> Bounds | None:
     r"""(minX, minZ, maxX, maxZ) of the level's terrain heightfield (work\levels\<lv>\terrain), or None. DICE's console
     path data can reach past it (ONS_MP_002: ground to z -527, the PC terrain ends at -512 - 3,600 m2 and a route
     that do not exist on PC), so the reference is clipped to it: ground and connectivity are measured on PC ground."""
@@ -91,7 +98,7 @@ def terrain_bounds(root, lv):
 STALE_DY = 1.0     # a reference route node with no sampled PC surface within this of its ground height is stale
 
 
-def stale_nodes(root, lv, reference, clip=None):
+def stale_nodes(root: str, lv: str, reference: str, clip: Bounds | None = None) -> set[int]:
     """Ids of the reference's route nodes on ground the PC level does not have: no surface of NavKit's 0.8 m samples
     (the column and its 8 neighbours) within STALE_DY of the node's ground (node height - 0.95). DICE's data was built
     before some late geometry - sp_03: its only valley-to-plateau links run 1.5-5 m under the cliff mesh sp03_cliff_2
@@ -106,7 +113,7 @@ def stale_nodes(root, lv, reference, clip=None):
     if sp is None:
         return set()
     s, _ = navsample.load(sp)
-    out = set()
+    out: set[int] = set()
     for sec in hpdtool.parse(open(reference, 'rb').read()).sectors:
         for n in sec.nodes:
             x, y, z = n.pos
@@ -128,7 +135,7 @@ def stale_nodes(root, lv, reference, clip=None):
     return out
 
 
-def ladder_ground(reference, candidate, reference_cells):
+def ladder_ground(reference: str, candidate: str, reference_cells: int) -> dict[str, Any]:
     """Ground reached only through ladder links (navdata: ladder edges, ladder areas): its share of the reference's
     ground, and how many of its cells the reference lacks (kept out of 'extra ground')."""
     core = os.path.join(os.path.dirname(os.path.dirname(HERE)), 'core')
@@ -145,26 +152,27 @@ def ladder_ground(reference, candidate, reference_cells):
             'cells': int(lad.sum())}
 
 
-def pairs(n):
+def pairs(n: int) -> int:
     """The number of unordered pairs among n items."""
     return n * (n - 1) // 2
 
 
-def islands(reference, candidate, clip=None, drop=None):
+def islands(reference: str, candidate: str, clip: Bounds | None = None, drop: Set[int] | None = None) -> dict[str, Any]:
     """Island counts of the reference and candidate path data and how their route networks agree: matched nodes,
     connectivity and over-connection (percentages)."""
     R, C = ordercheck.PathData(reference, clip, drop), ordercheck.PathData(candidate)
-    res = {'reference': len(R.group_size), 'candidate': len(C.group_size),
+    res: dict[str, Any] = {'reference': len(R.group_size), 'candidate': len(C.group_size),
            'large_reference': sum(1 for v in R.group_size.values() if v >= 25),
            'large_candidate': sum(1 for v in C.group_size.values() if v >= 25)}
-    grid = defaultdict(list)
+    grid: defaultdict[tuple[int, int], list[int]] = defaultdict(list)
     for k, (nid, p) in enumerate(C.nodes):
         grid[(math.floor(p[0] / NEAR), math.floor(p[2] / NEAR))].append(k)
-    table = Counter()
+    table: Counter[tuple[Any, Any]] = Counter()
     matched = 0
     for nid, p in R.nodes:
         gx, gz = math.floor(p[0] / NEAR), math.floor(p[2] / NEAR)
-        best, best_d = None, None
+        best: int | None = None
+        best_d = math.inf                       # read only once best is set
         for dx in (-1, 0, 1):
             for dz in (-1, 0, 1):
                 for k in grid.get((gx + dx, gz + dz), ()):
@@ -177,7 +185,8 @@ def islands(reference, candidate, clip=None, drop=None):
         if best is not None:
             matched += 1
             table[(R.group[nid], C.group[C.nodes[best][0]])] += 1
-    by_ref, by_cand = Counter(), Counter()
+    by_ref: Counter[Any] = Counter()
+    by_cand: Counter[Any] = Counter()
     for (gr, gc), n in table.items():
         by_ref[gr] += n
         by_cand[gc] += n
@@ -190,7 +199,7 @@ def islands(reference, candidate, clip=None, drop=None):
     return res
 
 
-def run_level(root, lv, candidate, log):
+def run_level(root: str, lv: str, candidate: str, log: Log) -> Row:
     """One level's parity row: ground, sectors, areas, portals, nodes, edges, islands and distance figures of the
     candidate against DICE's path data."""
     ref = reference_of(root, lv)
@@ -257,12 +266,12 @@ SELF_COLUMNS = [
 SELF_TOTALS = ['self_on_area', 'self_near_node', 'self_large_group', 'self_pairwise', 'self_directed', 'self_strong']
 
 
-def is_self_check(row):
+def is_self_check(row: Mapping[str, Any]) -> bool:
     """True for a row of a self-check run (no reference areas to compare, only the self-check figures)."""
     return 'areas_same' not in row and 'self_points' in row
 
 
-def table(run, other=None, log=print):
+def table(run: Run, other: Run | None = None, log: Log = print) -> None:
     """The run as a table - parity rows (against DICE) and self-check rows (navregress.py, no DICE path data) each
     with their own columns (2026-10-31: a self-check row raised KeyError 'areas_same', an empty run divided by
     zero); with 'other', each value's change from it."""
@@ -270,7 +279,7 @@ def table(run, other=None, log=print):
     if not run['levels']:
         log('  no levels in this run')
         return
-    others = other['levels'] if other else []
+    others: list[Row] = other['levels'] if other else []
     parity = [r for r in run['levels'] if not is_self_check(r)]
     own = [r for r in run['levels'] if is_self_check(r)]
     if parity:
@@ -282,14 +291,15 @@ def table(run, other=None, log=print):
         _table(own, [r for r in others if is_self_check(r)], SELF_COLUMNS, SELF_TOTALS, log)
 
 
-def _table(levels, other_levels, columns, totals, log):
+def _table(levels: Sequence[Row], other_levels: Sequence[Row], columns: Sequence[tuple[str, str, str]],
+           totals: Sequence[str], log: Log) -> None:
     rows = {r['level']: r for r in levels}
     base = {r['level']: r for r in other_levels}
     head = f"{'level':9s} " + ' '.join(f'{h:>10s}' for _, h, _ in columns)
     log(head)
     for lv in [l for l in LEVELS if l in rows] + sorted(set(rows) - set(LEVELS)):
         r = rows[lv]
-        cells = []
+        cells: list[str] = []
         for key, _, f in columns:
             if key in ('portals',) and r.get('areas_same', 0) == 0:
                 cells.append(f"{'n/a':>10s}")   # a share of matching areas, and none match
@@ -310,14 +320,14 @@ def _table(levels, other_levels, columns, totals, log):
         log(f"{'change':9s} " + ' '.join(f"{(('+' if avg[k] - bavg[k] > 0 else '') + f.format(avg[k] - bavg[k]) if k in avg and k in bavg else ''):>10s}" for k, _, f in columns))
 
 
-def save_path(root, name):
+def save_path(root: str, name: str) -> str:
     """The path of a named parity run's JSON in work\\navkit\\parity (folder created)."""
     d = os.path.join(root, 'work', 'navkit', 'parity')
     os.makedirs(d, exist_ok=True)
     return os.path.join(d, name.replace(' ', '_') + '.json')
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
     """The command line: run (a named parity run over levels, saved and shown) or show (one run, or two compared);
     returns the exit code."""
     args = argv[1:]
@@ -333,7 +343,7 @@ def main(argv):
         table(runs[0], runs[1] if len(runs) > 1 else None) if len(runs) == 1 else table(runs[1], runs[0])
         return 0
     name = args[1]
-    targets = []
+    targets: list[tuple[str, ...]] = []
     if '--pattern' in args:
         pattern = args[args.index('--pattern') + 1]
         levels = args[args.index('--levels') + 1].split(',') if '--levels' in args else LEVELS

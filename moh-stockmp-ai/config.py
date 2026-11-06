@@ -25,6 +25,12 @@ import json
 import math
 import os
 import sys
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    import levelmodel
+    import ordercheck
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SUITE = os.path.dirname(HERE)
@@ -40,8 +46,10 @@ TEMPLATE_PARTS = ['Objects/Soldiers/Templates/SpawnTemplate_Enemy_Grunt.dbx',
 SNAP_RADIUS = 6.0          # horizontal, metres: a spawn point farther from any route node is dropped
 NODE_Y = 0.95              # route nodes sit this far above the ground (NavKit ordercheck.Y_OFFSET)
 SPAWN_LIFT = 0.3
+Config = dict[str, Any]                 # a configuration (the format above)
+Point = Sequence[float]                 # x, y, z
 
-DEFAULTS = {
+DEFAULTS: dict[str, Any] = {
     # Napisal's PC-proven respawning AI spawner (Amount 0 = keep respawning, SpawnSoldierFromBeginning) with DICE's
     # SpawnEnemyRadius; the stock MP SpawnDelay
     'spawner': {'Amount': 0, 'SpawnDelay': 15.0, 'InitializedSpawnDelay': 0.0, 'SpawnSoldierFromBeginning': True,
@@ -59,17 +67,17 @@ DEFAULTS = {
 }
 
 
-def load(path):
+def load(path: str) -> Config:
     """Reads a configuration file; raises ValueError listing its schema problems."""
     with open(path, encoding='utf-8') as f:
         c = json.load(f)
     problems = check(c)
     if problems:
         raise ValueError(f'{path}: ' + '; '.join(problems))
-    return c
+    return cast(Config, c)
 
 
-def save(c, path):
+def save(c: Config, path: str) -> None:
     """Writes a configuration as indented JSON (folder created)."""
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
@@ -77,9 +85,9 @@ def save(c, path):
         f.write('\n')
 
 
-def check(c):
+def check(c: Config) -> list[str]:
     """Schema problems (empty list when the configuration is usable)."""
-    p = []
+    p: list[str] = []
     if c.get('format') != FORMAT or c.get('version') != VERSION:
         p.append(f'not a {FORMAT} v{VERSION} configuration')
         return p
@@ -88,7 +96,7 @@ def check(c):
             p.append(f'missing "{k}"')
     if p:
         return p
-    ids = set()
+    ids: set[Any] = set()
     for s in c['spawners']:
         if s.get('id') in ids:
             p.append(f'spawner id {s.get("id")} twice')
@@ -130,24 +138,25 @@ def check(c):
 class Snapper:
     """Places points on the path data (NavKit's ordercheck.PathData: areas and route nodes)."""
 
-    def __init__(self, hpd):
-        self.pd = None
+    def __init__(self, hpd: str | None) -> None:
+        self.pd: 'ordercheck.PathData | None' = None
         if hpd and os.path.isfile(hpd):
             import ordercheck
             self.pd = ordercheck.PathData(hpd)
             self.biggest = max(self.pd.group_size.values())
 
-    def nearest(self, p):
+    def nearest(self, p: Point) -> tuple[float, tuple[float, ...], int]:
         """The nearest route node within 4 m in height of p: (plan distance, its position, the node count of its
         network)."""
         import numpy as np
-        P = self.pd.pos
+        pd = cast('ordercheck.PathData', self.pd)       # only called with path data
+        P = pd.pos
         d = np.hypot(P[:, 0] - p[0], P[:, 2] - p[2])
         d = np.where(np.abs(P[:, 1] - NODE_Y - p[1]) <= 4.0, d, 1e9)
         k = int(np.argmin(d))
-        return float(d[k]), tuple(float(v) for v in P[k]), self.pd.group_size[self.pd.group[self.pd.ids[k]]]
+        return float(d[k]), tuple(float(v) for v in P[k]), pd.group_size[pd.group[pd.ids[k]]]
 
-    def ground(self, p):
+    def ground(self, p: Point) -> tuple[tuple[float, ...] | None, str]:
         """(point, how) or (None, why)."""
         if self.pd is None:
             return (p[0], p[1] + SPAWN_LIFT, p[2]), 'unchecked (no path data)'
@@ -161,25 +170,26 @@ class Snapper:
         return None, f'no route node within {SNAP_RADIUS} m ({dist:.1f} m)'
 
 
-def _dist(a, b):
+def _dist(a: Point, b: Point) -> float:
     return math.hypot(a[0] - b[0], a[2] - b[2])
 
 
-def _centroid(pts):
+def _centroid(pts: Sequence[Point]) -> tuple[float, ...]:
     return tuple(sum(p[i] for p in pts) / len(pts) for i in range(3))
 
 
-def kits_for(faction, kit_refs):
+def kits_for(faction: str | None, kit_refs: Mapping[str, str]) -> dict[str, str]:
     """The faction's multiplayer kit references by kit name; raises ValueError for a faction without known kits."""
-    prefix = FACTION_KITS.get(faction)
+    prefix = FACTION_KITS.get(faction) if faction is not None else None
     if prefix is None:
         raise ValueError(f'no multiplayer kits known for {faction}')
     return {k: kit_refs[f'{prefix}/{k}'] for k in KIT_NAMES}
 
 
-def place(snap, candidates, n, notes, label, ring=2.5):
+def place(snap: Snapper, candidates: Sequence[Point], n: int, notes: list[str], label: str,
+          ring: float = 2.5) -> list[tuple[float, ...]]:
     """n spawn positions from the candidate ground points: each candidate in turn, later rounds on rings around them."""
-    good = []
+    good: list[tuple[float, ...]] = []
     for c in candidates:
         g, how = snap.ground(c)
         if g is None:
@@ -188,10 +198,12 @@ def place(snap, candidates, n, notes, label, ring=2.5):
             good.append(g)
     if not good:
         return []
-    out, k = [], 0
+    out: list[tuple[float, ...]] = []
+    k = 0
     while len(out) < n and k < 50 * n:
         base = good[k % len(good)]
         r = k // len(good)
+        p: tuple[float, ...] | None
         if r == 0:
             p = base
         else:
@@ -206,18 +218,19 @@ def place(snap, candidates, n, notes, label, ring=2.5):
     return out
 
 
-def _yaw_to(a, b):
+def _yaw_to(a: Point, b: Point) -> float:
     return round(math.degrees(math.atan2(b[0] - a[0], b[2] - a[2])), 1)
 
 
-def generate(model, lv, kit_refs, pathdata, bots_per_team=8, layer='full', stock_spawners='human', half_extent=8.0,
-             trigger_radius=100.0, rush_bots=(4, 4)):
+def generate(model: 'levelmodel.Model', lv: str, kit_refs: Mapping[str, str], pathdata: dict[str, Any],
+             bots_per_team: int = 8, layer: str = 'full', stock_spawners: str = 'human', half_extent: float = 8.0,
+             trigger_radius: float = 100.0, rush_bots: tuple[int, int] = (4, 4)) -> Config:
     """A first configuration for the level, from its own objectives and spawns."""
     snap = Snapper(pathdata.get('infantry'))
-    notes = []
+    notes: list[str] = []
     teams = {t: {'faction': model.factions.get(t), 'kits': kits_for(model.factions.get(t), kit_refs)}
              for t in ('Team1', 'Team2')}
-    c = {'format': FORMAT, 'version': VERSION, 'lv': lv, 'level': model.name, 'mode': model.mode, 'layer': layer,
+    c: Config = {'format': FORMAT, 'version': VERSION, 'lv': lv, 'level': model.name, 'mode': model.mode, 'layer': layer,
          'stock_spawners': stock_spawners, 'pathdata': pathdata, 'template': TEMPLATE, 'template_parts': TEMPLATE_PARTS,
          'teams': teams, 'defaults': json.loads(json.dumps(DEFAULTS)), 'spawners': [], 'orders': [], 'stages': [],
          'notes': notes}
@@ -232,7 +245,7 @@ def generate(model, lv, kit_refs, pathdata, bots_per_team=8, layer='full', stock
     return c
 
 
-def _order_pos(snap, p, notes, label):
+def _order_pos(snap: Snapper, p: Point, notes: list[str], label: str) -> list[float]:
     if snap.pd is None:
         return list(p)
     dist, node, size = snap.nearest(p)
@@ -241,7 +254,8 @@ def _order_pos(snap, p, notes, label):
     return [round(v, 3) for v in p]
 
 
-def _conquest(c, m, snap, n, half, radius, notes):
+def _conquest(c: Config, m: 'levelmodel.Model', snap: Snapper, n: int, half: float, radius: float,
+              notes: list[str]) -> None:
     flags = m.flags()
     if not flags:
         raise ValueError('no neutral capture points (Conquest flags) found')
@@ -249,7 +263,7 @@ def _conquest(c, m, snap, n, half, radius, notes):
         bases = m.bases(t)
         if not bases:
             raise ValueError(f'{t}: no capture point owned at the start (its base)')
-        cands = []
+        cands: list[Point] = []
         for b in bases:
             cands += m.ground_points(team=None, flag=b.guid)
         if not cands:
@@ -260,7 +274,7 @@ def _conquest(c, m, snap, n, half, radius, notes):
         pts = place(snap, cands, n, notes, f'{t} base')
         tag = 't1' if t == 'Team1' else 't2'
         order_flags = sorted(flags, key=lambda f: _dist(f.pos, home))
-        assign = {f.guid: [] for f in order_flags}
+        assign: dict[str, list[str]] = {f.guid: [] for f in order_flags}
         for i, p in enumerate(pts):
             sid = f'{tag}_{i:02d}'
             f = order_flags[i % len(order_flags)]
@@ -276,7 +290,8 @@ def _conquest(c, m, snap, n, half, radius, notes):
                                 'trigger_radius': radius})
 
 
-def _rush(c, m, snap, bots, half, radius, notes):
+def _rush(c: Config, m: 'levelmodel.Model', snap: Snapper, bots: tuple[int, int], half: float, radius: float,
+          notes: list[str]) -> None:
     stages = m.rush_stages()
     if not stages:
         raise ValueError('no Rush stages found (M-COM triggers)')
@@ -294,9 +309,9 @@ def _rush(c, m, snap, bots, half, radius, notes):
             if cp is None:
                 notes.append(f'stage {k}: no {team} capture point to spawn at')
                 continue
-            cands = sorted(m.ground_points(flag=cp.guid), key=lambda p: _dist(p, cen)) or [cp.pos]
+            cands: list[Point] = sorted(m.ground_points(flag=cp.guid), key=lambda p: _dist(p, cen)) or [cp.pos]
             pts = place(snap, cands, n, notes, f'stage {k} {team} ({cp.name})')
-            ids = []
+            ids: list[str] = []
             for i, p in enumerate(pts):
                 sid = f's{k}{tag}_{i:02d}'
                 ids.append(sid)

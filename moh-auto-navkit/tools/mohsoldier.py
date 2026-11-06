@@ -20,6 +20,7 @@ import math
 import os
 import re
 import sys
+from collections.abc import Sequence
 
 RADIUS = 0.35              # PhysicalRadius
 HEIGHT = 1.8               # standing pose Height
@@ -38,23 +39,23 @@ HIGH_STEP = JUMP           # the high-capsule run: obstacles a jump clears (BFBC
 HEADROOM = round(HEIGHT + 0.1, 3)     # ground with a surface lower than this above it (and over HEADROOM_MIN) is too low
 
 
-def link_step(pitch):
+def link_step(pitch: float) -> float:
     """Largest height step between straight neighbouring cells pitch apart that a route edge joins: the slope limit
     over one cell, and never less than a step the soldier takes (0.8 m: 0.80; 0.2 m: 0.30)."""
     return round(max(STEP, pitch * math.tan(math.radians(SLOPE))), 3)
 
 
-def capsule_axis(bottom):
+def capsule_axis(bottom: float) -> tuple[float, float]:
     """(lowest, highest) sphere-centre heights above the surface of the sampling capsule whose bottom is lifted
     bottom (STEP or HIGH_STEP) off the floor: the soldier's capsule. (BFBC2's in-game sampler fitted 0.95 / 1.15
     for its 0.28 / 0.6 runs; MOH has no in-game sampler to fit against, so the physics' nominal capsule is used.)"""
     return bottom + RADIUS, HEIGHT - RADIUS
 
 
-FIELDS = {'PhysicalRadius': RADIUS, 'MaxAscendAngle': SLOPE, 'WaterDepthLimit': WATER_DEPTH, 'JumpHeight': JUMP}
+FIELDS: dict[str, float] = {'PhysicalRadius': RADIUS, 'MaxAscendAngle': SLOPE, 'WaterDepthLimit': WATER_DEPTH, 'JumpHeight': JUMP}
 
 
-def read_physics(root):
+def read_physics(root: str) -> dict[str, float] | None:
     """{name: value} from the game copy's DefaultSoldierPhysics (unpacked by navkit.py prepare into
     work\\navkit\\common), plus 'StandHeight', 'CrouchHeight', 'StepHeight'; None when not unpacked."""
     paths = sorted(glob.glob(os.path.join(root, 'work', 'navkit', 'common', 'common_mp*', 'Objects', 'Soldiers',
@@ -62,20 +63,23 @@ def read_physics(root):
     if not paths:
         return None
     t = open(paths[0], encoding='utf-8').read()
-    out = {}
+    out: dict[str, float] = {}
     for k in FIELDS:
         m = re.search(r'name="%s">([-\d.]+)<' % k, t)
         if m:
             out[k] = float(m.group(1))
     for m in re.finditer(r'type="Physics\.CharacterPoseData">(.*?)</instance>', t, re.S):
         body = m.group(1)
-        pose = re.search(r'name="PoseType">(\w+)<', body).group(1)
-        out[pose + 'Height'] = float(re.search(r'name="Height">([-\d.]+)<', body).group(1))
-        out['StepHeight'] = float(re.search(r'name="StepHeight">([-\d.]+)<', body).group(1))
+        pose = re.search(r'name="PoseType">(\w+)<', body)
+        height = re.search(r'name="Height">([-\d.]+)<', body)
+        step = re.search(r'name="StepHeight">([-\d.]+)<', body)
+        assert pose and height and step, 'a CharacterPoseData without PoseType, Height or StepHeight'
+        out[pose.group(1) + 'Height'] = float(height.group(1))
+        out['StepHeight'] = float(step.group(1))
     return out
 
 
-def differences(root):
+def differences(root: str) -> list[tuple[str, float, float]] | None:
     """[(name, game value, NavKit value)] where the game copy's soldier physics differ from the constants above;
     None when the physics are not unpacked."""
     phys = read_physics(root)
@@ -85,7 +89,7 @@ def differences(root):
     return [(k, phys[k], v) for k, v in want.items() if k in phys and abs(phys[k] - v) > 1e-6]
 
 
-def main(argv):
+def main(argv: Sequence[str]) -> int:
     """The command line: prints where the game copy's soldier physics differ from NavKit's soldier; returns 1 when
     they differ or are not unpacked."""
     if len(argv) != 2:

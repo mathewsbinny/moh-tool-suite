@@ -293,7 +293,7 @@ class Viewer:
         # errors caught in a frame: (where, type, message) -> text shown
         self._problems: dict[tuple[str, str, str], str] = {}
         # (a, b, colour) segments, set by the tool (set_overlay), drawn over the scene
-        self.overlay: list[tuple[Sequence[float], Sequence[float], Sequence[float]]] = []
+        self.overlay: list[tuple[Sequence[float] | np.ndarray, Sequence[float] | np.ndarray, Sequence[float]]] = []
         self._overlay_key: int | None = None
         self._overlay_version = 0
 
@@ -432,7 +432,8 @@ class Viewer:
             return
         self.vbo_col.write(data.tobytes(), offset=start * 4)
 
-    def set_overlay(self, segments: Iterable[tuple[Sequence[float], Sequence[float], Sequence[float]]]) -> None:
+    def set_overlay(self, segments: Iterable[tuple[Sequence[float] | np.ndarray, Sequence[float] | np.ndarray,
+                                                   Sequence[float]]]) -> None:
         """Replace the overlay: a list of (a, b, (r, g, b)) segments, uploaded once per call."""
         self.overlay = list(segments)
         self._overlay_version += 1

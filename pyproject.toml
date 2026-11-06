@@ -34,6 +34,8 @@ dev = [
 line-length = 120
 target-version = "py313"
 extend-exclude = ["research"]
+# the GUIs' .pyw scripts too (the hub, NavKit's window)
+extend-include = ["*.pyw"]
 
 [tool.ruff.lint]
 # F: pyflakes (unused imports and variables, undefined names, f-strings without fields), E9: syntax errors,
@@ -46,38 +48,43 @@ select = ["F", "E9", "BLE"]
 "**/*.py" = ["E402"]
 
 [tool.mypy]
-# the typed modules (python -m mypy, run from the suite's folder; tests\test_types.py runs it in the quick tier).
-# The modules import each other the way they run: core\ and the NavKit folders are on sys.path, so `from mohcore
-# import x`, `import hpdtool`, `import navkit` resolve through mypy_path; the other suite modules they import are
-# analysed for their types but not reported (follow_imports = silent) until they are annotated too.
-# The test harness's folder name has hyphens, so it is no package: its own folder and crash-reader\ are on mypy_path
-# instead, as harness.py and exeref.py put them on sys.path. With explicit_package_bases each file is then named from
-# the mypy_path entry that holds it: harness.py is `harness`, testharness\checks.py `testharness.checks` (a package, so
-# its relative imports resolve), crash-reader\crashreader.py `crashreader` - as the scripts import them.
+# every module outside the tests (python -m mypy, run from the suite's folder; tests\test_types.py runs it in the quick
+# tier, and tests\test_structure.py fails when a module is left out). The modules import each other the way they run:
+# each tool's folder is on sys.path, so `from mohcore import x`, `import hpdtool`, `import dbxbin`, `import apt`
+# resolve through mypy_path.
+# The folder names have hyphens, so they are no packages: their folders are on mypy_path instead, as the scripts put
+# them on sys.path. With explicit_package_bases each file is then named from the mypy_path entry that holds it:
+# harness.py is `harness`, testharness\checks.py `testharness.checks` (a package, so its relative imports resolve),
+# crash-reader\crashreader.py `crashreader` - as the scripts import them. The .pyw scripts would all be `__main__`:
+# scripts_are_modules names them from their file. moh-config\config.py would clash with moh-stockmp-ai\config.py (both
+# `config`), so test_types.py checks it in a run of its own (its SEPARATE list).
 files = [
     "core/mohcore/*.py",
-    "moh-auto-navkit/tools/hpdtool.py",
-    "moh-auto-navkit/tools/kymesh.py",
-    "moh-auto-navkit/tools/hkpack.py",
-    "moh-auto-navkit/tools/navsample.py",
-    "moh-auto-navkit/tools/navbuild.py",
-    "moh-auto-navkit/tools/navwalk.py",
-    "moh-auto-navkit/tools/navdrops.py",
-    "moh-auto-navkit/tools/navislands.py",
-    "moh-auto-navkit/tools/navexport.py",
-    "moh-auto-navkit/tools/navregress.py",
     "moh-auto-navkit/navkit.py",
+    "moh-auto-navkit/navkitGUI.pyw",
+    "moh-auto-navkit/tools/*.py",
     "moh-automated-map-and-bot-test-harness/harness.py",
     "moh-automated-map-and-bot-test-harness/testharness/*.py",
     "moh-automated-map-and-bot-test-harness/crash-reader/*.py",
+    "moh-navigation-studio/*.py",
+    "moh-map-inspector/*.py",
+    "moh-stockmp-ai/*.py",
+    "moh-menu-tools/*.py",
+    "moh-console-readers/apt/apt.py",
+    "moh-console-readers/stfs/stfs.py",
+    "moh-console-readers/xiso/xiso.py",
+    "MOH Tool Suite.pyw",
+    "run_tests.py",
 ]
 mypy_path = ["core", "moh-auto-navkit/tools", "moh-auto-navkit", "moh-automated-map-and-bot-test-harness",
-             "moh-automated-map-and-bot-test-harness/crash-reader"]
+             "moh-automated-map-and-bot-test-harness/crash-reader", "moh-stockmp-ai", "moh-menu-tools",
+             "moh-console-readers/apt", "moh-console-readers/stfs", "moh-console-readers/xiso"]
+scripts_are_modules = true
 explicit_package_bases = true
 python_version = "3.13"
 follow_imports = "silent"
 # every function annotated, and its body checked; not yet: disallow_any_generics (bare tuple / np.ndarray),
-# disallow_untyped_calls (the NavKit modules these call are not annotated), warn_return_any (numpy returns Any),
+# disallow_untyped_calls (third-party calls without stubs), warn_return_any (numpy returns Any),
 # warn_unreachable (a false positive in rsnv's line-of-sight loop)
 disallow_untyped_defs = true
 disallow_incomplete_defs = true

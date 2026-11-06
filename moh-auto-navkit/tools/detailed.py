@@ -16,6 +16,7 @@ import math
 import os
 import sys
 from collections import Counter
+from collections.abc import Collection, Iterable, Sequence
 
 import numpy as np
 
@@ -29,15 +30,17 @@ import navsample  # noqa: E402
 MARGIN = 5.0           # m around a flagged object's collision box
 STACKED_MIN = 100      # stacked-floor columns (0.8 m samples) that make a sector detailed
 STACK_GAP = 2.0        # m between the lowest and highest standable surface of a column
+Sector = tuple[int, int]                     # (X, Z) on the sector grid
 SLOPE_MAX = mohsoldier.SLOPE                 # the soldier's MaxAscendAngle (BFBC2 40)
 
 
-def flagged_sectors(level_dir, common, xoff, zoff, margin=MARGIN):
+def flagged_sectors(level_dir: str, common: Iterable[str], xoff: int, zoff: int, margin: float = MARGIN) -> set[Sector]:
     """Sectors (X, Z) within margin of a NeedsDetailedPathfinding object's collision box (objects.json; the flag is
     blueprint_flags' sixth item - MOH's MP blueprints set it on none, 1,135 false)."""
     bases = [b for b in [os.path.join(level_dir, 'pkg'), os.path.join(level_dir, 'dist')] + list(common) if os.path.isdir(b)]
     hv = levelobjects.havok_index(bases)
-    out, cache = set(), {}
+    out: set[Sector] = set()
+    cache: dict[str, np.ndarray | None] = {}
     for o in json.load(open(os.path.join(level_dir, 'objects.json'))):
         if not (o.get('flags') and len(o['flags']) > 5 and o['flags'][5]):
             continue
@@ -45,10 +48,11 @@ def flagged_sectors(level_dir, common, xoff, zoff, margin=MARGIN):
         if bp not in cache:
             cache[bp] = levelobjects.triangles(hv[bp]) if bp in hv else None
         t = np.array(o['m'][12:15])
-        if cache[bp] is None:
+        tris = cache[bp]
+        if tris is None:
             x0, z0, x1, z1 = t[0], t[2], t[0], t[2]
         else:
-            V = cache[bp].reshape(-1, 3) @ np.array([o['m'][0:3], o['m'][4:7], o['m'][8:11]]) + t
+            V = tris.reshape(-1, 3) @ np.array([o['m'][0:3], o['m'][4:7], o['m'][8:11]]) + t
             x0, z0, x1, z1 = V[:, 0].min(), V[:, 2].min(), V[:, 0].max(), V[:, 2].max()
         for X in range(int(math.floor((x0 - margin) / 100)) - xoff, int(math.floor((x1 + margin) / 100)) - xoff + 1):
             for Z in range(int(math.floor((z0 - margin) / 100)) - zoff, int(math.floor((z1 + margin) / 100)) - zoff + 1):
@@ -56,7 +60,7 @@ def flagged_sectors(level_dir, common, xoff, zoff, margin=MARGIN):
     return out
 
 
-def stacked_columns(samples_path, xoff, zoff):
+def stacked_columns(samples_path: str, xoff: int, zoff: int) -> Counter[Sector]:
     """{sector (X, Z): columns holding standable surfaces at least STACK_GAP apart} from 0.8 m samples."""
     s, _ = navsample.load(samples_path)
     ok = ((s.flags & 3) == 0) & (s.normal[:, 1] >= math.cos(math.radians(SLOPE_MAX)) - 0.01)
@@ -73,25 +77,27 @@ def stacked_columns(samples_path, xoff, zoff):
     return Counter(zip((np.floor(x / 100).astype(int) - xoff).tolist(), (np.floor(z / 100).astype(int) - zoff).tolist()))
 
 
-def choose(level_dir, common, samples_path, xoff, zoff, margin=MARGIN, stacked_min=STACKED_MIN):
+def choose(level_dir: str, common: Iterable[str], samples_path: str | None, xoff: int, zoff: int, margin: float = MARGIN,
+           stacked_min: int = STACKED_MIN) -> tuple[list[Sector], dict[str, int]]:
     """(sorted [(X, Z)], {'flag': n, 'stacked': n}) - the detailed sectors of a level."""
     flag = flagged_sectors(level_dir, common, xoff, zoff, margin)
     stacked = {k for k, n in stacked_columns(samples_path, xoff, zoff).items() if n >= stacked_min} if samples_path else set()
     return sorted(flag | stacked), {'flag': len(flag), 'stacked': len(stacked), 'stacked only': len(stacked - flag)}
 
 
-def score(chosen, dice_pathdata):
+def score(chosen: Collection[Sector], dice_pathdata: str) -> tuple[int, int, int]:
     """Against DICE's choice (evaluation only): (found, DICE detailed, chosen sectors DICE builds at 0.8)."""
     import hpdtool
     import kymesh
-    det, norm = set(), set()
+    det: set[Sector] = set()
+    norm: set[Sector] = set()
     for s in hpdtool.parse(open(dice_pathdata, 'rb').read()).sectors:
         (det if abs(kymesh.parse_mesh(s.mesh).pitch - 0.2) < 1e-3 else norm).add((s.id >> 8, s.id & 0xff))
     c = set(chosen)
     return len(det & c), len(det), len(norm & c)
 
 
-def main(argv):
+def main(argv: Sequence[str]) -> int:
     """The command line: prints the level's detailed sectors and why, and with --score how they match DICE's; returns
     the exit code."""
     if len(argv) < 2:

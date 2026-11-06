@@ -23,6 +23,7 @@ import json
 import os
 import shutil
 import sys
+from typing import TypeVar, cast, overload
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -40,14 +41,19 @@ SAME_WORLD = {'mp_005': 'ons_mp_005gr', 'mp_005gr': 'ons_mp_005gr', 'mp_005sr': 
               'mp_008': 'ons_mp_008', 'mp_008cq': 'ons_mp_008', 'mp_008sdm': 'ons_mp_008'}
 BACKUP = '.opfor-stockmp-orig'
 APPLIED = '.opfor-stockmp-applied'
+T = TypeVar('T')
 
 
-def opt(argv, name, default=None):
+@overload
+def opt(argv: list[str], name: str) -> str | None: ...
+@overload
+def opt(argv: list[str], name: str, default: T) -> str | T: ...
+def opt(argv: list[str], name: str, default: object = None) -> object:
     """The value after name in argv, or default."""
     return argv[argv.index(name) + 1] if name in argv and argv.index(name) + 1 < len(argv) else default
 
 
-def pathdata_for(paths, folder=None):
+def pathdata_for(paths: pipeline.Paths, folder: str | None = None) -> dict[str, str]:
     """The infantry and vehicle path data to build on: the given folder's, the level's own, or its same-world level's;
     exits when there is none."""
     base = os.path.join(paths.gc.ai_dir(), 'levels')             # MOH: game\MP\Output\win32\ai\levels
@@ -60,16 +66,18 @@ def pathdata_for(paths, folder=None):
                      f'{SAME_WORLD.get(paths.lv)}); build one with NavKit and pass --pathdata')
 
 
-def summary(paths):
+def summary(paths: pipeline.Paths) -> None:
     """Prints the stock level's mode, factions, capture points, spawner counts and Rush stages."""
     v, b = paths.loaded_bundle()                  # a level without a bundle of its own: a BuildError that says so
     d = pipeline.unpacked(b, paths.src(v))
-    m = levelmodel.Model(dbxbin.read(pipeline.find_entry(d, pipeline.level_entry(d, pipeline._level_name(d, paths.lv)))))
+    # _level_name raises when the bundle has no level partition, so its entry and file are there
+    entry = cast(str, pipeline.level_entry(d, pipeline._level_name(d, paths.lv)))
+    m = levelmodel.Model(dbxbin.read(cast(str, pipeline.find_entry(d, entry))))
     print(f'{m.name}: mode {m.mode}, factions {m.factions}, attacker {m.attacker}, HasAI {m.has_ai}')
     for cp in m.capture_points:
         print(f'  capture point {cp.label or cp.name:14s} owner {cp.owner:11s} at {tuple(round(x) for x in cp.pos)}, '
               f'{len(cp.spawners)} spawners')
-    kinds = {}
+    kinds: dict[tuple[str | None, str | None], int] = {}
     for s in m.spawners:
         kinds[(s.team, s.player_type)] = kinds.get((s.team, s.player_type), 0) + 1
     print(f'  soldier spawners: {kinds}')
@@ -77,10 +85,10 @@ def summary(paths):
         print(f'  stage {st.index}: {st.trigger_name}, M-COMs {[tuple(round(x) for x in p) for _g, p in st.mcoms]}')
 
 
-def installed_files(game, lv):
+def installed_files(game: str, lv: str) -> list[str]:
     """Rel paths of the files --apply installed for <lv>, from the *.opfor-stockmp-applied markers under the game
     folder - the installation record, independent of what is still in the build output."""
-    rels = []
+    rels: list[str] = []
     for dp, _d, fs in os.walk(game):
         for f in fs:
             if f.endswith(APPLIED):
@@ -90,18 +98,19 @@ def installed_files(game, lv):
     return rels
 
 
-def changed_after_install(dst):
+def changed_after_install(dst: str) -> bool:
     """Whether a file --apply installed was changed since (its marker holds the installed file's sha256)."""
     with_marker = os.path.isfile(dst + APPLIED) and os.path.isfile(dst)
     return with_marker and open(dst + APPLIED).read().strip() != pipeline.sha(dst)
 
 
-def install(paths, argv):
+def install(paths: pipeline.Paths, argv: list[str]) -> None:
     """Copies the built files into the game (--apply, backing up originals), puts them back (--revert) or lists them
     (the default plan); stops when an installed file was changed since."""
     game = opt(argv, '--game', paths.game)
     out = os.path.join(paths.root, 'out', 'game')
     mode = '--apply' if '--apply' in argv else '--revert' if '--revert' in argv else '--plan'
+    files: set[str] | list[str]
     if mode == '--revert':
         files = set(os.path.relpath(os.path.join(dp, f), out) for dp, _d, fs in os.walk(out) for f in fs)
         files |= set(installed_files(game, paths.lv))
@@ -153,7 +162,7 @@ def install(paths, argv):
         print(f'(plan only: `install {paths.lv}{var} --apply` copies these into {game}, keeping *{BACKUP} backups)')
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
     """The command line (see the module docstring); a level without a bundle of its own exits with a plain message."""
     try:
         return _main(argv)
@@ -161,7 +170,7 @@ def main(argv):
         raise SystemExit(f'stockmp: {e}')
 
 
-def _main(argv):
+def _main(argv: list[str]) -> int:
     if len(argv) < 3 or argv[1] not in ('summary', 'generate', 'build', 'validate', 'all', 'install'):
         print(__doc__)
         return 1

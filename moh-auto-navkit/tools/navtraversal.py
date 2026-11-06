@@ -20,17 +20,27 @@ import json
 import math
 import os
 from collections import Counter
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import mohsoldier  # noqa: E402
 
+if TYPE_CHECKING:
+    import hpdtool
+
 FORMAT, VERSION = 'moh-traversal', 1
 JOIN_XZ, JOIN_Y, Y_OFFSET = 15.0, 4.0, mohsoldier.Y_OFFSET
+Graph = tuple[list[int], list[int], np.ndarray, list[int]]   # graph(): node ids, sectors, positions, islands
 
 
-def graph(f):
+def graph(f: 'hpdtool.HpdFile') -> Graph:
     """Unique nodes (by id) with their sector, position and island (0 = the largest)."""
-    index, ids, secs, pos, edges = {}, [], [], [], []
+    index: dict[int, int] = {}
+    ids: list[int] = []
+    secs: list[int] = []
+    pos: list[tuple[float, float, float]] = []
+    edges: list[tuple[int, int]] = []
     for s in f.sectors:
         local = []
         for n in s.nodes:
@@ -43,7 +53,7 @@ def graph(f):
         edges += [(local[e.src], local[e.dst]) for e in s.edges]
     parent = list(range(len(ids)))
 
-    def find(a):
+    def find(a: int) -> int:
         while parent[a] != a:
             parent[a] = parent[parent[a]]
             a = parent[a]
@@ -57,7 +67,7 @@ def graph(f):
     return ids, secs, np.array(pos, dtype=np.float64).reshape(-1, 3), [rank[r] for r in roots]
 
 
-def nearest(g, p):
+def nearest(g: Graph, p: Sequence[float]) -> dict[str, Any] | None:
     """The route node nearest p within the join limits, as {sector, id, pos, island, distance}, or None."""
     ids, secs, pos, island = g
     if not len(pos):
@@ -71,11 +81,12 @@ def nearest(g, p):
             'distance': round(float(d[k]), 2)}
 
 
-def write(f, pathdata_path, operations, level, out_path, log=print):
+def write(f: 'hpdtool.HpdFile', pathdata_path: str, operations: Iterable[Mapping[str, Any]], level: str, out_path: str,
+          log: Callable[..., object] = print) -> list[dict[str, Any]]:
     """Writes the traversal annotations among operations to out_path (an empty list when there are none).
     Returns the links written."""
     g = graph(f)
-    links = []
+    links: list[dict[str, Any]] = []
     for o in operations:
         if o.get('op') != 'traversal':
             continue
