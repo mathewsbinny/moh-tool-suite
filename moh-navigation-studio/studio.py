@@ -16,6 +16,7 @@ lacks (red, its own layer). Panels: the difference figures, the islands (largest
 spawns that are not on the main network, and the selected area. The camera works as in the Map Inspector.
 """
 import colorsys
+import enum
 import os
 import sys
 from collections.abc import Callable, Sequence
@@ -59,6 +60,14 @@ LIFT = 0.06                                              # ground cells drawn ju
 LADDER = (0.62, 0.35, 1.0)                               # ground reached only by ladder links, and the links
 PATH_COLOURS = {'NavKit': (1.0, 0.85, 0.1), 'DICE': (0.3, 0.9, 1.0)}
 Segment = tuple[np.ndarray, np.ndarray, tuple[float, float, float]]   # overlay line: from, to, colour
+
+
+class ClickMode(enum.Enum):
+    """What a click on the level does: select (an area, a spawn, a marker), the path test's start and end (P), or
+    the editor's tool (a point of the edit being drawn). One at a time, set by Studio.set_click_mode only."""
+    SELECT = 'select'
+    PATH = 'path'
+    EDIT = 'edit'
 
 
 def hue(k: int, s: float = 0.65, v: float = 0.92) -> tuple[float, float, float]:
@@ -135,7 +144,7 @@ class Studio:
         if 'NavKit' in files:
             self.add_anomaly_layers()
         self.triangles = 0                                  # main sets it once the scene is built
-        self.path_mode = False                              # the path test (P) takes the clicks
+        self.click_mode = ClickMode.SELECT                  # set_click_mode only: the path test (P), an edit tool
         self.path_pts: list[np.ndarray] = []
         self.routes: dict[str, navpath.Route] = {}
         self.path_segs: list[Segment] = []
@@ -468,19 +477,38 @@ class Studio:
         return None
 
     # --- path test (P) ------------------------------------------------------------------------------
+    @property
+    def path_mode(self) -> bool:
+        """True while the path test (P) takes the clicks."""
+        return self.click_mode is ClickMode.PATH
+
+    def set_click_mode(self, v: viewer.Viewer, mode: ClickMode) -> None:
+        """The one setter of the click mode (2026-11-05: it was derived from a path_mode flag, the editor's state and
+        the viewer's, and P mid-outline left the outline's crosses on screen). Leaving a mode clears what it was
+        drawing - the path test's lone start point, the editor's tool and its clicks - and the overlay is redrawn;
+        clicks select only in SELECT."""
+        if mode is not ClickMode.PATH and len(self.path_pts) == 1:
+            self.path_pts.clear()                         # a start without an end; a finished route stays shown
+            self.path_segs = []
+            self.update_path_overlay(v)
+        if mode is not ClickMode.EDIT and self.editor is not None:
+            self.editor.tool, self.editor.clicks = None, []
+        self.click_mode = mode
+        v.select_on_click = mode is ClickMode.SELECT
+        self.refresh_overlay(v)
+
     def set_path_mode(self, v: viewer.Viewer, on: bool) -> None:
-        """Turns the path test's click mode on or off; turning it on drops the editor's tool."""
-        self.path_mode = on
-        if on and self.editor is not None:
-            self.editor.tool = None                       # one click mode at a time
-        self.sync_click_mode(v)
+        """Turns the path test's click mode on (the editor's tool dropped) or off (clicks select)."""
+        self.set_click_mode(v, ClickMode.PATH if on else ClickMode.SELECT)
 
     def sync_click_mode(self, v: viewer.Viewer) -> None:
-        """Clicks select unless the path test or an edit tool takes them."""
-        editing = self.editor is not None and self.editor.active()
-        if editing:
-            self.path_mode = False
-        v.select_on_click = not (self.path_mode or editing)
+        """After the editor's tool changed: EDIT while it has one, else SELECT (when it was EDIT)."""
+        if self.editor is not None and self.editor.active():
+            self.set_click_mode(v, ClickMode.EDIT)
+        elif self.click_mode is ClickMode.EDIT:
+            self.set_click_mode(v, ClickMode.SELECT)
+        else:
+            v.select_on_click = self.click_mode is ClickMode.SELECT
 
     def refresh_overlay(self, v: viewer.Viewer) -> None:
         """The overlay: the path test's points and routes, and every edit with the drawing in progress."""
@@ -559,10 +587,11 @@ class Studio:
         """The viewer's pick handler: an editor click, a path test point, or the selection of an area, spawn or
         reference marker."""
         def handler(oid: int | None) -> None:
-            if self.editor is not None and self.editor.active():
-                self.editor.click(v, v.pick_point)
+            if self.click_mode is ClickMode.EDIT:
+                if self.editor is not None and self.editor.active():
+                    self.editor.click(v, v.pick_point)
                 return
-            if self.path_mode:
+            if self.click_mode is ClickMode.PATH:
                 if v.pick_point is not None:
                     self.path_point(v, v.pick_point)
                 return
@@ -802,6 +831,8 @@ def main(argv: Sequence[str]) -> int:
                       panels=[st.panel_main, st.panel_islands, st.panel_selection, st.panel_path, st.panel_compare,
                               st.panel_anomaly] + ([st.editor.panel] if st.editor is not None else []) + [st.panel_status])
     v.on_pick = st.on_pick(v)
+    if st.editor is not None:                               # closing with unsaved edits asks for a second close
+        v.confirm_close = st.editor.confirm_close
     hide = set(opts.get('--hide', 'objects,DICE ground,DICE outlines,DICE portals,DICE border portals,DICE route graph,'
                                    'NavKit outlines,NavKit portals,NavKit border portals,NavKit route graph').split(','))
     for name, i in st.layers.items():

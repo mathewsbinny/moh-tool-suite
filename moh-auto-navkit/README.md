@@ -705,6 +705,11 @@ and F cells. None of it is play-tested yet. The steps below keep their history.
      result (`navkit.py install --from <file>` installs any built file), with the traversal file beside the
      installed path data; `restore` removes both and puts DICE's file back. A full rebuild (about 1-8
      minutes a level); without edits the build is unchanged.
+     Every build records what made it in `pathdata.hpd.build.json` beside the file (`build` or `apply`, the
+     side file, the file's SHA-256 - a record whose hash no longer matches is ignored). A plain `navkit.py
+     build` over an apply build says it is replacing the edits' build; the GUI asks first. The GUI marks each
+     stage done (a tick), "old" (a file older than the stage it is made from: re-prepared or re-sampled since)
+     or missing (`navkit.stage_status`); navkit.json is written atomically (temp file and `os.replace`).
    - **Edge costs (fixed 2026-10-16):** every DICE edge costs `floor(distance * 16)` from the positions as
      stored; NavKit computed it from unrounded positions, and 138 of SP_004_B's 60,142 costs came out one
      unit off. NavKit now uses the stored positions (0 off; parity measures unchanged).

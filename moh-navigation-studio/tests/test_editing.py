@@ -9,7 +9,9 @@ the level.
 First, without game data (--quick runs only these; 2026-10-31): an unreadable side file is not saved over (the
 editor warns, starts empty, and the save keeps the file as .unreadable.bak), reload with unsaved edits needs a
 second click, a deleted edit comes back in its place on undo, and E does not toggle the panel while flying with
-the right button held.
+the right button held. 2026-11-05: the apply job's state and its own log (fake jobs, no navkit), a result out of
+date once the edits change (install and open refused), opening the result saving first, and closing the window
+with unsaved edits needing a second close.
 
   python test_editing.py [level] [--quick]
 """
@@ -17,6 +19,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 
 import numpy as np
 
@@ -108,8 +111,75 @@ def quick_checks(check):
               'E does not toggle the panel while flying with the right button held')
         v.camera.fly = False
         check(editing.Editor.e_toggles(v, True), 'and toggles it in orbit mode')
+        job_checks(check, editing.Editor(st, tmp, 'lv2', 'Levels/LV2'), v)
+        close_checks(check, editing.Editor(st, tmp, 'lv3', 'Levels/LV3'))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def fake_job(ed, name, lines=5, code=0):
+    """An apply job that prints lines named name a little apart and exits with code (no navkit)."""
+    src = (f'import time\nfor k in range({lines}):\n    print("{name}", k, flush=True)\n    time.sleep(0.05)\n'
+           f'raise SystemExit({code})')
+    return ed.start_job([sys.executable, '-u', '-c', src], f'{name} started')
+
+
+def wait(job):
+    while job.state() is editing.JobState.RUNNING:
+        time.sleep(0.02)
+    job.reader.join(5)
+
+
+def job_checks(check, ed, v):
+    """2026-11-05: the apply job's state (IDLE / RUNNING / DONE / FAILED), each job's own log, a result out of
+    date once the edits change (install and open refused), open the result saving first."""
+    check(ed.job_state() is editing.JobState.IDLE and not ed.job.log, 'no build yet: the job is IDLE')
+    ed.tune.add(nt.op('seed', at=(0, 0, 0)))
+    ed.save()
+    old = fake_job(ed, 'A')
+    new = fake_job(ed, 'B')                         # started while A's reader still reads
+    check(ed.job is new and old.state() is editing.JobState.RUNNING, 'a second build while one runs: the new job is the one shown')
+    wait(old), wait(new)
+    check(old.log == ['A started'] + [f'A {k}' for k in range(5)] and new.log == ['B started'] + [f'B {k}' for k in range(5)],
+          'each job has its own log: the old reader\'s lines never land in the new build\'s')
+    check(ed.job_state() is editing.JobState.DONE and not ed.result_stale() and ed.result_unusable() is None,
+          'built from the edits as they are: DONE, not out of date')
+    installs, opens = [], []
+    ed.run_navkit = lambda args: installs.append(args) or 0
+    ed.reopen_on_result = lambda v: opens.append(ed.tune.dirty)
+    ed.tune.add(nt.op('unseed', at=(1, 0, 0)))
+    check(ed.result_stale() and 'changed' in (ed.result_unusable() or ''), 'an edit after the build: the result is out of date')
+    check(not ed.install_result() and not installs and 'not installed' in ed.install_msg, 'and install is refused (not run)')
+    check(not ed.open_result(v) and not opens and 'not opened' in ed.message, 'and so is opening it')
+    ed.save()                                       # saved at the new edits; undo back to the built ones
+    ed.undo(v)
+    check(not ed.result_stale() and ed.tune.dirty, 'undo back to the built edits: up to date again (but unsaved: saved later)')
+    check(ed.open_result(v) and opens == [False] and not ed.tune.dirty and [o['op'] for o in nt.load(ed.path).operations] == ['seed'],
+          'open the result with unsaved edits: they are saved first (the built ones), then the window reopens')
+    check(ed.install_result() and installs == [['install', 'lv2', '--from', ed.job.out]], 'install: the build of the current edits')
+    ed.tune.add(nt.op('note', at=(2, 0, 0), text='x'))
+    ed.save()
+    ed.reload(v)
+    check(ed.result_stale(), 'a reload: the result is out of date (other edits object)')
+    failed = fake_job(ed, 'C', lines=1, code=3)
+    wait(failed)
+    check(ed.job_state() is editing.JobState.FAILED and ed.result_unusable() == 'there is no finished build',
+          'a build that exits with an error: FAILED, nothing to install')
+
+
+def close_checks(check, ed):
+    """2026-11-05: closing the window with unsaved edits warns and needs a second close; clean edits close at once,
+    and an edit between the two closes asks again."""
+    check(ed.confirm_close(), 'no unsaved edits: the window closes')
+    ed.tune.add(nt.op('seed', at=(0, 0, 0)))
+    ed.open = False
+    check(not ed.confirm_close() and ed.close_armed and ed.open and 'unsaved' in ed.message,
+          'unsaved edits: the first close only warns (the panel opened)')
+    ed.commit(nt.op('unseed', at=(1, 0, 0)))
+    check(not ed.close_armed and not ed.confirm_close(), 'an edit between the closes: it asks again')
+    check(ed.confirm_close(), 'the second close closes (the edits discarded)')
+    ed.save()
+    check(not ed.close_armed and ed.confirm_close(), 'saved: closes at once')
 
 
 def main(argv):
@@ -196,14 +266,13 @@ def main(argv):
         export_stamp = os.path.getmtime(export) if os.path.isfile(export) else None
         ed.job_out = os.path.join(tmp, 'edited.hpd')
         ed.start_apply()
-        import time
         t0 = time.time()
-        while ed.job_state() == 'running' and time.time() - t0 < 900:
+        while ed.job_state() is editing.JobState.RUNNING and time.time() - t0 < 900:
             time.sleep(2)
         state = ed.job_state()
-        check(state == 'done' and os.path.isfile(ed.job_out) and any('read back' in l for l in ed.job_log),
+        check(state is editing.JobState.DONE and os.path.isfile(ed.job_out) and any('read back' in l for l in ed.job.log),
               f'the apply button builds with the edits in the background ({time.time() - t0:.0f} s): {state}')
-        check(any('link / route-edge edit(s) applied' in l for l in ed.job_log), 'its log reports the links and route edges')
+        check(any('link / route-edge edit(s) applied' in l for l in ed.job.log), 'its log reports the links and route edges')
         check(export_stamp is None or os.path.getmtime(export) == export_stamp, 'the level\'s export is untouched')
         ed.set_open(v, False)
         check(v.select_on_click and ed.tool is None, 'closing the panel gives clicks back to selecting')

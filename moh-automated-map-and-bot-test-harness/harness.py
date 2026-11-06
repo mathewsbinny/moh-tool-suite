@@ -40,6 +40,7 @@ import os
 import sys
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeVar, cast, overload
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -167,10 +168,10 @@ def run_level(root: str, lv: str, opts: Mapping[str, Any], cache: str,
     L['notes'] += info.notes
     log(f'  level read ({time.time() - t0:.0f} s): {len(info.sources)} spawns, {len(info.targets)} targets, {len(info.orders)} orders')
     files, ref_key = _level_files(L, root, lv, opts)
-    ref: dict[str, Any] = {}
     ref_nav, (sources, targets, orders) = _infantry_points(L, info, files, cache, log)
+    ref = Reference(ref_key, ref_nav)
     for key, path in files:
-        _test_file(L, key, path, root, lv, opts, cache, log, info, ref, ref_key, ref_nav, (sources, targets, orders))
+        _test_file(L, key, path, root, lv, opts, cache, log, info, ref, (sources, targets, orders))
     if 'level' in opts['tests']:
         _level_checks(L, info, log)
     return L
@@ -214,64 +215,112 @@ def _infantry_points(L: dict[str, Any], info: levelinfo.LevelInfo, files: Sequen
     return ref_nav, (sources, targets, orders)
 
 
+@dataclass
+class Reference:
+    """The reference file's results that the level's other files are compared with, filled in as the reference
+    file's tests run (it is tested first). A reference test that errors is kept in failed with the reason: the other
+    files' comparisons with it are then skipped with that reason, never scored as if they were the baseline."""
+
+    key: str | None                              # the reference file's key ('dice', else the first file's)
+    nav: navdata.NavData | None                  # its navigation data (loaded whenever there is a file)
+    reach: dict[str, Any] | None = None          # its reachability result's data (pair bits)
+    pairs: dict[str, list[Any]] | None = None    # the battery's pairs, {'random': [...], 'level': [...]}
+    routes: dict[str, list[checks.PairRoute]] | None = None    # its routes over those pairs, per battery
+    orders: dict[str, Any] | None = None         # its orders result's data (near bits)
+    failed: dict[str, str] = field(default_factory=dict)       # test -> 'reference <test> failed: ...'
+
+    def unusable(self, test: str) -> str | None:
+        """Why the other files cannot be compared with the reference's test, or None when they can."""
+        if test in self.failed:
+            return self.failed[test]
+        have = {'reachability': self.reach, 'battery': self.routes, 'orders': self.orders}.get(test)
+        if have is None:
+            return f'reference {test} missing: it did not run on the reference file ({self.key})'
+        return None
+
+    def run(self, key: str, test: str, fn: Callable[[], checks.Result]) -> checks.Result:
+        """A test compared with the reference (timed): on the reference file its error is recorded in failed; on
+        another file, when the reference's result is unusable, a 'skip' with the reason and the test not run."""
+        if key != self.key:
+            why = self.unusable(test)
+            if why is not None:
+                return checks.Result('skip', f'not compared: {why}',
+                                     details=[f'the {key} file\'s {test} needs the reference file\'s ({self.key}); fix that first'])
+        r = timed(fn)
+        if key == self.key and r.status == 'error':
+            self.failed[test] = f'reference {test} failed: {r.summary}'
+        return r
+
+
 def _test_file(L: dict[str, Any], key: str, path: str, root: str, lv: str, opts: Mapping[str, Any], cache: str,
-               log: Callable[[str], object], info: levelinfo.LevelInfo, ref: dict[str, Any], ref_key: str | None,
-               ref_nav: navdata.NavData | None,
+               log: Callable[[str], object], info: levelinfo.LevelInfo, ref: Reference,
                points: tuple[list[classify.Point], list[classify.Point], list[classify.Point]]) -> None:
     """Every test asked for on one path-data file of the level, into L['files'][key]; the reference file's results
     kept in ref for the files after it."""
     import hpdcheck
     import hpdtool
-    import ordercheck
     from mohcore import navdata
     from testharness import levelinfo
-    sources, targets, orders = points
     tests = opts['tests']
     tf = time.time()
     F: dict[str, Any] = {'path': path, 'sha1': levelinfo.sha1(path), 'size': os.path.getsize(path), 'tests': {}}
     L['files'][key] = F
     res = F['tests']
-    # the reference file is files[0], so ref_nav is loaded whenever this loop runs
-    nav = cast(navdata.NavData, ref_nav) if key == ref_key else navdata.load(path, cache_dir=os.path.join(cache, 'navdata'))
+    # the reference file is files[0], so ref.nav is loaded whenever this loop runs
+    nav = cast(navdata.NavData, ref.nav) if key == ref.key else navdata.load(path, cache_dir=os.path.join(cache, 'navdata'))
     if 'structure' in tests:
         res['structure'] = timed(lambda: checks.structure(hpdcheck.check(path)))
-    if 'reachability' in tests:
-        r = timed(checks.reachability, nav, sources, targets, None if key == ref_key else ref.get('reach'),
-                  baseline=key == 'dice')
-        res['reachability'] = r
-        if key == ref_key:
-            ref['reach'] = r.data
-    if 'battery' in tests:
-        def bat() -> checks.Result:
-            if key == ref_key:
-                ref['pairs'] = {'random': list(zip(*[iter(checks.random_points(nav, 2 * opts['pairs'], opts['seed'], lv))] * 2)),
-                                'level': checks.level_pairs(sources, targets, opts['level_pairs'], opts['seed'], lv)}
-                ref['routes'] = {}
-            out: list[checks.Result] = []
-            names: list[str] = []
-            for name, pairs in ref['pairs'].items():
-                routes = checks.route_pairs(nav, pairs)
-                if key == ref_key:
-                    ref['routes'][name] = routes
-                out.append(checks.battery(name, pairs, routes, None if key == ref_key else ref['routes'].get(name)))
-                names.append(name)
-            return checks.merge(out, names)
-        res['battery'] = timed(bat)
-    if 'orders' in tests:
-        r = timed(lambda: checks.orders(nav, orders, ordercheck.PathData(path).on_area,
-                                        None if key == ref_key else ref.get('orders'), baseline=key == 'dice'))
-        res['orders'] = r
-        if key == ref_key:
-            ref['orders'] = r.data
+    _compared_tests(res, key, path, lv, opts, nav, ref, points)
+    for t in ('reachability', 'battery', 'orders'):
+        if key != ref.key and t in res and res[t].status == 'skip' and res[t].summary.startswith('not compared: '):
+            L['notes'].append(f'{key}: {t} {res[t].summary}')
     if 'offsets' in tests:
         res['offsets'] = timed(lambda: checks.offsets(checks.sector_offsets(hpdtool.parse(open(path, 'rb').read()).sectors),
                                                       info.assets.get('Infantry')))
-    if 'parity' in tests and key != 'dice' and ref_key == 'dice':
+    if 'parity' in tests and key != 'dice' and ref.key == 'dice':
         res['parity'] = timed(parity, root, lv, path, cache)
     for t in list(res):
         res[t] = res[t].as_dict()
     log(f'  {key:9s} {os.path.relpath(path, root)}: ' + ', '.join(f'{t} {runs.LABEL[r["status"]].strip()}' for t, r in res.items())
         + f' ({time.time() - tf:.0f} s)')
+
+
+def _compared_tests(res: dict[str, Any], key: str, path: str, lv: str, opts: Mapping[str, Any], nav: navdata.NavData,
+                    ref: Reference, points: tuple[list[classify.Point], list[classify.Point], list[classify.Point]]) -> None:
+    """The tests compared with the reference file (reachability, battery, orders) on one file, into res; on the
+    reference file its results kept in ref (ref.run: a reference that errors makes the others' 'skip')."""
+    import ordercheck
+    sources, targets, orders = points
+    tests = opts['tests']
+    is_ref = key == ref.key
+    if 'reachability' in tests:
+        r = ref.run(key, 'reachability', lambda: checks.reachability(nav, sources, targets, None if is_ref else ref.reach,
+                                                                     baseline=key == 'dice'))
+        res['reachability'] = r
+        if is_ref and r.status != 'error':
+            ref.reach = r.data
+    if 'battery' in tests:
+        def bat() -> checks.Result:
+            if is_ref:
+                pairs = {'random': list(zip(*[iter(checks.random_points(nav, 2 * opts['pairs'], opts['seed'], lv))] * 2)),
+                         'level': checks.level_pairs(sources, targets, opts['level_pairs'], opts['seed'], lv)}
+                routes = {name: checks.route_pairs(nav, p) for name, p in pairs.items()}
+                ref.pairs, ref.routes = pairs, routes        # only once every battery has routed: never partial
+            else:
+                pairs = cast(dict[str, list[Any]], ref.pairs)              # ref.run checked ref.routes (set with it)
+                routes = {name: checks.route_pairs(nav, p) for name, p in pairs.items()}
+            ref_routes = cast(dict[str, list[checks.PairRoute]], ref.routes)
+            out = [checks.battery(name, pairs[name], routes[name], None if is_ref else ref_routes.get(name)) for name in pairs]
+            return checks.merge(out, list(pairs))
+        res['battery'] = ref.run(key, 'battery', bat)
+        if is_ref and res['battery'].status == 'error':
+            ref.pairs = ref.routes = None
+    if 'orders' in tests:
+        r = ref.run(key, 'orders', lambda: checks.orders(nav, orders, ordercheck.PathData(path).on_area,
+                                                         None if is_ref else ref.orders, baseline=key == 'dice'))
+        res['orders'] = r
+        if is_ref and r.status != 'error':
+            ref.orders = r.data
 
 
 def _level_checks(L: dict[str, Any], info: levelinfo.LevelInfo, log: Callable[[str], object]) -> None:
@@ -444,7 +493,8 @@ def cmd_import_log(args: list[str]) -> int:
     for name, r in ingame.evaluate(s, asset).items():
         L.setdefault('ingame', {})[name] = r.as_dict()
     runs.save(run, path)
-    print(f'{lv}: session {s.start} (PID {s.pid}) of {len(found)} in {log_path}')
+    part = f', level {s.part} of that process' if s.part > 1 else ''
+    print(f'{lv}: session {s.start} (PID {s.pid}{part}) of {len(found)} in {log_path}')
     for name in ('loads-ai-init', 'offsets-read', 'pathfinders'):
         r = L['ingame'][name]
         print(f"  {runs.LABEL[r['status']]} {name:16s} {r['summary']}")

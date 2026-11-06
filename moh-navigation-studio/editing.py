@@ -10,11 +10,19 @@ Ctrl+Z / Ctrl+Y undo and redo (a removed edit is undone in place).
 A side file that cannot be read (a newer version's, an invalid operation, a JSON typo) is never saved over: the
 editor starts empty with a warning, and the first save (or build) keeps the unreadable file as
 <side file>.unreadable.bak (.unreadable.1.bak, ... when taken). Reload asks for a second click when there are unsaved
-edits.
+edits, and so does closing the window (2026-11-05).
+
+The build (navkit apply) is an ApplyJob: its state, its process, its output file, its own log, and the edits'
+version it was built from. Once the edits change (or are reloaded) its result is shown as out of date, and
+installing it or opening it is disabled until it is built again. Opening the result saves the edits first (they are
+the built ones: an out-of-date result cannot be opened), since the new window reads the side file.
 """
+import enum
 import os
 import subprocess
+import threading
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -98,6 +106,39 @@ def op_focus(o: dict[str, Any]) -> Point:
     return at
 
 
+class JobState(enum.Enum):
+    """An apply job's state: none started, running, finished with exit code 0, or with another."""
+    IDLE = 'idle'
+    RUNNING = 'running'
+    DONE = 'done'
+    FAILED = 'failed'
+
+
+@dataclass
+class ApplyJob:
+    """One `navkit.py apply` run: its process, the file it writes, its log (its own: the reader thread of an older
+    job appends to that job's log only), and the side file, edits and version it was built from."""
+    proc: 'subprocess.Popen[str] | None' = None
+    out: str = ''
+    log: list[str] = field(default_factory=list)
+    side_file: str = ''
+    tune: nt.NavTune | None = None
+    version: int | None = None
+    reader: threading.Thread | None = None
+
+    def state(self) -> JobState:
+        """IDLE without a process, else RUNNING until it exits, then DONE (exit code 0) or FAILED."""
+        if self.proc is None:
+            return JobState.IDLE
+        code = self.proc.poll()
+        return JobState.RUNNING if code is None else (JobState.DONE if code == 0 else JobState.FAILED)
+
+    def built_from(self, tune: nt.NavTune, side_file: str) -> bool:
+        """True when these edits (the same NavTune, at the version built, the same side file) are the ones the job
+        was started with; False after an edit, an undo past it, a reload or another side file."""
+        return self.tune is tune and self.version == tune.version and self.side_file == side_file
+
+
 class Editor:
     def __init__(self, studio: 'studio.Studio', root: str, lv: str, level_name: str) -> None:
         self.st, self.root, self.lv = studio, root, lv
@@ -108,6 +149,7 @@ class Editor:
         self.warning = ''                       # shown at the panel's top until the side file is saved or read
         self.unreadable: str | None = None      # a side file that could not be read: backed up, never saved over
         self.reload_armed = False               # reload with unsaved edits: the second click discards them
+        self.close_armed = False                # closing the window with unsaved edits: the second close discards
         self.open_side_file(nt.default_path(root, lv), nav.path)
         self.open = False
         self.tool: str | None = None
@@ -116,9 +158,8 @@ class Editor:
         self.y_margin = [2.0, 4.0]              # region height range around the clicked points: below, above
         self.trav_kind, self.two_way, self.note_text = 0, True, ''
         self.by = nt.author()
-        self.job: subprocess.Popen[str] | None = None   # the running `navkit.py apply`
-        self.job_log: list[str] = []
-        self.job_out = os.path.join(root, 'work', 'navkit', lv, 'pathdata.hpd')
+        self.job = ApplyJob()                   # the last `navkit.py apply` (IDLE: none yet)
+        self.job_out = os.path.join(root, 'work', 'navkit', lv, 'pathdata.hpd')   # where the next build writes
         self.install_msg = ''
 
     # --- the side file -----------------------------------------------------------------------------
@@ -144,7 +185,7 @@ class Editor:
                                 f'keeps it as {os.path.basename(self.backup_path())} - fix it and reload, or go on with '
                                 f'new edits.')
         self.tune = tune or nt.NavTune.new(self.level_name, base_path, kind='navkit' if self.target == 'NavKit' else 'dice')
-        self.reload_armed = False
+        self.reload_armed = self.close_armed = False
 
     def backup_path(self) -> str:
         """A free name for the unreadable side file's backup: <path>.unreadable.bak, then .unreadable.1.bak ..."""
@@ -164,7 +205,7 @@ class Editor:
         self.unreadable = None
         self.warning = ''
         self.tune.save(self.path)
-        self.reload_armed = False
+        self.reload_armed = self.close_armed = False
         return f'saved {len(self.tune.operations)} edit(s) to {self.path}{kept}'
 
     def reload(self, v: viewer.Viewer) -> bool:
@@ -187,22 +228,29 @@ class Editor:
 
     # --- build with the edits (navkit apply) --------------------------------------------------------
     def start_apply(self) -> None:
-        """Saves the side file and starts navkit.py apply with it in the background, collecting its output in
-        job_log."""
+        """Saves the side file and starts navkit.py apply with it in the background (a new ApplyJob)."""
         import sys
-        import threading
         self.message = self.save()
         navkit_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'moh-auto-navkit', 'navkit.py')
         cmd = [sys.executable, '-u', navkit_py, 'apply', self.lv, '--navtune', self.path, '--out', self.job_out, '--opfor', self.root]
-        self.job_log = ['saved the side file; building with its edits (a full rebuild: about 1-8 minutes) ...']
-        job = self.job = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                          errors='replace', creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        self.start_job(cmd, 'saved the side file; building with its edits (a full rebuild: about 1-8 minutes) ...')
+
+    def start_job(self, cmd: list[str], first_line: str) -> ApplyJob:
+        """Starts cmd as the new apply job on the edits as they are now, its output read into the job's own log by a
+        thread of its own. Returns the job."""
+        job = ApplyJob(out=self.job_out, log=[first_line], side_file=self.path, tune=self.tune, version=self.tune.version)
+        proc = job.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                           errors='replace', creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        log = job.log
 
         def read() -> None:
-            assert job.stdout is not None       # started with stdout=PIPE
-            for line in job.stdout:
-                self.job_log.append(line.rstrip())
-        threading.Thread(target=read, daemon=True).start()
+            assert proc.stdout is not None      # started with stdout=PIPE
+            for line in proc.stdout:
+                log.append(line.rstrip())
+        job.reader = threading.Thread(target=read, daemon=True)
+        job.reader.start()
+        self.job = job
+        return job
 
     def run_navkit(self, args: list[str]) -> int:
         """navkit.py install / restore (quick): runs to the end, its last line shown in the panel."""
@@ -214,20 +262,67 @@ class Editor:
         self.install_msg = ' / '.join(out[-2:]) if out else f'navkit {args[0]}: exit {r.returncode}'
         return r.returncode
 
-    def job_state(self) -> str | None:
-        """The apply job's state: None when there is none, else 'running', 'done' or 'failed'."""
-        if self.job is None:
-            return None
-        code = self.job.poll()
-        return 'running' if code is None else ('done' if code == 0 else 'failed')
+    def job_state(self) -> JobState:
+        """The apply job's state (IDLE when none was started)."""
+        return self.job.state()
+
+    def result_stale(self) -> bool:
+        """True when the job's result is not a build of the edits as they are now (they changed or were reloaded)."""
+        return not self.job.built_from(self.tune, self.path)
+
+    def result_unusable(self) -> str | None:
+        """None when the result can be installed or opened, else why not."""
+        if self.job_state() is not JobState.DONE:
+            return 'there is no finished build'
+        if self.result_stale():
+            return 'the edits changed since this build (or were reloaded): build again first'
+        return None
+
+    def install_result(self) -> bool:
+        """Installs the finished build into the game (navkit install) when it is a build of the current edits;
+        returns True when it was run."""
+        why = self.result_unusable()
+        if why is not None:
+            self.install_msg = f'not installed: {why}'
+            return False
+        self.run_navkit(['install', self.lv, '--from', self.job.out])
+        return True
+
+    def open_result(self, v: viewer.Viewer) -> bool:
+        """Opens the finished build in a new studio window (this one closes) when it is a build of the current
+        edits. The new window reads the side file, so unsaved edits are saved first - they are the built ones
+        (version unchanged since the build), only their save point differs. Returns True when it was opened."""
+        why = self.result_unusable()
+        if why is not None:
+            self.message = f'not opened: {why}'
+            return False
+        if self.tune.dirty:
+            try:
+                self.message = self.save()
+            except OSError as e:
+                self.message = f'not opened: the edits could not be saved first ({e})'
+                return False
+        self.reopen_on_result(v)
+        return True
 
     def reopen_on_result(self, v: viewer.Viewer) -> None:
         """A new studio window on the built file (the scene is uploaded once, so the window is replaced)."""
         import sys
         from imgui_bundle import hello_imgui
         studio_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'studio.py')
-        subprocess.Popen([sys.executable, studio_py, self.lv, '--candidate', self.job_out, '--navtune', self.path, '--edit'])
+        subprocess.Popen([sys.executable, studio_py, self.lv, '--candidate', self.job.out, '--navtune', self.path, '--edit'])
         hello_imgui.get_runner_params().app_shall_exit = True
+
+    def confirm_close(self) -> bool:
+        """The viewer's close hook (the window's close button, Alt+F4): True lets the window close. With unsaved
+        edits the first close only warns (the panel opened, the message on it) and the second one closes; an edit,
+        undo, redo or save between them asks again. Called outside ImGui's frame: no ImGui here."""
+        if not self.tune.dirty or self.close_armed:
+            return True
+        self.close_armed = True
+        self.open = True
+        self.message = 'there are unsaved edits: save them, or close the window again to discard them'
+        return False
 
     # --- input --------------------------------------------------------------------------------------
     def active(self) -> bool:
@@ -279,7 +374,7 @@ class Editor:
     def commit(self, o: dict[str, Any]) -> None:
         """Adds the operation to the edits and reports it, or why it was refused; the pending clicks are cleared
         either way."""
-        self.reload_armed = False
+        self.reload_armed = self.close_armed = False
         try:
             self.tune.add(o)
             self.message = 'added: ' + self.tune.summary(len(self.tune.operations) - 1)
@@ -323,14 +418,14 @@ class Editor:
 
     def undo(self, v: viewer.Viewer) -> None:
         """Undoes the last edit and redraws."""
-        self.reload_armed = False
+        self.reload_armed = self.close_armed = False
         o = self.tune.undo()
         self.message = 'undone: ' + o['op'] if o else 'nothing to undo'
         self.refresh(v)
 
     def redo(self, v: viewer.Viewer) -> None:
         """Redoes the last undone edit and redraws."""
-        self.reload_armed = False
+        self.reload_armed = self.close_armed = False
         o = self.tune.redo()
         self.message = 'redone: ' + o['op'] if o else 'nothing to redo'
         self.refresh(v)
@@ -381,6 +476,9 @@ class Editor:
     def panel_header(self) -> None:
         """The panel's top: the side file's warning, what is edited and where, the author field."""
         kind = self.tune.kind
+        if self.close_armed and self.tune.dirty:
+            imgui.text_colored(imgui.ImVec4(1.0, 0.45, 0.3, 1.0), 'unsaved edits: save them, or close the window again '
+                               'to discard them')
         if self.warning:
             imgui.push_style_color(imgui.Col_.text, (1.0, 0.45, 0.3, 1.0))
             imgui.text_wrapped(self.warning)
@@ -461,34 +559,45 @@ class Editor:
         state = self.job_state()
         if self.tune.kind == 'dice' and os.path.basename(self.job_out) == 'pathdata.hpd':
             self.job_out = os.path.join(os.path.dirname(self.job_out), 'pathdata_dice_edited.hpd')   # never over NavKit's
-        if state == 'running':
+        if state is JobState.RUNNING:
             imgui.begin_disabled()
         label = 'build with these edits (navkit apply)' if self.tune.kind == 'navkit' else \
             'apply to a copy of DICE\'s file (this PC only)'
         if imgui.button(label):
             self.start_apply()
-        if state == 'running':
+        if state is JobState.RUNNING:
             imgui.end_disabled()
         imgui.same_line()
         imgui.text_disabled(f'-> {os.path.relpath(self.job_out, self.root)}')
-        if state is not None:
+        if state is not JobState.IDLE:
             self.panel_build_result(v, state)
 
-    def panel_build_result(self, v: viewer.Viewer, state: str) -> None:
-        """The build's state and last log lines; once built: open the result, install it, restore DICE's file."""
-        imgui.text({'running': 'building ...', 'done': 'built.', 'failed': 'the build failed:'}[state])
-        for line in self.job_log[-6:]:
+    def panel_build_result(self, v: viewer.Viewer, state: JobState) -> None:
+        """The build's state and last log lines; once built: open the result and install it (both only while it is
+        a build of the current edits; shown out of date otherwise), restore DICE's file."""
+        stale = self.result_stale()
+        imgui.text({JobState.RUNNING: 'building ...', JobState.DONE: 'built.', JobState.FAILED: 'the build failed:'}[state])
+        if stale:
+            imgui.same_line()
+            imgui.text_colored(imgui.ImVec4(1.0, 0.6, 0.2, 1.0), 'out of date: the edits changed since (or were reloaded)')
+        for line in self.job.log[-6:]:
             imgui.text_disabled(line[:110])
-        if state == 'done':
+        if state is JobState.DONE:
+            if stale:
+                imgui.begin_disabled()
             if imgui.button('open the result'):
-                self.reopen_on_result(v)
+                self.open_result(v)
             imgui.same_line()
             if imgui.button('install into the game'):
-                self.run_navkit(['install', self.lv, '--from', self.job_out])
+                self.install_result()
+            if stale:
+                imgui.end_disabled()
+                if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                    imgui.set_tooltip('build again: this result does not have the current edits')
             imgui.same_line()
             if imgui.button('restore DICE\'s original'):
                 self.run_navkit(['restore', self.lv])
-            imgui.text_disabled(f'report: {os.path.relpath(self.job_out + ".report.txt", self.root)}')
+            imgui.text_disabled(f'report: {os.path.relpath(self.job.out + ".report.txt", self.root)}')
 
     def panel_operations(self, v: viewer.Viewer) -> None:
         """The list of edits: fly to one, delete one (Ctrl+Z puts it back)."""
@@ -507,6 +616,6 @@ class Editor:
         imgui.end_child()
         if drop is not None:
             o = self.tune.remove(drop)
-            self.reload_armed = False
+            self.reload_armed = self.close_armed = False
             self.message = f'removed: {o["op"]} (Ctrl+Z puts it back)'
             self.refresh(v)

@@ -76,9 +76,12 @@ def tool(name: str) -> str:
 class Hub:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        # output lines, and ('done', label, exit code, main) when a tool ends
-        self.lines: queue.Queue[str | tuple[str, str, int, bool]] = queue.Queue()
+        # output lines, and ('done', label, exit code, main, the process) when a tool ends
+        self.lines: queue.Queue[str | tuple[str, str, int, bool, subprocess.Popen[Any]]] = queue.Queue()
         self.proc: subprocess.Popen[str] | None = None      # the tab's running tool (one at a time)
+        # the run Stop ended: its exit is not a failure. The process itself, not a flag - a flag was cleared by any
+        # tool's exit (a Studio window closing), and the stopped run's exit then read as a failure (2026-11-05)
+        self.stopped_proc: subprocess.Popen[Any] | None = None
         root.title('MOH Tool Suite')
         root.minsize(900, 640)
         try:
@@ -201,7 +204,7 @@ class Hub:
                         self.lines.put(rest)
                     break
                 time.sleep(0.2)
-        self.lines.put(('done', label, proc.returncode, False))
+        self.lines.put(('done', label, proc.returncode, False, proc))
         try:
             os.remove(path)
         except OSError:
@@ -217,37 +220,43 @@ class Hub:
             tail.append(line.rstrip())
             del tail[:-12]
         code = proc.wait()
-        self.lines.put(('done', label, code, main))
+        self.lines.put(('done', label, code, main, proc))
 
     def pump(self) -> None:
         """Moves queued output and exit notices from the reader threads into the log on the Tk thread; runs itself
-        again every 100 ms."""
+        again every 100 ms, whatever an item raises (an error in one must not stop the output for good)."""
         try:
             while True:
                 item = self.lines.get_nowait()
                 if isinstance(item, tuple):
-                    _, label, code, main = item
-                    ok = self.ok_codes.get(label, {0: ''}) if main else {0: ''}
-                    if code in ok:
-                        self.write(f'done{" - " + ok[code] if ok[code] else ""}: {label}\n')
-                    else:
-                        self.write(f'finished with exit code {code}: {label}\n')
-                    errors.logger().info(f'exit {code}: {label}')
-                    if main:
-                        self.status.set('Ready.')
-                        self.stop_btn.configure(state='disabled')
-                        if label.startswith('Levels'):
-                            self.fill_levels()
-                    if code not in ok and code is not None and not self.stopped:
-                        self.failed(label, code, main)
-                    self.stopped = False
+                    self.ended(*item[1:])
                 else:
                     self.write(item)
         except queue.Empty:
             pass
-        self.root.after(100, self.pump)
+        finally:
+            self.root.after(100, self.pump)
 
-    stopped = False
+    def ended(self, label: str, code: int, main: bool, proc: subprocess.Popen[Any]) -> None:
+        """A tool's exit: said in the pane; the status and Stop follow the tab's current run only (an earlier run's exit,
+        shown late, must not disable Stop while a newer run goes on); a failure is reported unless Stop ended that run."""
+        ok = self.ok_codes.get(label, {0: ''}) if main else {0: ''}
+        if code in ok:
+            self.write(f'done{" - " + ok[code] if ok[code] else ""}: {label}\n')
+        else:
+            self.write(f'finished with exit code {code}: {label}\n')
+        errors.logger().info(f'exit {code}: {label}')
+        stopped = proc is self.stopped_proc
+        if stopped:
+            self.stopped_proc = None
+        if main and proc is self.proc:
+            self.proc = None
+            self.status.set('Ready.')
+            self.stop_btn.configure(state='disabled')
+        if main and label.startswith('Levels'):
+            self.fill_levels()
+        if code not in ok and code is not None and not stopped:
+            self.failed(label, code, main)
 
     def failed(self, label: str, code: int, main: bool) -> None:
         """A tool ended with an error: logged, and the user told what it said last. The 3D tools and other
@@ -265,7 +274,7 @@ class Hub:
         """Ends the running tool and every process it started (run_tests -> navregress, prepare -> FbrbTool):
         terminating only the direct child would leave those running, and holding the output pipe open."""
         if self.proc is not None and self.proc.poll() is None:
-            self.stopped = True
+            self.stopped_proc = self.proc
             kill_tree(self.proc)
             self.write('stopped.\n')
             errors.logger().info('stopped by the user')

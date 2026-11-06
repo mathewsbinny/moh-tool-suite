@@ -288,6 +288,10 @@ class Viewer:
         self.screenshot: Any = None
         self._click_start: tuple[float, float] | None = None
         self._last_click = 0.0
+        self._last_click_at: tuple[float, float] | None = None   # where the last click was (a double-click: near it)
+        # called when the user closes the window (close button, Alt+F4); False keeps the window open. Not called
+        # when the tool exits by itself (app_shall_exit). The Navigation Studio's editor asks about unsaved edits.
+        self.confirm_close: Callable[[], bool] | None = None
         self.pick_point: np.ndarray | None = None  # world point of the last click (None: clicked the sky)
         self.select_on_click = True       # a tool's mode (measuring) can turn selection by click off
         # errors caught in a frame: (where, type, message) -> text shown
@@ -492,6 +496,8 @@ class Viewer:
         if not io.want_capture_keyboard and imgui.is_key_pressed(imgui.Key.f):
             self.camera.toggle_fly()
         if io.want_capture_mouse:
+            if imgui.is_mouse_released(imgui.MouseButton_.left):
+                self._click_start = None      # released over a panel: that press is no click (no stale pick later)
             return
         dx, dy = io.mouse_delta.x, io.mouse_delta.y
         cam = self.camera
@@ -521,24 +527,42 @@ class Viewer:
                 cam.target = cam.target + right * dx * k + up * dy * k
             if io.mouse_wheel:
                 cam.distance = max(1.0, cam.distance * (0.85 ** io.mouse_wheel))
-        # click (press and release without dragging) selects; double-click focuses
         if imgui.is_mouse_clicked(imgui.MouseButton_.left):
             self._click_start = (mx, my)
-        if imgui.is_mouse_released(imgui.MouseButton_.left) and self._click_start is not None:
-            sx, sy = self._click_start
-            self._click_start = None
-            if abs(mx - sx) + abs(my - sy) < 4:
-                oid, point = self.pick(mx, my)
-                now = time.time()
-                if now - self._last_click < 0.35 and point is not None:
-                    self.camera.focus(point, min(self.camera.distance, 60.0))
-                self._last_click = now
-                self.pick_point = point
-                if self.select_on_click:
-                    self.selected = oid if oid is not None else NO_ID
-                if self.on_pick:
-                    self._guarded('a click', self.on_pick, oid)
-        # hover: once the mouse has moved and then rests for a moment (a pick re-renders the scene)
+        if imgui.is_mouse_released(imgui.MouseButton_.left):
+            start, self._click_start = self._click_start, None
+            if start is not None and abs(mx - start[0]) + abs(my - start[1]) < 4:
+                self._click(mx, my)
+        self._hover(mx, my, dx, dy)
+
+    def _double_click(self, mx: float, my: float) -> bool:
+        """Whether a click at (mx, my) is the second of a double-click: soon after the last one and near it (quick
+        clicks on different points, an outline drawn, are single clicks; near: under 4 pixels, as a click is no drag).
+        Remembers this click for the next."""
+        now, last = time.time(), self._last_click_at
+        double = last is not None and now - self._last_click < 0.35 and abs(mx - last[0]) + abs(my - last[1]) < 4
+        self._last_click, self._last_click_at = (0.0, None) if double else (now, (mx, my))
+        return double
+
+    def _click(self, mx: float, my: float) -> None:
+        """A click (press and release without dragging) selects; a double-click focuses the camera on the point.
+        2026-11-05: while a tool's mode takes the clicks (select_on_click off: drawing an edit, the path test,
+        measuring), a double-click neither focuses nor delivers its second click as another pick - it added two
+        seeds or notes, and quick outline clicks re-aimed the camera."""
+        double = self._double_click(mx, my)
+        if double and not self.select_on_click:
+            return
+        oid, point = self.pick(mx, my)
+        if double and point is not None:
+            self.camera.focus(point, min(self.camera.distance, 60.0))
+        self.pick_point = point
+        if self.select_on_click:
+            self.selected = oid if oid is not None else NO_ID
+        if self.on_pick:
+            self._guarded('a click', self.on_pick, oid)
+
+    def _hover(self, mx: float, my: float, dx: float, dy: float) -> None:
+        """The hovered object: picked once the mouse has moved and then rests for a moment."""
         if abs(dx) + abs(dy) > 0:
             self._hover_due: float | None = time.time() + 0.12
         elif (due := getattr(self, '_hover_due', None)) and time.time() >= due:
@@ -596,6 +620,16 @@ class Viewer:
         if self.exit_after is not None and self._frames >= self.exit_after:
             hello_imgui.get_runner_params().app_shall_exit = True
 
+    def _confirm_close(self) -> bool:
+        """hello_imgui's confirm_exit: the tool's confirm_close (called before ImGui's frame: no ImGui in it). An
+        error in it lets the window close - a window that cannot be closed is worse."""
+        try:
+            return bool(self.confirm_close()) if self.confirm_close is not None else True
+        except Exception as e:          # noqa: BLE001 - the exit's boundary: logged, the window closes
+            from . import errors
+            errors.report(e, where='closing the window', show=False)
+            return True
+
     def layer_visible(self, layer: int) -> bool:
         """True unless the layer is hidden."""
         return not (self.hidden >> layer) & 1
@@ -613,6 +647,8 @@ class Viewer:
         p.callbacks.post_init = self._init
         p.callbacks.custom_background = self._background
         p.callbacks.show_gui = self._gui
+        if self.confirm_close is not None:
+            p.callbacks.confirm_exit = self._confirm_close
         p.fps_idling.enable_idling = False
         # window layout: one file per tool in %APPDATA%\moh-tool-suite, not in the current folder
         os.makedirs(os.path.join(hello_imgui.ini_folder_location(hello_imgui.IniFolderType.app_user_config_folder),

@@ -133,7 +133,15 @@ class NavTune:
         # pressing Ctrl+Z removed another edit and lost the deleted one). Not saved: the file holds operations only.
         self.undo_stack: list[tuple] = []
         self.redo_stack: list[tuple] = []
-        self.dirty = False
+        # 2026-11-05: dirty is no longer one flag (undoing back to the saved edits still showed them unsaved). Each
+        # state of the edits has a version: an add or remove makes a new one (a counter, never reused), undo and redo
+        # go back to the version the edits had then - so the same edits always have the same version. saved_version
+        # is the one last saved (or loaded); a build remembers the version it was made from (editing.ApplyJob).
+        self.version = 0
+        self.saved_version = 0
+        self._last_version = 0                 # the highest version given out
+        self._undo_versions: list[tuple[int, int]] = []    # (before, after) per undo_stack entry
+        self._redo_versions: list[tuple[int, int]] = []
 
     @classmethod
     def new(cls, level: str, base_path: str, kind: str = 'navkit') -> 'NavTune':
@@ -142,6 +150,17 @@ class NavTune:
         if kind not in KINDS:
             raise ValueError(f'base kind must be one of {KINDS}')
         return cls(level, {'kind': kind, 'sha1': sha1_of(base_path), 'file': os.path.basename(base_path)})
+
+    @property
+    def dirty(self) -> bool:
+        """True when the edits are not the ones last saved (or loaded): undoing back to them is clean again."""
+        return self.version != self.saved_version
+
+    def _new_version(self) -> tuple[int, int]:
+        """A new action: (version before, version after), the edits now at the new one."""
+        self._last_version += 1
+        before, self.version = self.version, self._last_version
+        return before, self.version
 
     @property
     def kind(self) -> str:
@@ -160,16 +179,18 @@ class NavTune:
             raise ValueError('; '.join(problems))
         self.operations.append(o)
         self.undo_stack.append(('add', o))
+        self._undo_versions.append(self._new_version())
         self.redo_stack.clear()
-        self.dirty = True
+        self._redo_versions.clear()
         return o
 
     def remove(self, index: int) -> dict[str, Any]:
         """Removes the operation at index (undoable) and returns it."""
         o = self.operations.pop(index)
         self.undo_stack.append(('remove', index, o))
+        self._undo_versions.append(self._new_version())
         self.redo_stack.clear()
-        self.dirty = True
+        self._redo_versions.clear()
         return o
 
     def _apply(self, action: tuple, reverse: bool) -> dict[str, Any]:
@@ -194,8 +215,10 @@ class NavTune:
         if not self.undo_stack:
             return None
         action = self.undo_stack.pop()
+        versions = self._undo_versions.pop()
         self.redo_stack.append(action)
-        self.dirty = True
+        self._redo_versions.append(versions)
+        self.version = versions[0]
         return self._apply(action, reverse=True)
 
     def redo(self) -> dict[str, Any] | None:
@@ -203,8 +226,10 @@ class NavTune:
         if not self.redo_stack:
             return None
         action = self.redo_stack.pop()
+        versions = self._redo_versions.pop()
         self.undo_stack.append(action)
-        self.dirty = True
+        self._undo_versions.append(versions)
+        self.version = versions[1]
         return self._apply(action, reverse=False)
 
     def base_changed(self, base_path: str) -> bool:
@@ -225,7 +250,7 @@ class NavTune:
             json.dump(self.to_json(), f, indent=1, ensure_ascii=False)
             f.write('\n')
         os.replace(tmp, path)                  # never a half-written side file
-        self.dirty = False
+        self.saved_version = self.version
 
     def summary(self, k: int) -> str:
         """A one-line description of operation k: its kind, where it is, and who made it when."""

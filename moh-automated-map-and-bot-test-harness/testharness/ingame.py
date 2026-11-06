@@ -1,8 +1,9 @@
 """In-game tests: how they plug in. The harness never starts the game; these read what a run the user made left behind.
 
 Now (offline reading of a finished run):
-  sessions(text)        the sessions of an opfor.log (one per "---- OPFOR core loaded" / "---- opfor.dll loaded"
-                        line; MOH's is game\\logs\\opfor_mp.log): level, session states,
+  sessions(text)        the sessions of an opfor.log (MOH's is game\\logs\\opfor_mp.log): one per level each game
+                        process played (a process starts at a "---- OPFOR core loaded" / "---- opfor.dll loaded"
+                        line; a level line naming another level starts its next session): level, session states,
                         AI events, SectorOffsets loads and override, unit-counter pathfinder counts, crash, exit
   evaluate(s, asset)    the three in-game criteria of an AI level (STOCK_MP_AI_PLAN.md 6.3 / 8) as checks.Results:
                         loads-ai-init, offsets-read, pathfinders
@@ -23,7 +24,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, cast
 
 from .checks import Result
 
@@ -36,6 +37,9 @@ STATE = re.compile(r'Session::updateState.*arg1=([0-9A-F]{8})')
 OFFSET_LOAD = re.compile(r'sector offsets load handle .*X\(\+1Ch\)=(-?\d+) Z\(\+18h\)=(-?\d+)')
 OVERRIDE = re.compile(r'sector offsets: on - X=(-?\d+) Z=(-?\d+)')
 COUNTERS = re.compile(r'unit counters \((interval|exit)\): (\d+) pathfinders')
+# the game writing its crash report: the file name on its own (a path's last part, a word), not 'crashreport.xml.bak'
+CRASH = re.compile(r'(?:^|[\\/\s\'"(])crashreport\.xml(?![\w.])', re.IGNORECASE)
+CRASH_READ = re.compile(r'CreateFile[AW] read ')       # the OPFOR core's userdata log of a file only read
 EVENTS = [(re.compile(r'AI: server level load'), 'server level load'), (re.compile(r'AI: init'), 'AI init'),
           (re.compile(r'AI: set active'), 'AI active'), (re.compile(r'AI: path data world'), 'path data loaded'),
           (re.compile(r'AI: Kynapse world'), 'navigation world built'), (re.compile(r'AI: update \(per frame\)'), 'AI running')]
@@ -48,6 +52,10 @@ TELEMETRY_TESTS = [('bot-traversal', 'bots reach given points within a time'),
 
 @dataclass
 class Session:
+    """One level played by one game process: what the log showed from its LEVEL line (from the process's start for
+    its first level) to the next level's LEVEL line or the process's end. part: 1 for the process's first level, 2
+    for the next one it played, ..."""
+
     pid: str
     start: str = ''
     level: Optional[str] = None
@@ -59,6 +67,7 @@ class Session:
     crashed: bool = False
     exited: bool = False
     lines: int = 0
+    part: int = 1
 
     @property
     def in_game(self) -> bool:
@@ -66,24 +75,59 @@ class Session:
         return IN_GAME in self.states
 
 
-def sessions(text: str) -> list[Session]:
-    """The game sessions of an opfor.log's text, one per load line of the OPFOR core, with what each logged."""
-    out: list[Session] = []
-    cur: Session | None = None
-    for line in text.splitlines():
+def level_name(level: str) -> str:
+    """A level's name as compared: lower case, without its folder ('Levels/MP_01' -> 'mp_01')."""
+    return level.lower().split('/')[-1]
+
+
+def is_crash_line(line: str) -> bool:
+    """Whether an opfor.log line shows the game writing its crash report: it names the file crashreport.xml (as a
+    file name, not inside a longer name) and is not the OPFOR core's note of the game only reading it
+    ('userdata: CreateFileA read ...\\crashreport.xml', which a start-up check of an old report would give)."""
+    return bool(CRASH.search(line)) and not CRASH_READ.search(line)
+
+
+class _Splitter:
+    """sessions()'s state machine: one Session per level of each game process. A process starts at the core's load
+    line; the first LEVEL line names its first session's level (the lines before it belong to that session, so one
+    level per launch gives one session as before); a later LEVEL line naming another level - or the same level
+    again after the session was in game, a replay - ends the session and starts the next one of the same process.
+    A LEVEL line of the session's own level before it is in game (the dev trigger, then the host request it
+    queues) stays in that session."""
+
+    def __init__(self) -> None:
+        self.out: list[Session] = []
+        self.cur: Session | None = None
+
+    def feed(self, line: str) -> None:
+        """One line of the log."""
         m = START.search(line)
         if m:
-            cur = Session(m.group(1) or m.group(2))
             t = STAMP.match(line)
-            cur.start = t.group(1) if t else ''
-            out.append(cur)
-            continue
-        if cur is None:
-            continue
-        cur.lines += 1
+            self.cur = Session(m.group(1) or m.group(2), t.group(1) if t else '')
+            self.out.append(self.cur)
+            return
+        if self.cur is None:
+            return
         m = LEVEL.search(line)
         if m:
-            cur.level = m.group(1)
+            self._level(m.group(1), line)
+        self._record(self.cur, line)
+
+    def _level(self, level: str, line: str) -> None:
+        """A LEVEL line: names the current session's level, or starts the process's next session."""
+        cur = cast(Session, self.cur)
+        if cur.level is None:
+            cur.level = level
+        elif level_name(level) != level_name(cur.level) or cur.in_game:
+            t = STAMP.match(line)
+            self.cur = Session(cur.pid, t.group(1) if t else cur.start, level, part=cur.part + 1)
+            self.out.append(self.cur)
+
+    @staticmethod
+    def _record(cur: Session, line: str) -> None:
+        """What a line within a session shows, into that session."""
+        cur.lines += 1
         m = STATE.search(line)
         if m:
             s = int(m.group(1), 16)
@@ -101,22 +145,30 @@ def sessions(text: str) -> list[Session]:
         m = COUNTERS.search(line)
         if m:
             cur.pathfinders.append(int(m.group(2)))
-        if 'crashreport.xml' in line:
+        if is_crash_line(line):
             cur.crashed = True
         if 'exit(0) called' in line:
             cur.exited = True
-    return out
+
+
+def sessions(text: str) -> list[Session]:
+    """The game sessions of an opfor.log's text, with what each logged: one per level each game process (one per load
+    line of the OPFOR core) played - a process that played mp_01 and then hosted mp_02 gives two (_Splitter)."""
+    sp = _Splitter()
+    for line in text.splitlines():
+        sp.feed(line)
+    return sp.out
 
 
 def for_level(all_sessions: Iterable[Session], lv: str) -> list[Session]:
-    """The sessions that started the level (latest last)."""
-    want = lv.lower().split('/')[-1]
-    return [s for s in all_sessions if s.level and s.level.lower().split('/')[-1] == want]
+    """The sessions of the level (latest last): only what was logged while that level was the one played."""
+    want = level_name(lv)
+    return [s for s in all_sessions if s.level and level_name(s.level) == want]
 
 
 def evaluate(s: Session, asset: tuple[int, int] | None) -> dict[str, Result]:
     """{name: Result} for one session. asset: the level's Infantry SectorOffsets (x, z), or None."""
-    src = f'opfor.log session {s.start} (PID {s.pid})'
+    src = f'opfor.log session {s.start} (PID {s.pid})' + (f', level {s.part} of that process' if s.part > 1 else '')
     out: dict[str, Result] = {}
     ok = s.in_game and 'AI init' in s.events and not s.crashed
     out['loads-ai-init'] = Result('pass' if ok else 'fail',

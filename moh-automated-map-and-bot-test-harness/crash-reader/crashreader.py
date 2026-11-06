@@ -10,7 +10,8 @@ Without a path it uses the newest crashreport.xml in Documents\\Project OPFOR\\M
   - the call stack: each return address with its function's name (from symbols_592256.txt and --symbols files)
     and the call instruction that made it; values that are not code addresses are marked
   - hints for known crash sites (e.g. a broken level: run DbxEdit check)
-  - with --log (or OPFOR's game\\logs\\opfor_mp.log found above the exe), the log lines just before the crash
+  - with --log (or OPFOR's game\\logs\\opfor_mp.log found above the exe), the log lines just before the crash: the
+    crash line nearest the report's time (else the log's last crash, with a note that it may be a later crash)
 
 The game's own crash reporter writes the file; this tool only reads it and the exe. Nothing is sent anywhere.
 """
@@ -177,20 +178,80 @@ def name_of(a: int, syms: Mapping[int, tuple[str, str]], image: Image | None) ->
     return '', ''
 
 
-def log_before_crash(path: str, lines: int = 18) -> list[str]:
-    """The last log lines before the log's last crash-report line (the per-frame probe spam left out), and that
-    line; [] when the log is unreadable or shows no crash."""
+# a log line of the game writing its crash report: the file name on its own, and not the OPFOR core's note of a
+# file only read ('userdata: CreateFileA read ...\crashreport.xml'); as the harness's testharness/ingame.py
+CRASH_LINE = re.compile(r'(?:^|[\\/\s\'"(])crashreport\.xml(?![\w.])', re.IGNORECASE)
+CRASH_READ = re.compile(r'CreateFile[AW] read ')
+STAMP = re.compile(r'^\[(\d\d):(\d\d):(\d\d)')     # opfor.log's [hh:mm:ss.mmm] (local time, no date)
+MATCH_SECONDS = 300                                # a crash line this close to the report's time is its crash
+
+
+def is_crash_line(line: str) -> bool:
+    """Whether a log line shows the game writing crashreport.xml (CRASH_LINE, not a read)."""
+    return bool(CRASH_LINE.search(line)) and not CRASH_READ.search(line)
+
+
+def report_times(path: str, r: Mapping[str, Any]) -> list[datetime.datetime]:
+    """The local times the report was written, for matching it with a log's crash line: its createtime (UTC) in local
+    time, and the file's modification time."""
+    out: list[datetime.datetime] = []
+    try:
+        utc = datetime.datetime.strptime(str(r.get('time', '')), '%Y-%m-%d %H:%M:%S')
+        out.append(utc.replace(tzinfo=datetime.timezone.utc).astimezone().replace(tzinfo=None))
+    except (ValueError, OverflowError, OSError):
+        pass
+    try:
+        out.append(datetime.datetime.fromtimestamp(os.path.getmtime(path)))
+    except OSError:
+        pass
+    return out
+
+
+def _matching_mark(text: list[str], marks: list[int], when: Iterable[datetime.datetime]) -> int | None:
+    """The crash line (an index into text) whose time of day is nearest one of the report's times, within
+    MATCH_SECONDS (the later one on a tie); None when none is that close or the times are unknown."""
+    want = [t.hour * 3600 + t.minute * 60 + t.second for t in when]
+    best: tuple[int, int] | None = None
+    for i in marks:
+        m = STAMP.match(text[i])
+        if not m or not want:
+            continue
+        s = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+        d = min(min(abs(s - w), 86400 - abs(s - w)) for w in want)       # times of day: across midnight too
+        if d <= MATCH_SECONDS and (best is None or d <= best[0]):
+            best = (d, i)
+    return best[1] if best else None
+
+
+def crash_context(path: str, when: Iterable[datetime.datetime] = (), lines: int = 18) -> tuple[list[str], str]:
+    """(the log lines before the crash line, and that line; a note) for the crash of a report written at one of the
+    times `when` (report_times): the crash line nearest those times. When none matches (or no times are given) it
+    is the log's last crash line, and the note says the lines may belong to another, later crash; the note is ''
+    for a match. ([], '') when the log is unreadable or shows no crash. The per-frame probe spam is left out."""
     try:
         text = open(path, encoding='utf-8', errors='replace').read().splitlines()
     except OSError:
-        return []
-    marks = [i for i, l in enumerate(text) if 'crashreport.xml' in l]
+        return [], ''
+    marks = [i for i, l in enumerate(text) if is_crash_line(l)]
     if not marks:
-        return []
-    end = marks[-1]
+        return [], ''
+    when = list(when)
+    end = _matching_mark(text, marks, when)
+    note = ''
+    if end is None:
+        end = marks[-1]
+        n = f'the log shows {len(marks)} crash(es); ' if len(marks) > 1 else ''
+        why = 'none of its crash lines is within 5 minutes of the report\'s time' if when else 'the report\'s time is unknown'
+        note = f'{n}{why}, so these are the lines before its last crash: they may belong to a later crash than this report\'s'
     # skip the per-frame spam probes write, keep what led up to the crash
     picked = [l for l in text[max(0, end - 400):end] if 'Kynapse error' not in l and 'per frame' not in l]
-    return picked[-lines:] + [text[end]]
+    return picked[-lines:] + [text[end]], note
+
+
+def log_before_crash(path: str, lines: int = 18) -> list[str]:
+    """The last log lines before the log's last crash-report line (the per-frame probe spam left out), and that
+    line; [] when the log is unreadable or shows no crash. crash_context finds the crash of a given report."""
+    return crash_context(path, (), lines)[0]
 
 
 def main(argv: list[str]) -> int:
@@ -209,7 +270,7 @@ def main(argv: list[str]) -> int:
     image = _image(exe) if exe and not opts.get('--no-code') else None
     eip = _print_crash(report_path, r, syms, image)
     _print_stack(r, syms, image, eip)
-    _print_log(opts.get('--log'), exe)
+    _print_log(opts.get('--log'), exe, report_times(report_path, r))
     return 0
 
 
@@ -315,15 +376,18 @@ def _print_stack(r: dict[str, Any], syms: Symbols, image: Image | None, eip: int
             break
 
 
-def _print_log(log: str | None, exe: str | None) -> None:
-    """main(): the game log's lines before the crash (the given log, else the game copy's beside the exe)."""
+def _print_log(log: str | None, exe: str | None, when: Iterable[datetime.datetime] = ()) -> None:
+    """main(): the game log's lines before the report's crash (the given log, else the game copy's beside the exe),
+    matched by the report's times; a note when they may belong to another crash."""
     if not log and exe:
         candidate = os.path.join(os.path.dirname(os.path.dirname(exe)), 'logs', 'opfor_mp.log')   # game\\logs
         log = candidate if os.path.isfile(candidate) else None
     if log:
-        before = log_before_crash(log)
+        before, note = crash_context(log, when)
         if before:
             print(f'\nLast log lines before the crash ({log}):')
+            if note:
+                print(f'  note: {note}')
             for l in before:
                 print('  ' + l[:200])
 

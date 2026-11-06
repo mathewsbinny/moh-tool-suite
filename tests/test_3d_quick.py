@@ -119,6 +119,7 @@ def click_world(off, v, point):
     panel window is there (ImGui would take the click)."""
     v.camera.focus(point, v.camera.distance)
     off.frame()
+    v._last_click = 0.0             # the view turned: a new click, not the second of a double-click on the middle
     return off.click(off.size[0] / 2, off.size[1] / 2)
 
 
@@ -285,6 +286,7 @@ def viewer_input_checks(check, v, off, picked, pa):
     v.select_on_click = False
     off.click(3, 3)
     check(picked[-1] is None and v.selected == 11, 'with selection by click off, the click is reported but selects nothing')
+    viewer_tool_click_checks(check, v, off, picked, pa)
     v.select_on_click = True
     off.click(3, 3)
     check(v.selected == viewer.NO_ID and v.pick_point is None, 'a click on the background clears the selection')
@@ -327,6 +329,38 @@ def viewer_input_checks(check, v, off, picked, pa):
     check(np.isfinite(m).all(), 'look_at straight down (no side vector from up) still gives a matrix')
 
 
+def viewer_tool_click_checks(check, v, off, picked, pa):
+    """2026-11-05: while a tool takes the clicks (select_on_click off), a double-click neither focuses nor gives a
+    second pick, quick clicks on different points are two picks, and a release over a panel ends the press (no
+    stale pick later)."""
+    v.select_on_click = False
+    v.camera.focus(v.camera.target, 80.0)
+    off.frame()
+    n = len(picked)
+    off.click(*pa)
+    off.click(*pa)                                              # within 0.35 s, the same spot: a double-click
+    check(len(picked) == n + 1 and v.camera.distance == 80.0,
+          f'a tool\'s mode: a double-click is one pick and does not focus ({len(picked) - n} picks, distance {v.camera.distance:.0f})')
+    off.click(pa[0] + 40, pa[1])
+    off.click(pa[0] + 80, pa[1])                                # quick clicks on other points: an outline drawn
+    check(len(picked) == n + 3 and v.camera.distance == 80.0, 'quick clicks on different points: each a pick, no focus')
+
+    def panel_box(_v):
+        imgui.set_next_window_pos((0, 0))
+        imgui.set_next_window_size((120, 120))
+        imgui.begin('box')
+        imgui.end()
+    panels = v.panels
+    v.panels = [panel_box]
+    off.frame(2)
+    v._click_start = (60.0, 60.0)                               # a press the release of which went to a panel
+    off.click(60, 60)
+    v.panels = panels
+    check(v._click_start is None and len(picked) == n + 3, 'a release over a panel ends the press, no pick')
+    off.frame(2)
+    v._last_click = 0.0
+
+
 def viewer_problem_checks(check, v, off):
     """A failing panel and drawing before the context exists."""
     # a failing panel: listed in Problems, the frame goes on
@@ -359,6 +393,23 @@ def viewer_run_checks(check, tmp):
           and p.app_window_params.window_title == 'MOH Test Tool - level' and p.ini_filename == 'moh-tool-suite/MOH_Test_Tool.ini'
           and os.path.isdir(os.path.join(tmp, 'moh-tool-suite')),
           f'Viewer.run: title, window layout file, {r.frames} frames until exit_after, a screenshot that is not blank')
+    # 2026-11-05: the close hook - hello_imgui's confirm_exit asks the tool; an error in it lets the window close
+    s3 = viewer.Scene()
+    s3.add_box((0, 0, 0), 2.0, 1, s3.layer('a', (0.8, 0.2, 0.2)))
+    v3 = viewer.Viewer(s3, 'MOH Test Tool - close', size=(320, 240))
+    v3.exit_after = 2
+    answers = [False, True]
+    v3.confirm_close = lambda: answers.pop(0)
+    with FakeRunner(tmp) as r:
+        v3.run()
+    ask = r.params.callbacks.confirm_exit
+    check(ask() is False and ask() is True, 'Viewer.run: closing the window asks confirm_close (False keeps it open)')
+
+    def broken():
+        raise RuntimeError('broken on purpose')
+    v3.confirm_close = broken
+    print('(an error on purpose follows: a close hook that fails)', flush=True)
+    check(v3._confirm_close() is True, 'a close hook that fails lets the window close')
 
 
 # ------------------------------------------------------------------------------------------------ the made-up OPFOR folder
@@ -600,6 +651,7 @@ def studio_checks(check, tmp, lvl):
     layer, rep = overlay_checks(check, tmp, nav, ref_xml, a_path)
     st, v, off = studio_island_checks(check, lvl, nav)
     studio_path_checks(check, st, v, off)
+    studio_click_mode_checks(check, st, v, off, tmp)
     dv = studio_difference_checks(check, lvl, nav, other)
     cv = studio_compare_checks(check, lvl, nav, other, rep, layer)
     check(not v._problems and not cv._problems and not dv._problems,
@@ -755,6 +807,57 @@ def studio_path_checks(check, st, v, off):
     off.frame(2)
     st.set_path_mode(v, False)
     check(v.select_on_click, 'the path test off: clicks select again')
+
+
+def studio_click_mode_checks(check, st, v, off, tmp):
+    """2026-11-05: the click mode (SELECT / PATH / EDIT) set in one place - P mid-outline drops the outline and its
+    crosses, a tool chosen drops the path test's lone start, a double-click in edit mode adds one edit and leaves
+    the camera; the editor's panel with an out-of-date build drawn."""
+    import editing
+    import studio as stmod
+    M = stmod.ClickMode
+    drawing = editing.COLOURS['drawing']
+    ed = st.editor = editing.Editor(st, tmp, 'mp_t', 'Levels/MP_T')
+    panels = v.panels
+    v.panels = panels[:-1] + [ed.panel, panels[-1]]
+    ed.set_open(v, True)
+    check(st.click_mode is M.SELECT and v.select_on_click, 'the editor open without a tool: clicks still select')
+    ed.tool = 'walkable'
+    st.sync_click_mode(v)
+    check(st.click_mode is M.EDIT and not v.select_on_click, 'a tool chosen: EDIT, clicks no longer select')
+    click_world(off, v, (6.0, stmod.LIFT, 2.0))
+    click_world(off, v, (20.0, stmod.LIFT, 4.0))
+    check(len(ed.clicks) == 2 and any(c == drawing for _, _, c in v.overlay), 'two outline points, drawn')
+    off.key(imgui.Key.p)
+    check(st.click_mode is M.PATH and st.path_mode and ed.tool is None and not ed.clicks and not v.select_on_click
+          and not any(c == drawing for _, _, c in v.overlay), 'P mid-outline: the path test, the outline and its crosses gone')
+    st.path_pts, st.routes, st.path_segs = [], {}, []
+    click_world(off, v, (6.0, stmod.LIFT, 2.0))
+    check(len(st.path_pts) == 1 and st.path_segs, 'the path test\'s start clicked')
+    ed.tool = 'seed'
+    st.sync_click_mode(v)
+    check(st.click_mode is M.EDIT and not st.path_pts and not st.path_segs and not st.path_mode,
+          'a tool chosen with only the start clicked: EDIT, the lone start gone')
+    v.camera.focus((6.0, stmod.LIFT, 2.0), 70.0)
+    off.frame()
+    v._last_click = 0.0
+    n = len(ed.tune.operations)
+    off.click(off.size[0] / 2, off.size[1] / 2)
+    off.click(off.size[0] / 2, off.size[1] / 2)
+    check(len(ed.tune.operations) == n + 1 and v.camera.distance == 70.0,
+          f'edit mode: a double-click adds one seed and leaves the camera ({len(ed.tune.operations) - n} added)')
+    job = ed.start_job([sys.executable, '-c', 'pass'], 'a stand-in build')
+    while job.state() is editing.JobState.RUNNING:
+        time.sleep(0.02)
+    ed.tune.add(editing.nt.op('unseed', at=(6.0, 0.0, 2.0)))
+    off.frame(3)
+    check(job.state() is editing.JobState.DONE and ed.result_stale() and not v._problems,
+          f'the editor\'s panel with an out-of-date build drawn ({list(v._problems.values())})')
+    ed.set_open(v, False)
+    check(st.click_mode is M.SELECT and v.select_on_click and ed.tool is None, 'the editor closed: clicks select again')
+    st.editor, v.panels = None, panels
+    st.refresh_overlay(v)
+    off.frame(2)
 
 
 def studio_difference_checks(check, lvl, nav, other):

@@ -22,6 +22,8 @@ import navkit  # noqa: E402
 PYTHON = os.path.join(os.path.dirname(sys.executable), 'python.exe')   # console python for the steps
 if not os.path.isfile(PYTHON):
     PYTHON = sys.executable
+NAVKIT = os.path.join(HERE, 'navkit.py')     # the script every step runs (tests put a stand-in here)
+MARKS = {navkit.Status.DONE: ('✔', '#060'), navkit.Status.STALE: ('old', '#b35900'), navkit.Status.MISSING: ('', '#000')}
 
 STEPS = [('prepare', '1. Prepare', 'Unpack the level, extract its objects, choose the sampling box'),
          ('sample', '2. Sample', 'Samples the level\'s collision from its files - no game launch (a few minutes)'),
@@ -55,7 +57,8 @@ class App:
         self.root = root
         self.proc: subprocess.Popen[str] | None = None
         self.saved: list[str] = []
-        self.cancelled = False                   # Cancel pressed: the step's failure is not reported
+        self.problem = ''                        # what is wrong with the level's files (a damaged navkit.json), or ''
+        self.cancelled = False                   # Cancel ended a running step: its failure is not reported
         self.lines: queue.Queue[str | tuple[str, str, int]] = queue.Queue()     # output, and ('done', step, exit code)
         root.title('MOH NavKit')
         root.minsize(760, 520)
@@ -118,7 +121,7 @@ class App:
             b = ttk.Button(steps, text=label, width=20, command=functools.partial(self.run_step, cmd))
             b.grid(row=r, column=0, sticky='w', pady=2)
             self.buttons.append(b)
-            m = ttk.Label(steps, text='', width=3)
+            m = ttk.Label(steps, text='', width=4)
             m.grid(row=r, column=1)
             self.marks[cmd] = m
             ttk.Label(steps, text=tip, foreground='#555').grid(row=r, column=2, sticky='w')
@@ -158,38 +161,67 @@ class App:
         self.refresh()
 
     def refresh(self) -> None:
-        """Fills the sampling area from the level's navkit.json, ticks the steps already done and says whose path data
-        the game uses."""
+        """Fills the sampling area from the level's navkit.json, marks each step done or out of date
+        (navkit.stage_status) and says whose path data the game uses. A damaged navkit.json is said, not raised."""
         lv = self.level.get()
         if not lv:
             return
-        out = os.path.join(self.pr.work, 'navkit', lv)
-        s: dict[str, Any] | None = None
-        self.saved = []
-        if os.path.isfile(os.path.join(out, 'navkit.json')):
-            s = json.load(open(os.path.join(out, 'navkit.json')))
-            for k, v in zip(('minx', 'minz', 'maxx', 'maxz'), s['box']):
-                self.vars[k].set(f'{v:g}')
-            self.vars['ybot'].set(f'{s["y"][0]:g}')
-            self.vars['ytop'].set(f'{s["y"][1]:g}')
-            self.saved = [self.vars[k].get() for k in ('minx', 'minz', 'maxx', 'maxz', 'ybot', 'ytop')]
-            self.area_note['text'] = (f'Box from: {s["box_source"]}.  Sector offsets {s["xoff"]}, {s["zoff"]} '
-                                      f'({s["offsets_source"]}).')
-        else:
-            for v in self.vars.values():
-                v.set('')
-            self.area_note['text'] = 'Run Prepare to fill these in (or type your own and Prepare keeps them).'
-        done = {'prepare': s is not None,
-                'sample': all(os.path.isfile(self.pr.samples(lv, a[2])) for a in navkit.AGENTS),
-                'build': os.path.isfile(os.path.join(out, 'pathdata.hpd')),
-                'check': os.path.isfile(os.path.join(out, 'check.txt'))}
+        self.problem = ''
+        self.show_area(self.read_settings(lv))
+        status = navkit.stage_status(self.pr, lv)
+        if self.problem:
+            status['prepare'] = navkit.Status.STALE      # there, but not usable: Prepare again
         for k, m in self.marks.items():
-            m['text'] = '✔' if done[k] else ''
+            m['text'], m['foreground'] = MARKS[status[k]]
+        stale = [k for k in navkit.STAGES if status[k] is navkit.Status.STALE]
+        hpd = os.path.join(self.pr.work, 'navkit', lv, 'pathdata.hpd')
+        rec = navkit.build_record(hpd) if status['build'] is not navkit.Status.MISSING else None
         inst = installed(self.pr, lv)
         orig = self.pr.dice_pathdata(lv)
-        self.installed['text'] = ('NavKit\'s path data is INSTALLED in the game for this level.' if inst else
-                                  'The game uses the level\'s original path data.' if orig else
-                                  'MOH\'s MP levels ship no AI path data: NavKit\'s build is for OPFOR\'s bots.')
+        self.installed['text'] = '\n'.join(t for t in (
+            ('NavKit\'s path data is INSTALLED in the game for this level.' if inst else
+             'The game uses the level\'s original path data.' if orig else
+             'MOH\'s MP levels ship no AI path data: NavKit\'s build is for OPFOR\'s bots.'),
+            'The build has the Navigation Studio\'s edits in it (navkit.py apply).' if rec and rec.get('kind') == 'apply' else '',
+            f'RSNV export: {status["export"].value}.',
+            f'Out of date ("old": made before the step it comes from was run again): {", ".join(stale)}.' if stale else '')
+            if t)
+        if self.problem:
+            self.status['text'] = self.problem
+
+    def read_settings(self, lv: str) -> dict[str, Any] | None:
+        """The level's navkit.json with the fields the window shows, or None when it is not there or cannot be read
+        (a cut-off or hand-edited file: self.problem says so)."""
+        p = os.path.join(self.pr.work, 'navkit', lv, 'navkit.json')
+        if not os.path.isfile(p):
+            return None
+        try:
+            with open(p) as fh:
+                s = json.load(fh)
+            box, y = [float(v) for v in s['box']], [float(v) for v in s['y']]
+            if len(box) != 4 or len(y) != 2:
+                raise ValueError('box needs 4 numbers and y 2')
+            s['box'], s['y'] = box, y
+            return dict(s)
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            self.problem = f'{lv}: navkit.json cannot be read ({type(e).__name__}: {e}) - run Prepare again'
+            return None
+
+    def show_area(self, s: dict[str, Any] | None) -> None:
+        """The sampling area's fields and note from the level's settings (s), or empty with a hint without them."""
+        self.saved = []
+        if s is None:
+            for v in self.vars.values():
+                v.set('')
+            self.area_note['text'] = self.problem or 'Run Prepare to fill these in (or type your own and Prepare keeps them).'
+            return
+        for k, v in zip(('minx', 'minz', 'maxx', 'maxz'), s['box']):
+            self.vars[k].set(f'{v:g}')
+        self.vars['ybot'].set(f'{s["y"][0]:g}')
+        self.vars['ytop'].set(f'{s["y"][1]:g}')
+        self.saved = [self.vars[k].get() for k in ('minx', 'minz', 'maxx', 'maxz', 'ybot', 'ytop')]
+        self.area_note['text'] = (f'Box from: {s.get("box_source", "?")}.  Sector offsets {s.get("xoff", "?")}, '
+                                  f'{s.get("zoff", "?")} ({s.get("offsets_source", "?")}).')
 
     def area_args(self) -> list[str]:
         """The --box / --y arguments for the typed sampling area; empty when it is blank or unchanged. Raises
@@ -209,7 +241,7 @@ class App:
         lv = self.level.get()
         if not lv or self.proc:
             return
-        args = [PYTHON, '-u', os.path.join(HERE, 'navkit.py'), cmd, lv]
+        args = [PYTHON, '-u', NAVKIT, cmd, lv]
         try:
             if cmd in ('prepare', 'sample', 'all'):
                 args += self.area_args()
@@ -224,11 +256,33 @@ class App:
             return
         if cmd == 'restore' and not messagebox.askokcancel('NavKit', f'Put the original path data of {lv.upper()} back?'):
             return
+        if cmd in ('build', 'all') and not self.may_replace_apply(lv):
+            return
         self.write(f'\n> navkit.py {" ".join(args[3:])}\n')
+        try:
+            proc = subprocess.Popen(args, cwd=self.pr.root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                    errors='replace', creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        except (OSError, ValueError) as e:
+            # before set_busy: a step that cannot start leaves the buttons as they were (2026-11-05: disabled for good)
+            self.write(f'could not start: {e}\n')
+            errors.logger().error(f'starting navkit.py {cmd} {lv}: {e}')
+            messagebox.showerror('NavKit', f'{cmd} could not be started:\n\n{e}')
+            return
+        self.proc = proc
+        self.cancelled = False
         self.set_busy(True, f'Running {cmd} on {lv} ...')
-        self.proc = subprocess.Popen(args, cwd=self.pr.root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                     text=True, errors='replace', creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-        threading.Thread(target=self.reader, args=(self.proc, cmd), daemon=True).start()
+        threading.Thread(target=self.reader, args=(proc, cmd), daemon=True).start()
+
+    def may_replace_apply(self, lv: str) -> bool:
+        """True unless the level's build has the Navigation Studio's edits in it (navkit.py apply) and the user, asked,
+        does not want a plain build to replace it: build and apply write the same pathdata.hpd."""
+        rec = navkit.build_record(os.path.join(self.pr.work, 'navkit', lv, 'pathdata.hpd'))
+        if not rec or rec.get('kind') != 'apply':
+            return True
+        return bool(messagebox.askyesno(
+            'NavKit', f'The build of {lv.upper()} has the Navigation Studio\'s edits in it (navkit.py apply with '
+                      f'{rec.get("navtune") or "its side file"}).\n\nA plain Build replaces it without the edits; the side '
+                      'file stays and apply can build them in again. Build anyway?'))
 
     def reader(self, proc: subprocess.Popen[str], cmd: str) -> None:
         """Copies the step's output into the queue line by line, keeping its last 10 lines, then queues its exit
@@ -243,39 +297,50 @@ class App:
 
     def pump(self) -> None:
         """Moves queued output into the log on the Tk thread and, when a step ends, re-enables the buttons and warns
-        if it failed; runs itself again every 100 ms."""
+        if it failed; runs itself again every 100 ms - whatever an item raises (2026-11-05: an error in refresh ended
+        the pump for good, and the step never counted as ended)."""
         try:
             while True:
                 item = self.lines.get_nowait()
                 if isinstance(item, tuple):
-                    _, cmd, rc = item
-                    cancelled, self.cancelled = getattr(self, 'cancelled', False), False
-                    self.proc = None
-                    self.set_busy(False, f'{cmd}: ' + ('finished' if rc == 0 else 'failed - see the log above'))
-                    self.refresh()
-                    errors.logger().info(f'{cmd} {self.level.get()}: exit {rc}')
-                    if rc != 0 and not cancelled:
-                        said = '\n'.join(l for l in getattr(self, 'tail', []) if l.strip())[-1500:]
-                        errors.logger().warning(f'{cmd} failed; last lines:\n{said}')
-                        messagebox.showwarning('NavKit', f'{cmd} did not finish (exit code {rc}).\n\nIt said last:\n'
-                                                         f'{said or "(no output)"}\n\nThe whole output is above; the log:\n'
-                                                         f'{errors._state.get("path")}')
+                    self.step_ended(*item[1:])
                 else:
                     self.write(item)
         except queue.Empty:
             pass
-        self.root.after(100, self.pump)
+        finally:
+            self.root.after(100, self.pump)
+
+    def step_ended(self, cmd: str, rc: int) -> None:
+        """A step's exit: the buttons back, the marks refreshed, and a warning when it failed and was not cancelled."""
+        cancelled, self.cancelled = self.cancelled, False
+        self.proc = None
+        text = f'{cmd}: ' + ('finished' if rc == 0 else 'cancelled' if cancelled else 'failed - see the log above')
+        self.set_busy(False, text)
+        errors.logger().info(f'{cmd} {self.level.get()}: exit {rc}')
+        try:
+            self.refresh()
+        finally:
+            if self.problem:
+                self.status['text'] = f'{text}; {self.problem}'
+        if rc != 0 and not cancelled:
+            said = '\n'.join(l for l in getattr(self, 'tail', []) if l.strip())[-1500:]
+            errors.logger().warning(f'{cmd} failed; last lines:\n{said}')
+            messagebox.showwarning('NavKit', f'{cmd} did not finish (exit code {rc}).\n\nIt said last:\n'
+                                             f'{said or "(no output)"}\n\nThe whole output is above; the log:\n'
+                                             f'{errors._state.get("path")}')
 
     def stop(self) -> None:
-        """Cancels the running step and everything it started, then closes the game and restores opfor.ini if sampling
-        left them so."""
-        if not self.proc:
+        """Cancels the running step and everything it started. Only a step still running counts as cancelled: one that
+        ended before Cancel was pressed (its exit not yet shown) keeps its own result, a failure included. The game is
+        not touched - sampling is offline (navkit.py sample without --ingame) - so nothing here can close a game the
+        user is playing or wait for it (2026-11-05: close_game ran taskkill on MoHMPGame.exe and held the window up to
+        12 s). opfor.ini is put back only if an in-game sampling run left its backup."""
+        if not self.proc or self.proc.poll() is not None:
             return
         self.cancelled = True
         kill_tree(self.proc)
         self.write('\ncancelled\n')
-        # a sampling run killed mid-way leaves the game open and opfor.ini changed
-        navkit.close_game()
         navkit.recover_ini(self.pr, lambda m: self.write(m + '\n'))
 
     def set_busy(self, busy: bool, text: str) -> None:

@@ -4,6 +4,8 @@ r"""The crash reader on crash reports built here, in the layout the game writes 
 - the report is read (type, build, crash address, registers, stack) and the bundled symbols load;
 - names and hints for known places (the window-position registry read: "the OPFOR core sends this key");
 - null registers are marked, another build is noted, the log lines before the crash are picked;
+- crash lines (the report written, not a read of an old one); in a log of two crashes the report's own by its time,
+  else the last one with a note that it may be a later crash;
 - with --game: the code view on Project OPFOR's MoHMPGame.exe (needs pefile and capstone): the function
   start found for a crash site inside a known function, the null register the faulting instruction reads
   through, the call before a return address, and text on the stack told apart from addresses.
@@ -11,6 +13,7 @@ r"""The crash reader on crash reports built here, in the layout the game writes 
   python test_crashreader.py [--game]
 """
 import contextlib
+import datetime
 import io
 import os
 import shutil
@@ -49,6 +52,41 @@ def run(argv):
     with contextlib.redirect_stdout(buf):
         code = crashreader.main(['crashreader.py'] + argv)
     return code, buf.getvalue()
+
+
+def crash_lines(c, work, path):
+    """Which log lines are crashes, and the log context of the report's own crash (by its time) in a log of two."""
+    read = r'[09:00:00.000] userdata: CreateFileA read C:\Users\me\Documents\Project OPFOR\MOH\EA Games\Medal of Honor\Multiplayer\crashreport.xml'
+    write = r'[10:00:00.500] userdata: CreateFileW WRITE C:\Users\me\Documents\Project OPFOR\MOH\EA Games\Medal of Honor\Multiplayer\crashreport.xml'
+    c.check(crashreader.is_crash_line(write) and crashreader.is_crash_line('crash: report written to crashreport.xml')
+            and not crashreader.is_crash_line(read) and not crashreader.is_crash_line('[1] copied crashreport.xml.bak')
+            and not crashreader.is_crash_line('[1] wrote oldcrashreport.xml'),
+            'crash lines: the report written; not a read of an old one, nor another file\'s name')
+    log = os.path.join(work, 'two.log')
+    open(log, 'w').write('\n'.join([read, '[09:59:59.000] before the first crash', write, '[11:00:00.000] ---- OPFOR core loaded ----',
+                                    '[11:59:59.000] before the second crash', '[12:00:01.000] the game is writing crashreport.xml']) + '\n')
+    first, note = crashreader.crash_context(log, [datetime.datetime(2026, 10, 16, 10, 1, 0)])
+    c.check(first[-1] == write and first[-2] == '[09:59:59.000] before the first crash' and note == '',
+            'two crashes in the log: the report\'s time (10:01) picks the first crash\'s lines, no note', f'{first[-2:]} {note}')
+    last, note = crashreader.crash_context(log, [datetime.datetime(2026, 10, 16, 15, 0, 0)])
+    c.check(last[-1].endswith('writing crashreport.xml') and 'later crash' in note and '2 crash' in note,
+            'no crash line near the report\'s time: the last crash, with a note that it may be a later crash', note)
+    c.check('later crash' in crashreader.crash_context(log)[1] and crashreader.log_before_crash(log) == last,
+            'no report time: the last crash with the note; log_before_crash is still the last crash')
+    utc = datetime.datetime(2026, 10, 16, 12, 0, 0, tzinfo=datetime.timezone.utc).astimezone().replace(tzinfo=None)
+    times = crashreader.report_times(path, crashreader.read_report(path))
+    c.check(len(times) == 2 and times[0] == utc, 'the report\'s times: its createtime (UTC) in local time, and the file\'s time', str(times))
+    os.utime(path, (utc.timestamp(), utc.timestamp()))     # both of the report's times: its createtime, in local time
+    away = (utc + datetime.timedelta(hours=2)).strftime('[%H:%M:%S.000]')
+    own = os.path.join(work, 'own.log')
+    open(own, 'w').write('\n'.join([utc.strftime('[%H:%M:%S.000]') + ' the game is writing crashreport.xml',
+                                    away + ' the game is writing crashreport.xml']) + '\n')
+    out = run([path, '--no-code', '--log', own])[1]
+    c.check(utc.strftime('[%H:%M:%S.000]') in out and away not in out and 'note:' not in out,
+            '--log: the report\'s own crash (at its time), not the later one', out[-300:])
+    open(own, 'w').write(away + ' the game is writing crashreport.xml\n')
+    out = run([path, '--no-code', '--log', own])[1]
+    c.check('note:' in out and 'later crash' in out, '--log: the note shown when the crash lines may be another crash\'s', out[-300:])
 
 
 def main(argv):
@@ -105,6 +143,7 @@ def main(argv):
         c.check(crashreader.log_before_crash(os.path.join(work, 'none.log')) == [] and crashreader.log_before_crash(os.path.join(work, 'x.log')) == [],
                 'log: none without a crash line or a file')
         c.check('Last log lines before the crash' in run([path, '--no-code', '--log', log])[1], '--log shows the lines before the crash')
+        crash_lines(c, work, path)
 
         if '--game' in argv:
             exe = crashreader.find_exe()

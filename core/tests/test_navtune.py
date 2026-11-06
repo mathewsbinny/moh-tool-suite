@@ -1,5 +1,5 @@
 r"""navtune.py, the navigation side files (no game data): every operation kind saves and loads unchanged, undo
-and redo (a removal undone in place), removing one operation, author and time are recorded (the PC's name by default), invalid
+and redo (a removal undone in place), unsaved edits by version (undo back to the saved ones is clean), removing one operation, author and time are recorded (the PC's name by default), invalid
 operations are refused with a reason, a DICE base refuses region edits, the base file's hash is checked,
 and a newer format version is refused.
 
@@ -14,6 +14,36 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..'))
 from mohcore import navtune as nt  # noqa: E402
+
+
+def dirty_checks(check, t, p):
+    """2026-11-05: dirty is the version against the saved one - undo back to the saved edits is clean, redo away
+    from them dirty again, a new edit after an undo is a new version (never one seen before); saving or loading
+    marks clean, and the side file still holds the operations only."""
+    t.save(p)
+    saved = t.version
+    check(not t.dirty and t.saved_version == saved, 'saved: clean, at the saved version')
+    t.add(nt.op('note', at=(7, 7, 7), text='after the save'))
+    v1 = t.version
+    check(t.dirty and v1 != saved, 'an edit after the save: dirty, a new version')
+    t.undo()
+    check(not t.dirty and t.version == saved, 'undo back to the saved edits: clean again (the saved version)')
+    t.redo()
+    check(t.dirty and t.version == v1, 'redo: dirty, the version the edit had')
+    t.undo()
+    t.remove(0)
+    v2 = t.version
+    check(t.dirty and v2 not in (saved, v1), 'a removal after undo: a version never seen before (not the redone one)')
+    t.undo()
+    check(not t.dirty, 'and undone: clean')
+    t.undo()
+    check(t.dirty, 'undo past the saved point: dirty')
+    t.redo()
+    check(not t.dirty, 'redo back to it: clean')
+    u = nt.load(p)
+    check(not u.dirty and u.version == u.saved_version, 'a loaded side file is clean')
+    check(set(json.load(open(p))) == {'format', 'version', 'level', 'base', 'operations'},
+          'the side file holds no version counters (format unchanged)')
 
 
 def main(argv):
@@ -78,6 +108,7 @@ def main(argv):
         check(json.load(open(p))['operations'] == t.operations and set(json.load(open(p))) == set(t.to_json()),
               'the file format is unchanged (operations only; undo history not saved)')
         check(all(isinstance(t.summary(k), str) for k in range(len(t.operations))), 'every operation has a summary line')
+        dirty_checks(check, t, p)
 
         bad = [nt.op('fly', at=(0, 0, 0)), {'op': 'seed'}, nt.op('route-edge', a=(0, 0, 0), b=(1, 1, 1), action='swap'),
                nt.op('traversal', kind='teleport', bottom=(0, 0, 0), top=(1, 1, 1)), nt.op('note', at=(0, 0, 0), text='  '),

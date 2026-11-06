@@ -42,6 +42,8 @@ Files (in the OPFOR folder): work\\levels\\<level>\\ (unpacked level, objects), 
 (settings, pathdata.hpd and its cells, check report, <level>.rsnv), work\\navsample\\<level>_navkit*.bin (samples).
 See QUICKSTART.md.
 """
+import contextlib
+import enum
 import glob
 import hashlib
 import json
@@ -94,8 +96,98 @@ def _sha256(path: str) -> str:
     return h.hexdigest()
 
 
+def write_json(path: str, data: Any, indent: int | None = 1) -> None:
+    """data as JSON into path whole or not at all (a temporary file, then os.replace, as runs.save and mohcore.navtune
+    do): 2026-11-05, a step killed mid-write left a cut-off navkit.json that the GUI and every later step failed on."""
+    tmp = path + '.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            json.dump(data, fh, indent=indent)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
+
+
 class NavKitError(Exception):
     """A NavKit step that cannot go on, explained in words (the command line prints it, the GUI shows it)."""
+
+
+class Status(enum.Enum):
+    """A NavKit stage's state (stage_status): its files missing, there and newer than its inputs, or older than them
+    (or made from inputs that are themselves missing or out of date)."""
+    MISSING = 'missing'
+    DONE = 'done'
+    STALE = 'stale'
+
+
+STAGES = ('prepare', 'sample', 'build', 'check', 'export')
+# what each stage is made from: check and export both read the build (export does not read check.txt, so a check run
+# after an export does not make the export out of date)
+STAGE_INPUT = {'sample': 'prepare', 'build': 'sample', 'check': 'build', 'export': 'build'}
+
+
+def stage_files(pr: 'Project', lv: str) -> dict[str, list[str]]:
+    """The files each stage writes and must have: navkit.json; the 0.8 m sample pair (<lv>_navkit.bin or an older
+    campaign run's <lv>_full.bin, and its _hi run) plus the detailed 0.2 m pair (_p02, _hi_p02) when it is there;
+    pathdata.hpd; check.txt; <lv>.rsnv."""
+    d = os.path.join(pr.work, 'navkit', lv)
+    s08 = pr.samples08(lv)
+    samples = [s08, s08[:-4] + '_hi.bin'] if s08 else [pr.samples(lv), pr.samples(lv, '_hi')]
+    samples += [p for p in (pr.samples(lv, '_p02'), pr.samples(lv, '_hi_p02')) if os.path.isfile(p)]
+    return {'prepare': [os.path.join(d, 'navkit.json')], 'sample': samples,
+            'build': [os.path.join(d, 'pathdata.hpd')], 'check': [os.path.join(d, 'check.txt')],
+            'export': [os.path.join(d, f'{lv}.rsnv')]}
+
+
+def stage_status(pr: 'Project', lv: str) -> dict[str, Status]:
+    """{stage: Status} for prepare, sample, build, check and export, from their files' times (stage_files): a stage is
+    STALE when one of its files is older than the newest file of the stage it is made from (STAGE_INPUT), or when that
+    stage is itself missing or stale - re-preparing or re-sampling leaves the build, its check and its export out of
+    date (2026-11-05: the GUI ticked them as done)."""
+    files = stage_files(pr, lv)
+    times: dict[str, list[int]] = {}
+    out: dict[str, Status] = {}
+    for st in STAGES:
+        try:
+            times[st] = [os.stat(p).st_mtime_ns for p in files[st]]
+        except OSError:
+            out[st] = Status.MISSING
+            continue
+        up = STAGE_INPUT.get(st)
+        if up is None:
+            out[st] = Status.DONE
+        elif out[up] is not Status.DONE:
+            out[st] = Status.STALE
+        else:
+            out[st] = Status.STALE if min(times[st]) < max(times[up]) else Status.DONE
+    return out
+
+
+def build_record_path(hpd: str) -> str:
+    """The side record of which kind of build made a path-data file (<file>.build.json)."""
+    return hpd + '.build.json'
+
+
+def write_build_record(hpd: str, kind: str, navtune_path: str | None = None) -> None:
+    """Records which kind of build made hpd: 'build' (navkit.py build: no edits) or 'apply' (with the Navigation
+    Studio's edits, from navtune_path), keyed to the file's SHA-256 so that a record of an earlier file is not read."""
+    write_json(build_record_path(hpd), {'kind': kind, 'navtune': navtune_path, 'sha256': _sha256(hpd),
+                                        'time': time.strftime('%Y-%m-%d %H:%M:%S')})
+
+
+def build_record(hpd: str) -> dict[str, Any] | None:
+    """The record of the build that made hpd ({'kind': 'build' | 'apply', 'navtune': side file or None, ...}), or None
+    when there is none, it cannot be read or it belongs to another file."""
+    try:
+        with open(build_record_path(hpd), encoding='utf-8') as fh:
+            rec = json.load(fh)
+        if isinstance(rec, dict) and rec.get('sha256') == _sha256(hpd):
+            return rec
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 def find_opfor(given: str | None = None) -> str:
@@ -180,7 +272,12 @@ class Project:
         p = self.settings_path(lv)
         if not os.path.isfile(p):
             raise NavKitError(f'{lv}: not prepared yet (navkit.py prepare {lv.upper()})')
-        return json.load(open(p))
+        try:
+            with open(p) as fh:
+                s: Settings = json.load(fh)
+        except ValueError as e:
+            raise NavKitError(f'{lv}: its settings {p} cannot be read ({e}) - run prepare again') from None
+        return s
 
     def samples(self, lv: str, suffix: str = '') -> str:
         """The path of one of the level's sample files (work\\navsample\\<lv>_navkit<suffix>.bin)."""
@@ -260,7 +357,7 @@ def prepare(pr: Project, lv: str, log: Log = print, box: Sequence[float] | None 
     levelobjects.main(['levelobjects.py', L, LV] + common)
     import ladders
     lad = ladders.extract(L, common)
-    json.dump(lad, open(os.path.join(L, 'ladders.json'), 'w'), indent=1)
+    write_json(os.path.join(L, 'ladders.json'), lad)
     log(f'  ladders: {len(lad)} (ladder links: their far ends seeded and linked in the build)')
 
     xoff = zoff = None
@@ -275,7 +372,7 @@ def prepare(pr: Project, lv: str, log: Log = print, box: Sequence[float] | None 
     else:
         s['offsets_source'] = 'SectorOffsets'
     s['xoff'], s['zoff'] = xoff, zoff
-    json.dump(s, open(pr.settings_path(lv), 'w'), indent=1)
+    write_json(pr.settings_path(lv), s)
     cols = (s['box'][2] - s['box'][0]) / 0.8 * (s['box'][3] - s['box'][1]) / 0.8
     log(f'  box {fmt(s["box"])} ({s["box_source"]}), y {fmt(s["y"])}, sector offsets {s["xoff"]}, {s["zoff"]} '
         f'({s["offsets_source"]}); {cols / 1e6:.1f} M columns per sampling run')
@@ -311,7 +408,7 @@ def set_box(pr: Project, lv: str, s: Settings, box: Sequence[float] | None = Non
     s['box'], s['y'] = box or s['box'], y or s['y']
     if str(s.get('offsets_source', '')).startswith('rule'):
         s['xoff'], s['zoff'], s['offsets_source'] = rule_offsets(pr, lv, s['box'])
-    json.dump(s, open(pr.settings_path(lv), 'w'), indent=1)
+    write_json(pr.settings_path(lv), s)
     return s
 
 
@@ -505,7 +602,7 @@ def ensure_settings(pr: Project, lv: str) -> Settings:
                                  round(s.min_z + (s.nz - 1) * s.pitch, 3)],
           'y': [round(s.y_bottom, 3), round(s.y_top, 3)], 'box_source': 'its 0.8 m samples',
           'offsets_source': 'its SectorOffsets', 'xoff': xoff, 'zoff': zoff}
-    json.dump(st, open(pr.settings_path(lv), 'w'), indent=1)
+    write_json(pr.settings_path(lv), st)
     return st
 
 
@@ -524,7 +621,7 @@ def detailed_sectors(pr: Project, lv: str) -> list[tuple[int, int]]:
             return [tuple(x) for x in c['sectors']]
     common = common_dirs(pr.root, lv)
     chosen, why = detailed.choose(pr.level_work(lv), common, sp, s['xoff'], s['zoff'])
-    json.dump({'key': key, 'sectors': chosen, 'why': why}, open(cache, 'w'))
+    write_json(cache, {'key': key, 'sectors': chosen, 'why': why}, indent=None)
     return chosen
 
 
@@ -742,13 +839,20 @@ def build_inputs(pr: Project, lv: str, log: Log = print) -> tuple[str, str, int,
 
 
 def build(pr: Project, lv: str, log: Log = print) -> None:
-    """Builds the level's path data (work\\navkit\\<lv>\\pathdata.hpd and its cells) with navbuild."""
+    """Builds the level's path data (work\\navkit\\<lv>\\pathdata.hpd and its cells) with navbuild, and records it as a
+    plain build (build_record). A file navkit.py apply made (the Navigation Studio's edits built in) is replaced: said
+    in a note, as apply writes the same file."""
     import navbuild
     out = os.path.join(pr.out_dir(lv), 'pathdata.hpd')
     log(f'== build {lv} -> {os.path.relpath(out, pr.root)}')
+    rec = build_record(out) if os.path.isfile(out) else None
+    if rec and rec.get('kind') == 'apply':
+        log(f'  note: this replaces the build navkit.py apply made with the edits of {rec.get("navtune") or "the side file"}; '
+            f'run navkit.py apply {lv.upper()} to build with them again')
     t0 = time.time()
     samples, forbid, xoff, zoff, kw = build_inputs(pr, lv, log)
     navbuild.build(samples, forbid, xoff, zoff, out, **kw)
+    write_build_record(out, 'build')
     log(f'  built in {time.time() - t0:.0f} s ({os.path.getsize(out) / 1e6:.1f} MB)')
 
 
@@ -885,8 +989,11 @@ def apply(pr: Project, lv: str, navtune_path: str | None = None, out: str | None
     edits (regions, seeds, unseeds) go into the build, then links and route edges into its route graph
     (navlinks.py); on a DICE base only the graph edits, on a copy of DICE's file. Traversal annotations go to
     <level>.traversal.json next to it (navtraversal.py). The result is read back to check it, the whole log is
-    kept as <output>.report.txt, and with install_after the result is installed. Returns the output path."""
+    kept as <output>.report.txt, and with install_after the result is installed. The result is recorded as an apply
+    build of that side file (build_record: a plain build asks or notes before replacing it). Returns the output path."""
+    from mohcore import navtune
     lines: list[str] = []
+    navtune_path = navtune_path or navtune.default_path(pr.root, lv)
 
     def say(msg: str) -> None:
         lines.append(msg)
@@ -897,6 +1004,7 @@ def apply(pr: Project, lv: str, navtune_path: str | None = None, out: str | None
         if out:
             open(out + '.report.txt', 'w', encoding='utf-8').write('\n'.join(lines + [f'error: {e}']) + '\n')
         raise
+    write_build_record(out, 'apply', navtune_path)
     open(out + '.report.txt', 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
     if install_after:
         install(pr, lv, log=log, src=out)

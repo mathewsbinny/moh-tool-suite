@@ -15,7 +15,10 @@ Quick (no game data; navigation data, levels, bundles and logs built in the test
   - mohcore.fbrb on bundles built here: entries, deleted markers, reading entries (zipped and not), errors; the
     harness's bundle caches;
   - opfor.log sessions: level, states, AI events, SectorOffsets loads and the override, pathfinder counts, crash; the
-    in-game criteria passed, failed and on hold;
+    in-game criteria passed, failed and on hold; one process that played two levels gives a session per level, each
+    with only its own events (mp_02 does not pass on mp_01's AI init); a read of an old crashreport.xml is no crash;
+  - a level's files against the reference file's results; a reference test that raises makes the other files'
+    comparisons 'skip' with the reason (and a note), not scored as the baseline;
   - saved runs: save / load, another format refused; comparison: worse beyond the tolerance, within it, closer to
     1.0, a test now failing and one fixed, counts, missing and new, battery pairs lost; the report; regressions that
     must not pass: a lost file or level, a new failing test, fail -> error (other status changes listed), metrics in
@@ -253,6 +256,7 @@ def quick(check, tmp):
     base, new, gone, p = _quick_runs(check, tmp)
     _quick_regressions(check, base, new, gone)
     _quick_default_files(check, tmp)
+    _quick_reference(check, tmp)
     _quick_command_line(check, tmp, base, new, p)
 
 
@@ -443,6 +447,44 @@ def _quick_sessions(check):
     check(ingame.evaluate(half, (-3, -7))['offsets-read'].status == 'fail',
           'offsets-read: one load with the asset\'s values and one with 0,0 fails (every load must read them)')
     check(all(r.status == 'hold' for r in ingame.telemetry_tests().values()), 'the telemetry tests (M6) are on hold')
+    _quick_two_levels(check)
+
+
+TWO_LEVELS = r"""[13:00:00.000] ---- OPFOR core loaded into C:\game\MP\MoHMPGame.exe (PID 400) ----
+[13:00:00.500] userdata: CreateFileA read C:\Users\me\Documents\Project OPFOR\MOH\EA Games\Medal of Honor\Multiplayer\crashreport.xml
+[13:00:01.000] dev trigger: level='Levels/MP_01' autostart=1 delay=20000ms
+[13:00:20.000] queued hostMultiplayerLocal request: level='Levels/MP_01' (uiManager=1CA89D80)
+[13:00:30.000] probe AI: init (arg1 = difficulty)                         ecx=06E170D4 arg1=00000001 (1) arg2=0 ret=00575081 tid=2
+[13:00:40.000] probe Session::updateState (arg1 = state)                  ecx=180AD880 arg1=00000003 (3) arg2=0 ret=0 tid=1
+[13:01:40.000] unit counters (interval): 12 pathfinders - pf: requests true false
+[13:10:00.000] queued hostMultiplayerLocal request: level='Levels/MP_02' (uiManager=1CA89D80)
+[13:10:05.000] probe Session::updateState (arg1 = state)                  ecx=180AD880 arg1=00000005 (5) arg2=0 ret=0 tid=1
+[13:10:40.000] probe Session::updateState (arg1 = state)                  ecx=180AD880 arg1=00000003 (3) arg2=0 ret=0 tid=1
+[13:11:00.000] userdata: CreateFileW WRITE C:\Users\me\Documents\Project OPFOR\MOH\EA Games\Medal of Honor\Multiplayer\crashreport.xml
+"""
+
+
+def _quick_two_levels(check):
+    """quick(): one game process that played mp_01, then hosted mp_02: a session per level, each with its own events."""
+    ss = ingame.sessions(TWO_LEVELS)
+    one, two = ingame.for_level(ss, 'mp_01'), ingame.for_level(ss, 'MP_02')
+    check(len(ss) == 2 and [s.part for s in ss] == [1, 2] and len(one) == 1 and len(two) == 1 and one[0].pid == two[0].pid == '400',
+          'one process, two levels: a session each (the dev trigger and its host request for mp_01 stay one session)')
+    a, b = one[0], two[0]
+    check(a.events == ['AI init'] and a.states == [3] and a.pathfinders == [12] and not a.crashed and a.start == '13:00:00'
+          and b.events == [] and b.states == [5, 3] and b.pathfinders == [] and b.crashed and b.start == '13:10:00',
+          'each level\'s session has only its own events, states and counters; the crash is mp_02\'s, the read of an old '
+          'crashreport.xml at start-up is no crash')
+    ev = ingame.evaluate(b, None)
+    check(ingame.evaluate(a, None)['loads-ai-init'].status == 'pass' and ev['loads-ai-init'].status == 'fail'
+          and 'level 2 of that process' in ev['loads-ai-init'].summary,
+          'loads-ai-init: mp_01 passes on its own evidence, mp_02 fails (no AI init after it was hosted, and it crashed)')
+    check(ingame.is_crash_line('[1] the game is writing crashreport.xml') and not ingame.is_crash_line('[1] copied crashreport.xml.bak')
+          and not ingame.is_crash_line('[1] userdata: CreateFileW read C:\\x\\crashreport.xml'),
+          'crash lines: crashreport.xml written; not a read of it, nor a longer file name')
+    replay = TWO_LEVELS.replace("level='Levels/MP_02'", "level='Levels/MP_01'")
+    check([s.level for s in ingame.sessions(replay)] == ['Levels/MP_01', 'Levels/MP_01'] and len(ingame.for_level(ingame.sessions(replay), 'mp_01')) == 2,
+          'the same level hosted again after it was in game is a second session (a replay)')
 
 
 def _quick_runs(check, tmp):
@@ -540,6 +582,59 @@ def _quick_default_files(check, tmp):
     check(harness.default_files(fake, ['zz_none']) == 'navkit' and harness.default_files(fake, ['zz_navkit']) == 'navkit'
           and harness.default_files(fake, ['zz_none', 'zz_dice']) == 'dice,navkit',
           '--files default: navkit for levels without DICE path data (NavKit\'s own install is not DICE\'s), dice,navkit with')
+
+
+def _two_files(tmp, fail_once=()):
+    """harness._test_file on a reference file and a second one (the same built graph, loaded in place of navdata.load);
+    fail_once: names in checks whose first call (the reference file's) raises. Returns the level's results L."""
+    import harness
+    os.makedirs(tmp)
+    nav = grid_nav([(0, 0, 5, 5, 0.0, 10.0)])
+    paths = {k: os.path.join(tmp, f'{k}.hpd') for k in ('dice', 'navkit')}
+    for p in paths.values():
+        open(p, 'wb').write(b'not read: navdata.load is replaced')
+    real = {name: getattr(checks, name) for name in fail_once}
+    real_load = navdata.load
+
+    def raising(name):
+        def fn(*a, **k):
+            setattr(checks, name, real[name])           # only the first call raises
+            raise RuntimeError(f'{name} broke')
+        return fn
+    for name in fail_once:
+        setattr(checks, name, raising(name))
+    navdata.load = lambda *a, **k: nav
+    L = {'name': 'test_level', 'notes': [], 'files': {}}
+    points = ([Point('spawn', 's', (0.0, 0.0, 0.0), team=1)], [Point('AreaOrder', 't', (40.0, 0.0, 40.0))], [])
+    opts = {'tests': ['reachability', 'battery'], 'pairs': 10, 'level_pairs': 5, 'seed': 1}
+    ref = harness.Reference('dice', nav)
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            for key in ('dice', 'navkit'):
+                harness._test_file(L, key, paths[key], tmp, 'test_level', opts, tmp, lambda *a: None, level_info(), ref, points)
+    finally:
+        navdata.load = real_load
+        for name, fn in real.items():
+            setattr(checks, name, fn)
+    return L
+
+
+def _quick_reference(check, tmp):
+    """quick(): the files of a level compared with the reference file's results, and a reference test that raises."""
+    t = _two_files(os.path.join(tmp, 'ref_ok'))['files']['navkit']['tests']
+    check(t['reachability']['status'] == 'pass' and 'reach_parity_pct' in t['reachability']['metrics']
+          and 'random.found_of_ref_pct' in t['battery']['metrics'],
+          'a second file is compared with the reference file\'s reachability and battery')
+    L = _two_files(os.path.join(tmp, 'ref_bad'), fail_once=('reachability', 'route_pairs'))
+    d, n = L['files']['dice']['tests'], L['files']['navkit']['tests']
+    check(d['reachability']['status'] == 'error' and d['battery']['status'] == 'error',
+          'the reference file\'s reachability and battery raise: errors')
+    check(n['reachability']['status'] == 'skip' and 'reference reachability failed: RuntimeError: reachability broke' in n['reachability']['summary']
+          and n['battery']['status'] == 'skip' and 'reference battery failed: RuntimeError: route_pairs broke' in n['battery']['summary']
+          and not n['reachability']['metrics'] and not n['battery']['metrics'],
+          'the other file\'s comparisons are skipped with the reason, not scored as if it were the baseline: '
+          + n['reachability']['summary'][:80])
+    check(sum('not compared: reference' in x for x in L['notes']) == 2, 'and the level notes say so: ' + '; '.join(L['notes'])[:160])
 
 
 def _quick_command_line(check, tmp, base, new, p):
